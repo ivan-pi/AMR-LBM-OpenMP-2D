@@ -20,7 +20,7 @@ CONTAINS
 
 
 SUBROUTINE Fill_Ghost_Cells_hg
-    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_h, Blk_g, Neighbor_of
+    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_h, Blk_g
     IMPLICIT NONE
 
     INTEGER :: L, I, m, n, Nghbr(8)
@@ -31,7 +31,7 @@ SUBROUTINE Fill_Ghost_Cells_hg
             n = LeafByLevel(m)
 
             DO I = 1, 8
-                Nghbr(I) = Neighbor_of(n, I)
+                Nghbr(I) = Blk(n)%nbr(I)
             END DO
 
             IF( Nghbr(1) > 0 ) CALL Fill_Left_hg  ( n, L, Nghbr(1) )

@@ -49,6 +49,9 @@ MODULE Blocks_Mod
         INTEGER :: child(4)     = -1
         INTEGER :: nbr_of(8)    =  0
         INTEGER :: nbr_child(8) =  0
+        !== resolved neighbours from the block positions (Rebuild_Neighbor_Table):
+        !   the block on the same level, else the coarser one, or a boundary code
+        INTEGER :: nbr(8)       =  0
         LOGICAL :: IsLeaf  = .FALSE.
         LOGICAL :: hasLeaf = .FALSE.
         LOGICAL :: Refin   = .FALSE.

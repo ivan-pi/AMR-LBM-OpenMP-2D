@@ -14,7 +14,7 @@ CONTAINS
 
 SUBROUTINE Fill_Ghost_Cells_C( ng )
     !== fill ng ghost layers of C on all leaf blocks, level by level (coarse first)
-    USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_C, Neighbor_of
+    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: ng
 
@@ -26,7 +26,7 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
             n = LeafByLevel(m)
 
             DO I = 1, 8
-                Nghbr(I) = Neighbor_of(n, I)
+                Nghbr(I) = Blk(n)%nbr(I)
             END DO
 
             IF( Nghbr(1) > 0 ) CALL Fill_Left_C  ( n, L, Nghbr(1), ng )

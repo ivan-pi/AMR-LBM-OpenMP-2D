@@ -24,14 +24,19 @@ SUBROUTINE Refine_Derefine_Mesh( criterion, Moments_g, refinTol, derefTol, chang
     REAL(wp), INTENT(IN) :: refinTol, derefTol
     LOGICAL, INTENT(OUT), OPTIONAL :: changed
 
+    LOGICAL :: mesh_changed
+
     CALL Flag_for_refinement  ( criterion, refinTol )
     CALL Flag_for_derefinement( criterion, derefTol )
 
-    IF( PRESENT(changed) ) changed = ANY( Blk(1:Nblks)%Refin ) .OR. ANY( Blk(1:Nblks)%Deref )
+    mesh_changed = ANY( Blk(1:Nblks)%Refin ) .OR. ANY( Blk(1:Nblks)%Deref )
+    IF( PRESENT(changed) ) changed = mesh_changed
+    IF( .NOT. mesh_changed ) RETURN
 
     CALL Derefine
     CALL Refine( Moments_g )
 
+    !== leaf lists and neighbour table of the new mesh
     CALL Array_of_Leaf_Blocks
 
 END SUBROUTINE Refine_Derefine_Mesh
@@ -95,14 +100,14 @@ END
 !******************************************************************************
 
 RECURSIVE SUBROUTINE Check_Level_Jump( n, I )
-    USE Blocks_Mod, ONLY: Blk, Neighbor_of
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: n, I
 
     INTEGER :: b
 
-    b = Neighbor_of(n, I)
+    b = Blk(n)%nbr(I)
 
     IF( b > 0 ) THEN
         IF( .NOT. Blk(b)%Refin .AND. Blk(b)%Level == Blk(n)%Level-1 ) THEN
@@ -188,14 +193,14 @@ SUBROUTINE enforce_1_Level_jump_deref_2D( n )
 CONTAINS
 
     SUBROUTINE Check_Level_Jump_Deref_2D( n, Neighbor, c1, c2 )
-        USE Blocks_Mod, ONLY: Blk, Neighbor_of
+        USE Blocks_Mod, ONLY: Blk
         INTEGER, INTENT(IN) :: n, Neighbor, c1, c2
 
         INTEGER :: b, c, I
 
         IF( .NOT. Blk(n)%Deref ) RETURN
 
-        b = Neighbor_of(n, Neighbor)
+        b = Blk(n)%nbr(Neighbor)
 
         IF( b > 0 ) THEN
             IF( .NOT. Blk(b)%IsLeaf ) THEN

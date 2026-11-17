@@ -85,6 +85,7 @@ SUBROUTINE Main_Loop( model, problem, t_end )
     USE Physics_Mod, ONLY: W, M0, Bo, Ar, taul, tauh, wc, Sigma, Gy, D
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
+    USE Mesh_Mod, ONLY: t_nbr_table, n_nbr_rebuilds
     IMPLICIT NONE
     TYPE(LBM_Model), INTENT(IN) :: model
     TYPE(AMR_Case),  INTENT(IN) :: problem
@@ -260,6 +261,9 @@ SUBROUTINE Main_Loop( model, problem, t_end )
     PRINT '(A,F12.3)',   ' t_Ghost_C :      ', DBLE(t_Ghost_C  )/Rate
     PRINT '(A,F12.3)',   ' t_Ghost_hg:      ', DBLE(t_Ghost_hg )/Rate
     PRINT '(A,F12.3)',   ' t_refine:        ', DBLE(t_refine   )/Rate
+    PRINT '(A,F12.3,A,I0,A,F0.2,A)', ' t_nbr_table:     ', DBLE(t_nbr_table)/Rate, &
+        '   (in t_refine; ', n_nbr_rebuilds, ' rebuilds, ', &
+        1.e6_dp*DBLE(t_nbr_table)/Rate/MAX(n_nbr_rebuilds,1), ' us each)'
 
 CONTAINS
 

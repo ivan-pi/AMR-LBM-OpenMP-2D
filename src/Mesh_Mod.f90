@@ -8,6 +8,11 @@ MODULE Mesh_Mod
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Create_Domain, Add_Child_Blocks, Array_of_Leaf_Blocks, Determine_Min_Max_Levels
+    PUBLIC :: t_nbr_table, n_nbr_rebuilds
+
+    !== time spent in Rebuild_Neighbor_Table (SYSTEM_CLOCK ticks) and number of calls
+    INTEGER(8) :: t_nbr_table = 0
+    INTEGER    :: n_nbr_rebuilds = 0
 
 CONTAINS
 
@@ -220,6 +225,9 @@ SUBROUTINE Array_of_Leaf_Blocks
         cnt(L) = cnt(L) + 1
     END DO
 
+
+    CALL Rebuild_Neighbor_Table
+
 END
 
 !******************************************************************************
@@ -241,6 +249,107 @@ SUBROUTINE Determine_Min_Max_Levels
     END DO
 
 END SUBROUTINE Determine_Min_Max_Levels
+
+!******************************************************************************
+
+!== Blk(:)%nbr of every live block from the block positions alone: the block
+!   at the neighbouring position on the same level, else the block one level
+!   coarser that covers it (the 2:1 balance guarantees one of them exists).
+!   Periodic in x; above the top or below the bottom the neighbour is the
+!   boundary code -k. With AMR_CHECK_NEIGHBORS set, every entry is compared
+!   with the lazy links (Neighbor_of).
+SUBROUTINE Rebuild_Neighbor_Table
+    USE Config_Mod, ONLY: maxLevels, MaxBlks
+    USE Blocks_Mod, ONLY: Blk, Nblks, Neighbor_of
+    IMPLICIT NONE
+
+    !== direction k: offsets of the neighbouring block position
+    !       6   4   8
+    !       1       2
+    !       5   3   7
+    INTEGER, PARAMETER :: di(8) = [ -1, 1,  0, 0, -1, -1,  1, 1 ]
+    INTEGER, PARAMETER :: dj(8) = [  0, 0, -1, 1, -1,  1, -1, 1 ]
+
+    !== block at position (I,J) of level L: at( Slot(L,I,J) ), 0 if none
+    !   (kept all 0 between calls, so only the entries of live blocks are touched)
+    INTEGER, SAVE :: at(MaxBlks) = 0
+    LOGICAL, SAVE :: first = .True., check = .False.
+
+    INTEGER :: n, k, L, I, J, b, nbad, length, stat
+    INTEGER(8) :: t0, t1
+
+    IF( first ) THEN
+        CALL GET_ENVIRONMENT_VARIABLE( 'AMR_CHECK_NEIGHBORS', LENGTH=length, STATUS=stat )
+        check = ( stat == 0 .AND. length > 0 )
+        IF( check ) PRINT '(A)', ' checking the neighbour table against the lazy links'
+        first = .False.
+    END IF
+
+    CALL SYSTEM_CLOCK( t0 )
+
+    DO n = 1, Nblks
+        IF( Blk(n)%Level >= 0 ) at( Slot( Blk(n)%Level, Blk(n)%I, Blk(n)%J ) ) = n
+    END DO
+
+    DO n = 1, Nblks
+        L = Blk(n)%Level
+        IF( L < 0 ) CYCLE
+        DO k = 1, 8
+            J = Blk(n)%J + dj(k)
+            IF( J < 0 .OR. J >= 3*2**L ) THEN
+                Blk(n)%nbr(k) = -k
+                CYCLE
+            END IF
+            I = MODULO( Blk(n)%I + di(k), 2**L )
+            b = at( Slot(L, I, J) )
+            IF( b == 0 .AND. L > 0 ) b = at( Slot(L-1, I/2, J/2) )
+            IF( b == 0 ) THEN
+                PRINT '(A,6I7)', ' n, k, L, I, J:', n, k, L, Blk(n)%I, Blk(n)%J
+                ERROR STOP 'Rebuild_Neighbor_Table: no neighbour (2:1 balance violated?)'
+            END IF
+            Blk(n)%nbr(k) = b
+        END DO
+    END DO
+
+    DO n = 1, Nblks
+        IF( Blk(n)%Level >= 0 ) at( Slot( Blk(n)%Level, Blk(n)%I, Blk(n)%J ) ) = 0
+    END DO
+
+    CALL SYSTEM_CLOCK( t1 )
+    t_nbr_table    = t_nbr_table + (t1 - t0)
+    n_nbr_rebuilds = n_nbr_rebuilds + 1
+
+    IF( check ) THEN
+        nbad = 0
+        DO n = 1, Nblks
+            IF( Blk(n)%Level < 0 ) CYCLE
+            DO k = 1, 8
+                b = Neighbor_of( n, k )
+                IF( b /= Blk(n)%nbr(k) ) THEN
+                    nbad = nbad + 1
+                    IF( nbad <= 10 ) THEN
+                        PRINT '(A,I7,A,I2,A,3I6,A,I7,A,I7)', ' block', n, ' k', k, ' (L,I,J)', &
+                            Blk(n)%Level, Blk(n)%I, Blk(n)%J, ': table', Blk(n)%nbr(k), '  lazy', b
+                        IF( b > 0 ) PRINT '(A,3I6)', '    lazy target (L,I,J):', Blk(b)%Level, Blk(b)%I, Blk(b)%J
+                    END IF
+                END IF
+            END DO
+        END DO
+        IF( nbad > 0 ) THEN
+            PRINT '(A,I0,A,I0)', ' neighbour mismatches: ', nbad, ' in rebuild ', n_nbr_rebuilds
+            ERROR STOP 'neighbour table differs from the lazy links'
+        END IF
+    END IF
+
+CONTAINS
+
+    !== slot of position (I,J) on level L (levels stored one after the other)
+    PURE INTEGER FUNCTION Slot( L, I, J )
+        INTEGER, INTENT(IN) :: L, I, J
+        Slot = 4**L + I + J*2**L
+    END FUNCTION Slot
+
+END SUBROUTINE Rebuild_Neighbor_Table
 
 
 END MODULE Mesh_Mod
