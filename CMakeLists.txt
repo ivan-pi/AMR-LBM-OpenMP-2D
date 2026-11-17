@@ -95,7 +95,6 @@ add_library(amr_core OBJECT
   src/Phase_Field_Mod.f90
   src/Model_JCP2016_Mod.f90
   src/Model_PRE2017_Mod.f90
-  src/Neighbors_Mod.f90
   src/Mesh_Mod.f90
   src/Ghost_C_Mod.f90
   src/Ghost_hg_Mod.f90

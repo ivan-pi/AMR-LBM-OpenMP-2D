@@ -248,7 +248,7 @@ CONTAINS
         Blk(c1:c4)%Level  = -1
         Blk(c1:c4)%IsLeaf = .False.
 
-        Blk(par)%child(:)= par
+        Blk(par)%child(:)= -1
         Blk(par)%IsLeaf  = .True.
         Blk(par)%hasLeaf = .False.
 

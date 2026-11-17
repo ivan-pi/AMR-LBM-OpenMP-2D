@@ -24,8 +24,7 @@ flowchart TD
     subgraph AMR["Block-structured AMR"]
         REF["Refine_Mod<br/>flagging, refine / derefine"]
         PR["Prolong_Restrict_Mod<br/>children ↔ parent"]
-        MESH["Mesh_Mod<br/>domain, child blocks, leaf lists"]
-        NB["Neighbors_Mod"]
+        MESH["Mesh_Mod<br/>domain, child blocks, leaf lists,<br/>neighbour table"]
     end
 
     subgraph GH["Ghost cells & boundaries"]
@@ -78,7 +77,6 @@ flowchart TD
     REF --> MM
     PR --> MM
     PR --> INT
-    MESH --> NB
 
     GC --> INT
     GC --> BC
@@ -89,6 +87,6 @@ flowchart TD
     OM --> TEC
     VTK -.-> FV
 
-    NB ~~~ BASE
+    MESH ~~~ BASE
     INT ~~~ BASE
     MM ~~~ BASE

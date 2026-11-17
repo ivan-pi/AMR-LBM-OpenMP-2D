@@ -28,16 +28,15 @@ MODULE Blocks_Mod
     PRIVATE
     PUBLIC :: Block_t, Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, &
               Nblks, nLeaf, LeafBlks, LeafByLevel, LevelStart, LevelMin, LevelMax, &
-              nUnused, Neighbor_of, Link_Neighbor, Copy_Neighbor_Link, &
+              nUnused, &
               Init_Block_Pool, Reserve_Blocks, Release_Siblings, Take_Free_Siblings
 
     !== metadata of a block
-    !   Neighbour k (numbering below) is resolved by Neighbor_of: it is
-    !   Blk(nbr_of(k))%child(nbr_child(k)) if nbr_child(k) > 0, else nbr_of(k)
-    !   itself (a block, or a boundary code < 0). A leaf has child(:) = its
-    !   own index, so a link into the child list of a neighbour of the
-    !   parent gives that neighbour while it is a leaf and its child once
-    !   it is refined, without updating the link.
+    !   nbr(k) is the neighbour in direction k (numbering below): the block
+    !   at the neighbouring position on the same level, else the coarser
+    !   block covering it, or the boundary code -k beyond the bottom and top
+    !   walls. It is rebuilt from the block positions (Level, I, J) after
+    !   every mesh change (Rebuild_Neighbor_Table in Mesh_Mod).
     !       6   4   8
     !       1       2
     !       5   3   7
@@ -46,11 +45,7 @@ MODULE Blocks_Mod
         INTEGER :: dx     =  0      ! cell size in finest-level lattice units
         INTEGER :: I = 0, J = 0     ! block position on its level
         INTEGER :: Parent = -1
-        INTEGER :: child(4)     = -1
-        INTEGER :: nbr_of(8)    =  0
-        INTEGER :: nbr_child(8) =  0
-        !== resolved neighbours from the block positions (Rebuild_Neighbor_Table):
-        !   the block on the same level, else the coarser one, or a boundary code
+        INTEGER :: child(4)     = -1    ! first child: child(1), siblings follow; -1 for a leaf
         INTEGER :: nbr(8)       =  0
         LOGICAL :: IsLeaf  = .FALSE.
         LOGICAL :: hasLeaf = .FALSE.
@@ -185,43 +180,6 @@ PURE FUNCTION Slot_Bytes() RESULT( bytes )
             ( 2*9*(nx+2)*(ny+2) + (nx+4)*(ny+4) + 3*nx*ny )
 
 END FUNCTION Slot_Bytes
-
-!******************************************************************************
-
-!== neighbour k of block n (a block index, or a boundary code < 0)
-PURE FUNCTION Neighbor_of( n, k ) RESULT( b )
-    IMPLICIT NONE
-    INTEGER, INTENT(IN) :: n, k
-    INTEGER :: b
-
-    b = Blk(n)%nbr_of(k)
-    IF( Blk(n)%nbr_child(k) > 0 ) b = Blk(b)%child( Blk(n)%nbr_child(k) )
-
-END FUNCTION Neighbor_of
-
-!******************************************************************************
-
-!== set neighbour k of block n to child c of block b (c = 0: to b itself)
-SUBROUTINE Link_Neighbor( n, k, b, c )
-    IMPLICIT NONE
-    INTEGER, INTENT(IN) :: n, k, b, c
-
-    Blk(n)%nbr_of(k)    = b
-    Blk(n)%nbr_child(k) = c
-
-END SUBROUTINE Link_Neighbor
-
-!******************************************************************************
-
-!== neighbour k of block n is linked like neighbour k of block p
-SUBROUTINE Copy_Neighbor_Link( n, p, k )
-    IMPLICIT NONE
-    INTEGER, INTENT(IN) :: n, p, k
-
-    Blk(n)%nbr_of(k)    = Blk(p)%nbr_of(k)
-    Blk(n)%nbr_child(k) = Blk(p)%nbr_child(k)
-
-END SUBROUTINE Copy_Neighbor_Link
 
 !******************************************************************************
 
