@@ -109,7 +109,7 @@ CONTAINS
     !== all leaf cells (nx*ny quads per leaf block)
     SUBROUTINE Build_Cells( md )
         USE Config_Mod, ONLY: nx, ny, L0
-        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_P, Blk_Ux, Blk_Uy
         TYPE(Mesh_Data), INTENT(OUT) :: md
 
             INTEGER :: nPts, nCells, m, b, i, j, k, e, p0, dx
@@ -123,7 +123,7 @@ CONTAINS
             md%VName  = 'Velocity'
             md%INames = [character(len=16) :: 'Level', 'Block']
 
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, LeafBlks, nLeaf, md )
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_P, Blk_Ux, Blk_Uy, LeafBlks, nLeaf, md )
             DO m = 1, nLeaf
                 b  = LeafBlks(m)
                 dx = Blk(b)%dx
@@ -145,9 +145,9 @@ CONTAINS
                     md%Conn(4*e-3:4*e) = [ k, k+1, k+1+nx+1, k+nx+1 ]
                     md%Offs(e)    = 4*e
                     md%Types(e)   = VTK_QUAD
-                    md%RData(e,1) = Blk(b)%C (i,j)  ! C
-                    md%RData(e,2) = Blk(b)%P (i,j)  ! P
-                    md%VData(:,e) = [ Blk(b)%Ux(i,j), Blk(b)%Uy(i,j), 0.0_wp ]  ! Velocity
+                    md%RData(e,1) = Blk_C(i,j, b)  ! C
+                    md%RData(e,2) = Blk_P(i,j, b)  ! P
+                    md%VData(:,e) = [ Blk_Ux(i,j, b), Blk_Uy(i,j, b), 0.0_wp ]  ! Velocity
                     md%IData(e,1) = Blk(b)%Level    ! Level
                     md%IData(e,2) = b               ! Block
                 END DO

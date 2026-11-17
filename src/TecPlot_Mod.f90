@@ -12,7 +12,7 @@ CONTAINS
 
 SUBROUTINE TecPlot_CellCenter( Time )
     USE Config_Mod, ONLY: nx, ny, L0
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Physics_Mod, ONLY: Sigma, D
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time    ! physical time written into the zone header
@@ -64,14 +64,14 @@ SUBROUTINE TecPlot_CellCenter( Time )
             X(N) = Blk(b)%I * dx * nx + dx * (I-1)
             Y(N) = Blk(b)%J * dx * ny + dx * (J-1)
 
-            c(N) = 0.25_wp * ( Blk(b)%C(i-1,j-1) + Blk(b)%C(i,j-1) &
-                            + Blk(b)%C(i-1,j  ) + Blk(b)%C(i,j  )) - 0.5_wp
+            c(N) = 0.25_wp * ( Blk_C(i-1,j-1, b) + Blk_C(i,j-1, b) &
+                            + Blk_C(i-1,j  , b) + Blk_C(i,j  , b)) - 0.5_wp
 
             IF( I <= nx .AND. J <= ny ) THEN
-                u(E) = Blk(b)%Ux(I,J) !/U0
-                v(E) = Blk(b)%Uy(I,J) !/U0
+                u(E) = Blk_Ux(I,J, b) !/U0
+                v(E) = Blk_Uy(I,J, b) !/U0
 
-                p(E) = Blk(b)%P(I,J) * 0.5_wp*D/Sigma
+                p(E) = Blk_P(I,J, b) * 0.5_wp*D/Sigma
 
                 connect(1,E) = N
                 connect(2,E) = N + 1

@@ -14,7 +14,7 @@ CONTAINS
 
 SUBROUTINE Fill_Ghost_Cells_C( ng )
     !== fill ng ghost layers of C on all leaf blocks, level by level (coarse first)
-    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_C, Neighbor_of
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: ng
 
@@ -26,7 +26,7 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
             n = LeafByLevel(m)
 
             DO I = 1, 8
-                Nghbr(I) = Blk(n)%nghbr(I)%n
+                Nghbr(I) = Neighbor_of(n, I)
             END DO
 
             IF( Nghbr(1) > 0 ) CALL Fill_Left_C  ( n, L, Nghbr(1), ng )
@@ -41,8 +41,8 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
 
             !   IF( Nghbr(1) < 0 ) apply BC ...
             !   IF( Nghbr(2) < 0 ) apply BC ...
-            IF( Nghbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk(n)%C )
-            IF( Nghbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk(n)%C )
+            IF( Nghbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk_C(:,:,n) )
+            IF( Nghbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk_C(:,:,n) )
 
         END DO
 !$OMP END DO
@@ -54,7 +54,7 @@ END
 
 SUBROUTINE Fill_Left_C( n, L, N1, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N1, ng
 
@@ -67,21 +67,21 @@ SUBROUTINE Fill_Left_C( n, L, N1, ng )
 
         IF( Blk(N1)%IsLeaf ) THEN
             DO j=1,ny
-                Blk(n)%C(1-ng:0,j) = Blk(N1)%C(nx+1-ng:nx,j)
+                Blk_C(1-ng:0,j, n) = Blk_C(nx+1-ng:nx,j, N1)
             END DO
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N1)%child(1)
             DO J = 1,    ny
             DO I = nx-1-ng, nx
-                C(nx-I+1,J   ) = Blk(child+1)%C(I,J)
-                C(nx-I+1,J+ny) = Blk(child+3)%C(I,J)
+                C(nx-I+1,J   ) = Blk_C(I,J, child+1)
+                C(nx-I+1,J+ny) = Blk_C(I,J, child+3)
             END DO
             END DO
         !========================================================
 
             CALL Biquadratic_from_Fine( 2+ng,2*ny, ng,ny, C, Cg )
-            Blk(n)%C(0:1-ng:-1,1:ny) = Cg
+            Blk_C(0:1-ng:-1,1:ny, n) = Cg
 
         END IF
 
@@ -90,11 +90,11 @@ SUBROUTINE Fill_Left_C( n, L, N1, ng )
         Y = (ny/2) * MOD(Blk(n)%J,2)
 
         DO j = 0, ny/2 + 1
-            C2(2:0:-1,j) = Blk(N1)%C(nx-1:nx+1,j+Y)
+            C2(2:0:-1,j) = Blk_C(nx-1:nx+1,j+Y, N1)
         END DO
 
         CALL Biquadratic_from_Coarse( 3,ny/2+2, ng,ny, C2, Cg )
-        Blk(n)%C(0:1-ng:-1,1:ny) = Cg
+        Blk_C(0:1-ng:-1,1:ny, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_C: ", n, N1, L, L_nbr
@@ -106,7 +106,7 @@ END
 
 SUBROUTINE Fill_Right_C( n, L, N2, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N2, ng
 
@@ -119,21 +119,21 @@ SUBROUTINE Fill_Right_C( n, L, N2, ng )
 
         IF( Blk(N2)%IsLeaf ) THEN
             DO j=1,ny
-                Blk(n)%C(nx+1:nx+ng,j) = Blk(N2)%C(1:ng,j)
+                Blk_C(nx+1:nx+ng,j, n) = Blk_C(1:ng,j, N2)
             END DO
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N2)%child(1)
             DO J = 1, ny
             DO I = 1, 2+ng
-                C(I,J   ) = Blk(child  )%C(I,J)
-                C(I,J+ny) = Blk(child+2)%C(I,J)
+                C(I,J   ) = Blk_C(I,J, child  )
+                C(I,J+ny) = Blk_C(I,J, child+2)
             END DO
             END DO
         !==============================================
 
             CALL Biquadratic_from_Fine( 2+ng,2*ny, ng,ny, C, Cg )
-            Blk(n)%C(nx+1:nx+ng,1:ny) = Cg
+            Blk_C(nx+1:nx+ng,1:ny, n) = Cg
 
         END IF
 
@@ -142,11 +142,11 @@ SUBROUTINE Fill_Right_C( n, L, N2, ng )
         Y = (ny/2) * MOD(Blk(n)%J,2)
 
         DO j = 0, ny/2 + 1
-            C2(0:2,j) = Blk(N2)%C(0:2,j+Y)
+            C2(0:2,j) = Blk_C(0:2,j+Y, N2)
         END DO
 
         CALL Biquadratic_from_Coarse( 3,ny/2+2, ng,ny, C2, Cg )
-        Blk(n)%C(nx+1:nx+ng,1:ny) = Cg
+        Blk_C(nx+1:nx+ng,1:ny, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_C: ", n, N2, L, L_nbr
@@ -158,7 +158,7 @@ END
 
 SUBROUTINE Fill_Bottom_C( n, L, N3, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N3, ng
 
@@ -171,21 +171,21 @@ SUBROUTINE Fill_Bottom_C( n, L, N3, ng )
 
         IF( Blk(N3)%IsLeaf ) THEN
             DO i=1,nx
-                Blk(n)%C(i,1-ng:0) = Blk(N3)%C(i,ny+1-ng:ny)
+                Blk_C(i,1-ng:0, n) = Blk_C(i,ny+1-ng:ny, N3)
             END DO
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N3)%child(1)
             DO J = ny-1-ng, ny
             DO I = 1,    nx
-                C(I   ,ny-J+1) = Blk(child+2)%C(I,J)
-                C(I+nx,ny-J+1) = Blk(child+3)%C(I,J)
+                C(I   ,ny-J+1) = Blk_C(I,J, child+2)
+                C(I+nx,ny-J+1) = Blk_C(I,J, child+3)
             END DO
             END DO
         !============================================
 
             CALL Biquadratic_from_Fine( 2*nx,2+ng, nx,ng, C, Cg )
-            Blk(n)%C(1:nx,0:1-ng:-1) = Cg
+            Blk_C(1:nx,0:1-ng:-1, n) = Cg
 
         END IF
 
@@ -194,11 +194,11 @@ SUBROUTINE Fill_Bottom_C( n, L, N3, ng )
         X = (nx/2) * MOD(Blk(n)%I,2)
 
         DO i = 0, nx/2 + 1
-            C2(i,2:0:-1) = Blk(N3)%C(i+X,ny-1:ny+1)
+            C2(i,2:0:-1) = Blk_C(i+X,ny-1:ny+1, N3)
         END DO
 
         CALL Biquadratic_from_Coarse( nx/2+2,3, nx,ng, C2, Cg )
-        Blk(n)%C(1:nx,0:1-ng:-1) = Cg
+        Blk_C(1:nx,0:1-ng:-1, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Bottom_C: ", n, N3, L, L_nbr
@@ -210,7 +210,7 @@ END
 
 SUBROUTINE Fill_Top_C( n, L, N4, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N4, ng
 
@@ -223,21 +223,21 @@ SUBROUTINE Fill_Top_C( n, L, N4, ng )
 
         IF( Blk(N4)%IsLeaf ) THEN
             DO i=1,nx
-                Blk(n)%C(i,ny+1:ny+ng) = Blk(N4)%C(i,1:ng)
+                Blk_C(i,ny+1:ny+ng, n) = Blk_C(i,1:ng, N4)
             END DO
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N4)%child(1)
             DO J = 1, 2+ng
             DO I = 1, nx
-                C(I   ,J) = Blk(child  )%C(I,J)
-                C(I+nx,J) = Blk(child+1)%C(I,J)
+                C(I   ,J) = Blk_C(I,J, child  )
+                C(I+nx,J) = Blk_C(I,J, child+1)
             END DO
             END DO
         !==============================================
 
             CALL Biquadratic_from_Fine( 2*nx,2+ng, nx,ng, C, Cg )
-            Blk(n)%C(1:nx,ny+1:ny+ng) = Cg
+            Blk_C(1:nx,ny+1:ny+ng, n) = Cg
 
         END IF
 
@@ -246,11 +246,11 @@ SUBROUTINE Fill_Top_C( n, L, N4, ng )
         X = (nx/2) * MOD(Blk(n)%I,2)
 
         DO i = 0, nx/2 + 1
-            C2(i,0:2) = Blk(N4)%C(i+X,0:2)
+            C2(i,0:2) = Blk_C(i+X,0:2, N4)
         END DO
 
         CALL Biquadratic_from_Coarse( nx/2+2,3, nx,ng, C2, Cg )
-        Blk(n)%C(1:nx,ny+1:ny+ng) = Cg
+        Blk_C(1:nx,ny+1:ny+ng, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Top_C: ", n, N4, L, L_nbr
@@ -262,7 +262,7 @@ END
 
 SUBROUTINE Fill_Left_Bottom_C( n, L, N5, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N5, ng
 
@@ -274,19 +274,19 @@ SUBROUTINE Fill_Left_Bottom_C( n, L, N5, ng )
     IF( L == L_nbr ) THEN
 
         IF( Blk(N5)%IsLeaf ) THEN
-            Blk(n)%C(1-ng:0,1-ng:0) = Blk(N5)%C(nx+1-ng:nx,ny+1-ng:ny)
+            Blk_C(1-ng:0,1-ng:0, n) = Blk_C(nx+1-ng:nx,ny+1-ng:ny, N5)
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N5)%child(1)
             DO J = ny-1-ng, ny
             DO I = nx-1-ng, nx
-                C(nx-I+1,ny-J+1) = Blk(child+3)%C(I,J)
+                C(nx-I+1,ny-J+1) = Blk_C(I,J, child+3)
             END DO
             END DO
         !========================================================
 
             CALL Biquadratic_from_Fine( 2+ng,2+ng, ng,ng, C, Cg )
-            Blk(n)%C(0:1-ng:-1,0:1-ng:-1) = Cg
+            Blk_C(0:1-ng:-1,0:1-ng:-1, n) = Cg
 
         END IF
 
@@ -295,10 +295,10 @@ SUBROUTINE Fill_Left_Bottom_C( n, L, N5, ng )
         I = nx - (nx/2) * MOD(Blk(n)%I,2) - 1
         J = ny - (ny/2) * MOD(Blk(n)%J,2) - 1
 
-        C2(2:0:-1,2:0:-1) = Blk(N5)%C(I:I+2,J:J+2)
+        C2(2:0:-1,2:0:-1) = Blk_C(I:I+2,J:J+2, N5)
 
         CALL Biquadratic_from_Coarse( 3,3, ng,ng, C2, Cg )
-        Blk(n)%C(0:1-ng:-1,0:1-ng:-1) = Cg
+        Blk_C(0:1-ng:-1,0:1-ng:-1, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_Bottom_C: ", n, N5, L, L_nbr
@@ -310,7 +310,7 @@ END
 
 SUBROUTINE Fill_Left_Top_C( n, L, N6, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N6, ng
 
@@ -322,19 +322,19 @@ SUBROUTINE Fill_Left_Top_C( n, L, N6, ng )
     IF( L == L_nbr ) THEN
 
         IF( Blk(N6)%IsLeaf ) THEN
-            Blk(n)%C(1-ng:0,ny+1:ny+ng) = Blk(N6)%C(nx+1-ng:nx,1:ng)
+            Blk_C(1-ng:0,ny+1:ny+ng, n) = Blk_C(nx+1-ng:nx,1:ng, N6)
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N6)%child(1)
             DO J = 1,    2+ng
             DO I = nx-1-ng, nx
-                C(nx-I+1,J) = Blk(child+1)%C(I,J)
+                C(nx-I+1,J) = Blk_C(I,J, child+1)
             END DO
             END DO
         !========================================================
 
             CALL Biquadratic_from_Fine( 2+ng,2+ng, ng,ng, C, Cg )
-            Blk(n)%C(0:1-ng:-1,ny+1:ny+ng) = Cg
+            Blk_C(0:1-ng:-1,ny+1:ny+ng, n) = Cg
 
         END IF
 
@@ -343,10 +343,10 @@ SUBROUTINE Fill_Left_Top_C( n, L, N6, ng )
         I = nx   - (nx/2) * MOD(Blk(n)%I,2) - 1
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
 
-        C2(2:0:-1,0:2) = Blk(N6)%C(I:I+2,J:J+2)
+        C2(2:0:-1,0:2) = Blk_C(I:I+2,J:J+2, N6)
 
         CALL Biquadratic_from_Coarse( 3,3, ng,ng, C2, Cg )
-        Blk(n)%C(0:1-ng:-1,ny+1:ny+ng) = Cg
+        Blk_C(0:1-ng:-1,ny+1:ny+ng, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_Top_C: ", n, N6, L, L_nbr
@@ -358,7 +358,7 @@ END
 
 SUBROUTINE Fill_Right_Bottom_C( n, L, N7, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N7, ng
 
@@ -370,19 +370,19 @@ SUBROUTINE Fill_Right_Bottom_C( n, L, N7, ng )
     IF( L == L_nbr ) THEN
 
         IF( Blk(N7)%IsLeaf ) THEN
-            Blk(n)%C(nx+1:nx+ng,1-ng:0) = Blk(N7)%C(1:ng,ny+1-ng:ny)
+            Blk_C(nx+1:nx+ng,1-ng:0, n) = Blk_C(1:ng,ny+1-ng:ny, N7)
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N7)%child(1)
             DO J = ny-1-ng, ny
             DO I = 1,    2+ng
-                C(I,ny-J+1) = Blk(child+2)%C(I,J)
+                C(I,ny-J+1) = Blk_C(I,J, child+2)
             END DO
             END DO
         !========================================================
 
             CALL Biquadratic_from_Fine( 2+ng,2+ng, ng,ng, C, Cg )
-            Blk(n)%C(nx+1:nx+ng,0:1-ng:-1) = Cg
+            Blk_C(nx+1:nx+ng,0:1-ng:-1, n) = Cg
 
         END IF
 
@@ -391,10 +391,10 @@ SUBROUTINE Fill_Right_Bottom_C( n, L, N7, ng )
         I = nx/2 - (nx/2) * MOD(Blk(n)%I,2)
         J = ny   - (ny/2) * MOD(Blk(n)%J,2) - 1
 
-        C2(0:2,2:0:-1) = Blk(N7)%C(I:I+2,J:J+2)
+        C2(0:2,2:0:-1) = Blk_C(I:I+2,J:J+2, N7)
 
         CALL Biquadratic_from_Coarse( 3,3, ng,ng, C2, Cg )
-        Blk(n)%C(nx+1:nx+ng,0:1-ng:-1) = Cg
+        Blk_C(nx+1:nx+ng,0:1-ng:-1, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_Bottom_C: ", n, N7, L, L_nbr
@@ -406,7 +406,7 @@ END
 
 SUBROUTINE Fill_Right_Top_C( n, L, N8, ng )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N8, ng
 
@@ -418,19 +418,19 @@ SUBROUTINE Fill_Right_Top_C( n, L, N8, ng )
     IF( L == L_nbr ) THEN
 
         IF( Blk(N8)%IsLeaf ) THEN
-            Blk(n)%C(nx+1:nx+ng,ny+1:ny+ng) = Blk(N8)%C(1:ng,1:ng)
+            Blk_C(nx+1:nx+ng,ny+1:ny+ng, n) = Blk_C(1:ng,1:ng, N8)
         ELSE
         !== saving neighbor's children data to temporary arrays
             child = Blk(N8)%child(1)
             DO J = 1, 2+ng
             DO I = 1, 2+ng
-                C(I,J) = Blk(child)%C(I,J)
+                C(I,J) = Blk_C(I,J, child)
             END DO
             END DO
         !========================================================
 
             CALL Biquadratic_from_Fine( 2+ng,2+ng, ng,ng, C, Cg )
-            Blk(n)%C(nx+1:nx+ng,ny+1:ny+ng) = Cg
+            Blk_C(nx+1:nx+ng,ny+1:ny+ng, n) = Cg
 
         END IF
 
@@ -439,10 +439,10 @@ SUBROUTINE Fill_Right_Top_C( n, L, N8, ng )
         I = nx/2 - (nx/2) * MOD(Blk(n)%I,2)
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
 
-        C2(0:2,0:2) = Blk(N8)%C(I:I+2,J:J+2)
+        C2(0:2,0:2) = Blk_C(I:I+2,J:J+2, N8)
 
         CALL Biquadratic_from_Coarse( 3,3, ng,ng, C2, Cg )
-        Blk(n)%C(nx+1:nx+ng,ny+1:ny+ng) = Cg
+        Blk_C(nx+1:nx+ng,ny+1:ny+ng, n) = Cg
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_Top_C: ", n, N8, L, L_nbr

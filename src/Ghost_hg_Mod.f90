@@ -20,7 +20,7 @@ CONTAINS
 
 
 SUBROUTINE Fill_Ghost_Cells_hg
-    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
+    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart, Blk_h, Blk_g, Neighbor_of
     IMPLICIT NONE
 
     INTEGER :: L, I, m, n, Nghbr(8)
@@ -31,7 +31,7 @@ SUBROUTINE Fill_Ghost_Cells_hg
             n = LeafByLevel(m)
 
             DO I = 1, 8
-                Nghbr(I) = Blk(n)%nghbr(I)%n
+                Nghbr(I) = Neighbor_of(n, I)
             END DO
 
             IF( Nghbr(1) > 0 ) CALL Fill_Left_hg  ( n, L, Nghbr(1) )
@@ -51,12 +51,12 @@ SUBROUTINE Fill_Ghost_Cells_hg
             !       apply BC ...
             !   END IF
             IF( Nghbr(3) < 0 ) THEN
-                CALL Bounce_Back_3( Blk(n)%h )
-                CALL Bounce_Back_3( Blk(n)%g )
+                CALL Bounce_Back_3( Blk_h(:,:,:,n) )
+                CALL Bounce_Back_3( Blk_g(:,:,:,n) )
             END IF
             IF( Nghbr(4) < 0 ) THEN
-                CALL Bounce_Back_4( Blk(n)%h )
-                CALL Bounce_Back_4( Blk(n)%g )
+                CALL Bounce_Back_4( Blk_h(:,:,:,n) )
+                CALL Bounce_Back_4( Blk_g(:,:,:,n) )
             END IF
 
         END DO
@@ -69,7 +69,7 @@ END
 
 SUBROUTINE Fill_Left_hg( n, L, N1 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N1
 
     INTEGER :: child, Y
@@ -79,16 +79,16 @@ SUBROUTINE Fill_Left_hg( n, L, N1 )
     IF( L == Blk(N1)%Level ) THEN
 
         IF( Blk(N1)%IsLeaf ) THEN
-            Blk(n)%h(0,1:ny,2:9) = Blk(N1)%h(nx,1:ny,2:9)
-            Blk(n)%g(0,1:ny,2:9) = Blk(N1)%g(nx,1:ny,2:9)
+            Blk_h(0,1:ny,2:9, n) = Blk_h(nx,1:ny,2:9, N1)
+            Blk_g(0,1:ny,2:9, n) = Blk_g(nx,1:ny,2:9, N1)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N1)%child(1)
-        h(3:1:-1,   1:  ny,:) = Blk(child+1)%h(nx-2:nx,1:ny,2:9)
-        h(3:1:-1,ny+1:2*ny,:) = Blk(child+3)%h(nx-2:nx,1:ny,2:9)
-        g(3:1:-1,   1:  ny,:) = Blk(child+1)%g(nx-2:nx,1:ny,2:9)
-        g(3:1:-1,ny+1:2*ny,:) = Blk(child+3)%g(nx-2:nx,1:ny,2:9)
+        h(3:1:-1,   1:  ny,:) = Blk_h(nx-2:nx,1:ny,2:9, child+1)
+        h(3:1:-1,ny+1:2*ny,:) = Blk_h(nx-2:nx,1:ny,2:9, child+3)
+        g(3:1:-1,   1:  ny,:) = Blk_g(nx-2:nx,1:ny,2:9, child+1)
+        g(3:1:-1,ny+1:2*ny,:) = Blk_g(nx-2:nx,1:ny,2:9, child+3)
         CALL From_Fine_LR( h, bh )
         CALL From_Fine_LR( g, bg )
 
@@ -96,8 +96,8 @@ SUBROUTINE Fill_Left_hg( n, L, N1 )
 
         !== the neighbour is coarser: interpolate its strip
         Y = (ny/2) * MOD(Blk(n)%J,2)
-        H2(2:0:-1,:,:) = Blk(N1)%h(nx-1:nx+1,Y:Y+ny/2+1,2:9)
-        G2(2:0:-1,:,:) = Blk(N1)%g(nx-1:nx+1,Y:Y+ny/2+1,2:9)
+        H2(2:0:-1,:,:) = Blk_h(nx-1:nx+1,Y:Y+ny/2+1,2:9, N1)
+        G2(2:0:-1,:,:) = Blk_g(nx-1:nx+1,Y:Y+ny/2+1,2:9, N1)
         CALL From_Coarse_LR( H2, bh )
         CALL From_Coarse_LR( G2, bg )
 
@@ -106,8 +106,8 @@ SUBROUTINE Fill_Left_hg( n, L, N1 )
         RETURN
     END IF
 
-    Blk(n)%h(0,1:ny,2:9) = bh(1,:,:)
-    Blk(n)%g(0,1:ny,2:9) = bg(1,:,:)
+    Blk_h(0,1:ny,2:9, n) = bh(1,:,:)
+    Blk_g(0,1:ny,2:9, n) = bg(1,:,:)
 
 END SUBROUTINE Fill_Left_hg
 
@@ -115,7 +115,7 @@ END SUBROUTINE Fill_Left_hg
 
 SUBROUTINE Fill_Right_hg( n, L, N2 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N2
 
     INTEGER :: child, Y
@@ -125,16 +125,16 @@ SUBROUTINE Fill_Right_hg( n, L, N2 )
     IF( L == Blk(N2)%Level ) THEN
 
         IF( Blk(N2)%IsLeaf ) THEN
-            Blk(n)%h(nx+1,1:ny,2:9) = Blk(N2)%h(1,1:ny,2:9)
-            Blk(n)%g(nx+1,1:ny,2:9) = Blk(N2)%g(1,1:ny,2:9)
+            Blk_h(nx+1,1:ny,2:9, n) = Blk_h(1,1:ny,2:9, N2)
+            Blk_g(nx+1,1:ny,2:9, n) = Blk_g(1,1:ny,2:9, N2)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N2)%child(1)
-        h(:,   1:  ny,:) = Blk(child  )%h(1:3,1:ny,2:9)
-        h(:,ny+1:2*ny,:) = Blk(child+2)%h(1:3,1:ny,2:9)
-        g(:,   1:  ny,:) = Blk(child  )%g(1:3,1:ny,2:9)
-        g(:,ny+1:2*ny,:) = Blk(child+2)%g(1:3,1:ny,2:9)
+        h(:,   1:  ny,:) = Blk_h(1:3,1:ny,2:9, child  )
+        h(:,ny+1:2*ny,:) = Blk_h(1:3,1:ny,2:9, child+2)
+        g(:,   1:  ny,:) = Blk_g(1:3,1:ny,2:9, child  )
+        g(:,ny+1:2*ny,:) = Blk_g(1:3,1:ny,2:9, child+2)
         CALL From_Fine_LR( h, bh )
         CALL From_Fine_LR( g, bg )
 
@@ -142,8 +142,8 @@ SUBROUTINE Fill_Right_hg( n, L, N2 )
 
         !== the neighbour is coarser: interpolate its strip
         Y = (ny/2) * MOD(Blk(n)%J,2)
-        H2(:,:,:) = Blk(N2)%h(0:2,Y:Y+ny/2+1,2:9)
-        G2(:,:,:) = Blk(N2)%g(0:2,Y:Y+ny/2+1,2:9)
+        H2(:,:,:) = Blk_h(0:2,Y:Y+ny/2+1,2:9, N2)
+        G2(:,:,:) = Blk_g(0:2,Y:Y+ny/2+1,2:9, N2)
         CALL From_Coarse_LR( H2, bh )
         CALL From_Coarse_LR( G2, bg )
 
@@ -152,8 +152,8 @@ SUBROUTINE Fill_Right_hg( n, L, N2 )
         RETURN
     END IF
 
-    Blk(n)%h(nx+1,1:ny,2:9) = bh(1,:,:)
-    Blk(n)%g(nx+1,1:ny,2:9) = bg(1,:,:)
+    Blk_h(nx+1,1:ny,2:9, n) = bh(1,:,:)
+    Blk_g(nx+1,1:ny,2:9, n) = bg(1,:,:)
 
 END SUBROUTINE Fill_Right_hg
 
@@ -161,7 +161,7 @@ END SUBROUTINE Fill_Right_hg
 
 SUBROUTINE Fill_Bottom_hg( n, L, N3 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N3
 
     INTEGER :: child, X
@@ -171,16 +171,16 @@ SUBROUTINE Fill_Bottom_hg( n, L, N3 )
     IF( L == Blk(N3)%Level ) THEN
 
         IF( Blk(N3)%IsLeaf ) THEN
-            Blk(n)%h(1:nx,0,2:9) = Blk(N3)%h(1:nx,ny,2:9)
-            Blk(n)%g(1:nx,0,2:9) = Blk(N3)%g(1:nx,ny,2:9)
+            Blk_h(1:nx,0,2:9, n) = Blk_h(1:nx,ny,2:9, N3)
+            Blk_g(1:nx,0,2:9, n) = Blk_g(1:nx,ny,2:9, N3)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N3)%child(1)
-        h(   1:  nx,3:1:-1,:) = Blk(child+2)%h(1:nx,ny-2:ny,2:9)
-        h(nx+1:2*nx,3:1:-1,:) = Blk(child+3)%h(1:nx,ny-2:ny,2:9)
-        g(   1:  nx,3:1:-1,:) = Blk(child+2)%g(1:nx,ny-2:ny,2:9)
-        g(nx+1:2*nx,3:1:-1,:) = Blk(child+3)%g(1:nx,ny-2:ny,2:9)
+        h(   1:  nx,3:1:-1,:) = Blk_h(1:nx,ny-2:ny,2:9, child+2)
+        h(nx+1:2*nx,3:1:-1,:) = Blk_h(1:nx,ny-2:ny,2:9, child+3)
+        g(   1:  nx,3:1:-1,:) = Blk_g(1:nx,ny-2:ny,2:9, child+2)
+        g(nx+1:2*nx,3:1:-1,:) = Blk_g(1:nx,ny-2:ny,2:9, child+3)
         CALL From_Fine_BT( h, bh )
         CALL From_Fine_BT( g, bg )
 
@@ -188,8 +188,8 @@ SUBROUTINE Fill_Bottom_hg( n, L, N3 )
 
         !== the neighbour is coarser: interpolate its strip
         X = (nx/2) * MOD(Blk(n)%I,2)
-        H2(:,2:0:-1,:) = Blk(N3)%h(X:X+nx/2+1,ny-1:ny+1,2:9)
-        G2(:,2:0:-1,:) = Blk(N3)%g(X:X+nx/2+1,ny-1:ny+1,2:9)
+        H2(:,2:0:-1,:) = Blk_h(X:X+nx/2+1,ny-1:ny+1,2:9, N3)
+        G2(:,2:0:-1,:) = Blk_g(X:X+nx/2+1,ny-1:ny+1,2:9, N3)
         CALL From_Coarse_BT( H2, bh )
         CALL From_Coarse_BT( G2, bg )
 
@@ -198,8 +198,8 @@ SUBROUTINE Fill_Bottom_hg( n, L, N3 )
         RETURN
     END IF
 
-    Blk(n)%h(1:nx,0,2:9) = bh(:,1,:)
-    Blk(n)%g(1:nx,0,2:9) = bg(:,1,:)
+    Blk_h(1:nx,0,2:9, n) = bh(:,1,:)
+    Blk_g(1:nx,0,2:9, n) = bg(:,1,:)
 
 END SUBROUTINE Fill_Bottom_hg
 
@@ -207,7 +207,7 @@ END SUBROUTINE Fill_Bottom_hg
 
 SUBROUTINE Fill_Top_hg( n, L, N4 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N4
 
     INTEGER :: child, X
@@ -217,16 +217,16 @@ SUBROUTINE Fill_Top_hg( n, L, N4 )
     IF( L == Blk(N4)%Level ) THEN
 
         IF( Blk(N4)%IsLeaf ) THEN
-            Blk(n)%h(1:nx,ny+1,2:9) = Blk(N4)%h(1:nx,1,2:9)
-            Blk(n)%g(1:nx,ny+1,2:9) = Blk(N4)%g(1:nx,1,2:9)
+            Blk_h(1:nx,ny+1,2:9, n) = Blk_h(1:nx,1,2:9, N4)
+            Blk_g(1:nx,ny+1,2:9, n) = Blk_g(1:nx,1,2:9, N4)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N4)%child(1)
-        h(   1:  nx,:,:) = Blk(child  )%h(1:nx,1:3,2:9)
-        h(nx+1:2*nx,:,:) = Blk(child+1)%h(1:nx,1:3,2:9)
-        g(   1:  nx,:,:) = Blk(child  )%g(1:nx,1:3,2:9)
-        g(nx+1:2*nx,:,:) = Blk(child+1)%g(1:nx,1:3,2:9)
+        h(   1:  nx,:,:) = Blk_h(1:nx,1:3,2:9, child  )
+        h(nx+1:2*nx,:,:) = Blk_h(1:nx,1:3,2:9, child+1)
+        g(   1:  nx,:,:) = Blk_g(1:nx,1:3,2:9, child  )
+        g(nx+1:2*nx,:,:) = Blk_g(1:nx,1:3,2:9, child+1)
         CALL From_Fine_BT( h, bh )
         CALL From_Fine_BT( g, bg )
 
@@ -234,8 +234,8 @@ SUBROUTINE Fill_Top_hg( n, L, N4 )
 
         !== the neighbour is coarser: interpolate its strip
         X = (nx/2) * MOD(Blk(n)%I,2)
-        H2(:,:,:) = Blk(N4)%h(X:X+nx/2+1,0:2,2:9)
-        G2(:,:,:) = Blk(N4)%g(X:X+nx/2+1,0:2,2:9)
+        H2(:,:,:) = Blk_h(X:X+nx/2+1,0:2,2:9, N4)
+        G2(:,:,:) = Blk_g(X:X+nx/2+1,0:2,2:9, N4)
         CALL From_Coarse_BT( H2, bh )
         CALL From_Coarse_BT( G2, bg )
 
@@ -244,8 +244,8 @@ SUBROUTINE Fill_Top_hg( n, L, N4 )
         RETURN
     END IF
 
-    Blk(n)%h(1:nx,ny+1,2:9) = bh(:,1,:)
-    Blk(n)%g(1:nx,ny+1,2:9) = bg(:,1,:)
+    Blk_h(1:nx,ny+1,2:9, n) = bh(:,1,:)
+    Blk_g(1:nx,ny+1,2:9, n) = bg(:,1,:)
 
 END SUBROUTINE Fill_Top_hg
 
@@ -253,7 +253,7 @@ END SUBROUTINE Fill_Top_hg
 
 SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N5
 
     INTEGER :: child, I, J
@@ -263,14 +263,14 @@ SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
     IF( L == Blk(N5)%Level ) THEN
 
         IF( Blk(N5)%IsLeaf ) THEN
-            Blk(n)%h(0,0,2:9) = Blk(N5)%h(nx,ny,2:9)
-            Blk(n)%g(0,0,2:9) = Blk(N5)%g(nx,ny,2:9)
+            Blk_h(0,0,2:9, n) = Blk_h(nx,ny,2:9, N5)
+            Blk_g(0,0,2:9, n) = Blk_g(nx,ny,2:9, N5)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N5)%child(1)
-        h(3:1:-1,3:1:-1,:) = Blk(child+3)%h(nx-2:nx,ny-2:ny,2:9)
-        g(3:1:-1,3:1:-1,:) = Blk(child+3)%g(nx-2:nx,ny-2:ny,2:9)
+        h(3:1:-1,3:1:-1,:) = Blk_h(nx-2:nx,ny-2:ny,2:9, child+3)
+        g(3:1:-1,3:1:-1,:) = Blk_g(nx-2:nx,ny-2:ny,2:9, child+3)
         CALL From_Fine_Corner( h, bh )
         CALL From_Fine_Corner( g, bg )
 
@@ -279,8 +279,8 @@ SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
         !== the neighbour is coarser: interpolate its strip
         I = nx - (nx/2) * MOD(Blk(n)%I,2) - 1
         J = ny - (ny/2) * MOD(Blk(n)%J,2) - 1
-        H2(2:0:-1,2:0:-1,:) = Blk(N5)%h(I:I+2,J:J+2,2:9)
-        G2(2:0:-1,2:0:-1,:) = Blk(N5)%g(I:I+2,J:J+2,2:9)
+        H2(2:0:-1,2:0:-1,:) = Blk_h(I:I+2,J:J+2,2:9, N5)
+        G2(2:0:-1,2:0:-1,:) = Blk_g(I:I+2,J:J+2,2:9, N5)
         CALL From_Coarse_Corner( H2, bh )
         CALL From_Coarse_Corner( G2, bg )
 
@@ -289,8 +289,8 @@ SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
         RETURN
     END IF
 
-    Blk(n)%h(0,0,2:9) = bh(1,1,:)
-    Blk(n)%g(0,0,2:9) = bg(1,1,:)
+    Blk_h(0,0,2:9, n) = bh(1,1,:)
+    Blk_g(0,0,2:9, n) = bg(1,1,:)
 
 END SUBROUTINE Fill_Left_Bottom_hg
 
@@ -298,7 +298,7 @@ END SUBROUTINE Fill_Left_Bottom_hg
 
 SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N6
 
     INTEGER :: child, I, J
@@ -308,14 +308,14 @@ SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
     IF( L == Blk(N6)%Level ) THEN
 
         IF( Blk(N6)%IsLeaf ) THEN
-            Blk(n)%h(0,ny+1,2:9) = Blk(N6)%h(nx,1,2:9)
-            Blk(n)%g(0,ny+1,2:9) = Blk(N6)%g(nx,1,2:9)
+            Blk_h(0,ny+1,2:9, n) = Blk_h(nx,1,2:9, N6)
+            Blk_g(0,ny+1,2:9, n) = Blk_g(nx,1,2:9, N6)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N6)%child(1)
-        h(3:1:-1,:,:) = Blk(child+1)%h(nx-2:nx,1:3,2:9)
-        g(3:1:-1,:,:) = Blk(child+1)%g(nx-2:nx,1:3,2:9)
+        h(3:1:-1,:,:) = Blk_h(nx-2:nx,1:3,2:9, child+1)
+        g(3:1:-1,:,:) = Blk_g(nx-2:nx,1:3,2:9, child+1)
         CALL From_Fine_Corner( h, bh )
         CALL From_Fine_Corner( g, bg )
 
@@ -324,8 +324,8 @@ SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
         !== the neighbour is coarser: interpolate its strip
         I = nx   - (nx/2) * MOD(Blk(n)%I,2) - 1
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
-        H2(2:0:-1,:,:) = Blk(N6)%h(I:I+2,J:J+2,2:9)
-        G2(2:0:-1,:,:) = Blk(N6)%g(I:I+2,J:J+2,2:9)
+        H2(2:0:-1,:,:) = Blk_h(I:I+2,J:J+2,2:9, N6)
+        G2(2:0:-1,:,:) = Blk_g(I:I+2,J:J+2,2:9, N6)
         CALL From_Coarse_Corner( H2, bh )
         CALL From_Coarse_Corner( G2, bg )
 
@@ -334,8 +334,8 @@ SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
         RETURN
     END IF
 
-    Blk(n)%h(0,ny+1,2:9) = bh(1,1,:)
-    Blk(n)%g(0,ny+1,2:9) = bg(1,1,:)
+    Blk_h(0,ny+1,2:9, n) = bh(1,1,:)
+    Blk_g(0,ny+1,2:9, n) = bg(1,1,:)
 
 END SUBROUTINE Fill_Left_Top_hg
 
@@ -343,7 +343,7 @@ END SUBROUTINE Fill_Left_Top_hg
 
 SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N7
 
     INTEGER :: child, I, J
@@ -353,14 +353,14 @@ SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
     IF( L == Blk(N7)%Level ) THEN
 
         IF( Blk(N7)%IsLeaf ) THEN
-            Blk(n)%h(nx+1,0,2:9) = Blk(N7)%h(1,ny,2:9)
-            Blk(n)%g(nx+1,0,2:9) = Blk(N7)%g(1,ny,2:9)
+            Blk_h(nx+1,0,2:9, n) = Blk_h(1,ny,2:9, N7)
+            Blk_g(nx+1,0,2:9, n) = Blk_g(1,ny,2:9, N7)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N7)%child(1)
-        h(:,3:1:-1,:) = Blk(child+2)%h(1:3,ny-2:ny,2:9)
-        g(:,3:1:-1,:) = Blk(child+2)%g(1:3,ny-2:ny,2:9)
+        h(:,3:1:-1,:) = Blk_h(1:3,ny-2:ny,2:9, child+2)
+        g(:,3:1:-1,:) = Blk_g(1:3,ny-2:ny,2:9, child+2)
         CALL From_Fine_Corner( h, bh )
         CALL From_Fine_Corner( g, bg )
 
@@ -369,8 +369,8 @@ SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
         !== the neighbour is coarser: interpolate its strip
         I = nx/2 - (nx/2) * MOD(Blk(n)%I,2)
         J = ny   - (ny/2) * MOD(Blk(n)%J,2) - 1
-        H2(:,2:0:-1,:) = Blk(N7)%h(I:I+2,J:J+2,2:9)
-        G2(:,2:0:-1,:) = Blk(N7)%g(I:I+2,J:J+2,2:9)
+        H2(:,2:0:-1,:) = Blk_h(I:I+2,J:J+2,2:9, N7)
+        G2(:,2:0:-1,:) = Blk_g(I:I+2,J:J+2,2:9, N7)
         CALL From_Coarse_Corner( H2, bh )
         CALL From_Coarse_Corner( G2, bg )
 
@@ -379,8 +379,8 @@ SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
         RETURN
     END IF
 
-    Blk(n)%h(nx+1,0,2:9) = bh(1,1,:)
-    Blk(n)%g(nx+1,0,2:9) = bg(1,1,:)
+    Blk_h(nx+1,0,2:9, n) = bh(1,1,:)
+    Blk_g(nx+1,0,2:9, n) = bg(1,1,:)
 
 END SUBROUTINE Fill_Right_Bottom_hg
 
@@ -388,7 +388,7 @@ END SUBROUTINE Fill_Right_Bottom_hg
 
 SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g
     INTEGER, INTENT(IN) :: n, L, N8
 
     INTEGER :: child, I, J
@@ -398,14 +398,14 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
     IF( L == Blk(N8)%Level ) THEN
 
         IF( Blk(N8)%IsLeaf ) THEN
-            Blk(n)%h(nx+1,ny+1,2:9) = Blk(N8)%h(1,1,2:9)
-            Blk(n)%g(nx+1,ny+1,2:9) = Blk(N8)%g(1,1,2:9)
+            Blk_h(nx+1,ny+1,2:9, n) = Blk_h(1,1,2:9, N8)
+            Blk_g(nx+1,ny+1,2:9, n) = Blk_g(1,1,2:9, N8)
             RETURN
         END IF
         !== the neighbour is refined: restrict its children's strip
         child = Blk(N8)%child(1)
-        h(:,:,:) = Blk(child)%h(1:3,1:3,2:9)
-        g(:,:,:) = Blk(child)%g(1:3,1:3,2:9)
+        h(:,:,:) = Blk_h(1:3,1:3,2:9, child)
+        g(:,:,:) = Blk_g(1:3,1:3,2:9, child)
         CALL From_Fine_Corner( h, bh )
         CALL From_Fine_Corner( g, bg )
 
@@ -414,8 +414,8 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
         !== the neighbour is coarser: interpolate its strip
         I = nx/2 - (nx/2) * MOD(Blk(n)%I,2)
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
-        H2(:,:,:) = Blk(N8)%h(I:I+2,J:J+2,2:9)
-        G2(:,:,:) = Blk(N8)%g(I:I+2,J:J+2,2:9)
+        H2(:,:,:) = Blk_h(I:I+2,J:J+2,2:9, N8)
+        G2(:,:,:) = Blk_g(I:I+2,J:J+2,2:9, N8)
         CALL From_Coarse_Corner( H2, bh )
         CALL From_Coarse_Corner( G2, bg )
 
@@ -424,8 +424,8 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
         RETURN
     END IF
 
-    Blk(n)%h(nx+1,ny+1,2:9) = bh(1,1,:)
-    Blk(n)%g(nx+1,ny+1,2:9) = bg(1,1,:)
+    Blk_h(nx+1,ny+1,2:9, n) = bh(1,1,:)
+    Blk_g(nx+1,ny+1,2:9, n) = bg(1,1,:)
 
 END SUBROUTINE Fill_Right_Top_hg
 

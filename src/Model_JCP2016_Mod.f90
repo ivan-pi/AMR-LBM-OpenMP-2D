@@ -40,39 +40,39 @@ END FUNCTION JCP2016_Model
 
 !== refinement criterion: the interface, i.e. the largest |grad C| of block b
 FUNCTION Interface_Error( b ) RESULT( err )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     INTEGER, INTENT(IN) :: b
     REAL(wp) :: err
 
-    err = Max_Gradient( Blk(b)%dx, Blk(b)%C )
+    err = Max_Gradient( Blk(b)%dx, Blk_C(:,:,b) )
 
 END FUNCTION Interface_Error
 
 !**********************************************************************
 
 SUBROUTINE Collide_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Collision_h_g_AMR( Blk(n)%dx, Blk(n)%C, mu, Blk(n)%P, &
-                            Blk(n)%Ux, Blk(n)%Uy, Blk(n)%h, Blk(n)%g )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Collision_h_g_AMR( Blk(n)%dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
+                            Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Collide_Block
 
 !**********************************************************************
 
 SUBROUTINE Moments_g_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk(n)%g, Blk(n)%C, mu, &
-                                   Blk(n)%P, Blk(n)%Ux, Blk(n)%Uy )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
+                                   Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
 
 END SUBROUTINE Moments_g_Block
 
@@ -80,16 +80,16 @@ END SUBROUTINE Moments_g_Block
 
 !== moments of g and collision of one block with one chemical potential
 SUBROUTINE Moments_and_Collide_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk(n)%g, Blk(n)%C, mu, &
-                                   Blk(n)%P, Blk(n)%Ux, Blk(n)%Uy )
-    CALL Collision_h_g_AMR( Blk(n)%dx, Blk(n)%C, mu, Blk(n)%P, &
-                            Blk(n)%Ux, Blk(n)%Uy, Blk(n)%h, Blk(n)%g )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
+                                   Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
+    CALL Collision_h_g_AMR( Blk(n)%dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
+                            Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Moments_and_Collide_Block
 
@@ -97,7 +97,7 @@ END SUBROUTINE Moments_and_Collide_Block
 
 !== equilibrium h and g of block n from C, P, Ux, Uy (no body force)
 SUBROUTINE Initialize_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     INTEGER :: dx, i, j
@@ -107,28 +107,28 @@ SUBROUTINE Initialize_Block( n )
     dx    = Blk(n)%dx
     dRho3 = (Rhoh - Rhol)/3._wp
 
-    CALL Chemical_Potential_AMR( dx, Blk(n)%C, mu )
+    CALL Chemical_Potential_AMR( dx, Blk_C(:,:,n), mu )
 
     DO j = 1, ny
     DO i = 1, nx
 
-        CALL ED_C_AMR( dx, Blk(n)%C(i-1:i+1,j-1:j+1), eDc(:) )
+        CALL ED_C_AMR( dx, Blk_C(i-1:i+1,j-1:j+1, n), eDc(:) )
 
         CALL Gradient_ED_AMR( eDc(:), DcDx, DcDy )
 
         CALL normal_AMR( DcDx, DcDy, ni, nj )
 
-        Rho = Rhol + Blk(n)%C(i,j) * (Rhoh - Rhol)
+        Rho = Rhol + Blk_C(i,j, n) * (Rhoh - Rhol)
 
         Fb = 0  !(Rhoh - Rho) * Gy
 
-        CALL Equilibrium_h_g_AMR( Blk(n)%C(i,j), Blk(n)%Ux(i,j), Blk(n)%Uy(i,j), &
-                                  ni, nj, Gamma(:), Blk(n)%h(i,j,:) )
+        CALL Equilibrium_h_g_AMR( Blk_C(i,j, n), Blk_Ux(i,j, n), Blk_Uy(i,j, n), &
+                                  ni, nj, Gamma(:), Blk_h(i,j,:, n) )
 
         hlp(:) = ( (Gamma(:)-Wa(:))*dRho3 + Gamma(:)*mu(i,j) ) * ( eDc(:) &
-                - (Blk(n)%Ux(i,j)*DcDx + Blk(n)%Uy(i,j)*DcDy) ) + (ey(:)-Blk(n)%Uy(i,j))*Gamma(:) * Fb
+                - (Blk_Ux(i,j, n)*DcDx + Blk_Uy(i,j, n)*DcDy) ) + (ey(:)-Blk_Uy(i,j, n))*Gamma(:) * Fb
 
-        Blk(n)%g(i,j,:) = Blk(n)%P(i,j)*Wa(:) &
+        Blk_g(i,j,:, n) = Blk_P(i,j, n)*Wa(:) &
                          + (Gamma(:)-Wa(:))*Rho/3._wp - 0.5_wp*hlp(:)
 
     END DO

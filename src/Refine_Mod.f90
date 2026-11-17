@@ -95,14 +95,14 @@ END
 !******************************************************************************
 
 RECURSIVE SUBROUTINE Check_Level_Jump( n, I )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Neighbor_of
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: n, I
 
     INTEGER :: b
 
-    b = Blk(n)%nghbr( I )%n
+    b = Neighbor_of(n, I)
 
     IF( b > 0 ) THEN
         IF( .NOT. Blk(b)%Refin .AND. Blk(b)%Level == Blk(n)%Level-1 ) THEN
@@ -188,14 +188,14 @@ SUBROUTINE enforce_1_Level_jump_deref_2D( n )
 CONTAINS
 
     SUBROUTINE Check_Level_Jump_Deref_2D( n, Neighbor, c1, c2 )
-        USE Blocks_Mod, ONLY: Blk
+        USE Blocks_Mod, ONLY: Blk, Neighbor_of
         INTEGER, INTENT(IN) :: n, Neighbor, c1, c2
 
         INTEGER :: b, c, I
 
         IF( .NOT. Blk(n)%Deref ) RETURN
 
-        b = Blk(n)%nghbr( Neighbor )%n
+        b = Neighbor_of(n, Neighbor)
 
         IF( b > 0 ) THEN
             IF( .NOT. Blk(b)%IsLeaf ) THEN
@@ -233,10 +233,10 @@ SUBROUTINE Derefine
 CONTAINS
 
     SUBROUTINE Remove_Children( par )
-        USE Blocks_Mod, ONLY: Blk, nUnused, Root, emptyBlk
+        USE Blocks_Mod, ONLY: Blk, Release_Siblings
         INTEGER, INTENT(IN) :: par
 
-        INTEGER :: c1, c4, grandpa, s1, s4, c
+        INTEGER :: c1, c4, grandpa, s1, s4
 
         c1 = Blk(par)%child(1)
         c4 = c1 + 3
@@ -256,22 +256,7 @@ CONTAINS
             END IF
         END IF
 
-        DO c = c1, c4
-            DEALLOCATE( Blk(c)%h, Blk(c)%g, Blk(c)%C, Blk(c)%P, Blk(c)%Ux, Blk(c)%Uy )
-            DEALLOCATE( Blk(c)%child )
-        END DO
-
-        IF( .NOT. ASSOCIATED(Root) ) THEN
-            ALLOCATE( Root )
-            emptyBlk => Root
-        ELSE
-            ALLOCATE( emptyBlk%next )
-            emptyBlk => emptyBlk%next
-        END IF
-        emptyBlk%N    =  c1
-        emptyBlk%next => NULL()
-
-        nUnused = nUnused + 4
+        CALL Release_Siblings( c1 )
 
     END SUBROUTINE Remove_Children
 
@@ -281,29 +266,20 @@ END SUBROUTINE Derefine
 !******************************************************************************
 
 SUBROUTINE Refine( Moments_g )
-    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nUnused, Root, Linked_Free_Blocks
+    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, Take_Free_Siblings
     IMPLICIT NONE
     PROCEDURE(Block_Kernel) :: Moments_g
 
     INTEGER :: n, L, c1
-    TYPE(Linked_Free_Blocks), POINTER :: used
 
     DO L = LevelMin, LevelMax
         DO n = 1, Nblks
             IF( Blk(n)%Level == L )THEN
                 IF( Blk(n)%Refin ) THEN
 
-                    IF( ASSOCIATED(Root) )THEN
-                        c1 = Root%N
-                        CALL Add_Child_Blocks( n, c1 )
-                        nUnused = nUnused - 4
-                        used => Root
-                        Root => Root%next       ! null after the last free slot
-                        DEALLOCATE( used )
-                    ELSE
-                        c1 = Nblks+1
-                        CALL Add_Child_Blocks( n, c1 )
-                    END IF
+                    CALL Take_Free_Siblings( c1 )
+                    IF( c1 < 0 ) c1 = Nblks+1
+                    CALL Add_Child_Blocks( n, c1 )
 
                     CALL Prolong_Bilinear( n, c1, Moments_g )
 

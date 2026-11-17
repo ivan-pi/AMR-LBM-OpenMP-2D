@@ -20,7 +20,8 @@ MODULE Config_Mod
     INTEGER, PARAMETER :: maxLevels = BIT_SIZE(L0) - 1 - LEADZ(L0/nx)   ! log2(L0/nx)
     INTEGER, PARAMETER :: minLevels = AMR_MIN_LEVEL
 
-    !== upper bound of the number of blocks (all levels of the quadtree)
-    INTEGER, PARAMETER :: MaxBlks = 6 * (L0/nx)**2
+    !== number of blocks of the fully refined quadtree (three base blocks,
+    !   4**L blocks below each on level L): an upper bound of the live blocks
+    INTEGER, PARAMETER :: MaxBlks = 4**(maxLevels+1) - 1
 
 END MODULE Config_Mod

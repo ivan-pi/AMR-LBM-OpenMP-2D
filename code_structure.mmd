@@ -45,7 +45,7 @@ flowchart TD
     subgraph BASE["Foundation (used by nearly every module)"]
         K["Kinds_Mod<br/>wp, dp"]
         CFG["Config_Mod<br/>nx, ny, L0, levels<br/>(compile-time, CMake)"]
-        BLK["Blocks_Mod<br/>Blk(:), leaf lists, free list"]
+        BLK["Blocks_Mod<br/>Blk(:) metadata, field pools, leaf lists, free queue"]
         D["D2Q9_Mod<br/>lattice"]
         PH["Physics_Mod<br/>fluid & interface parameters<br/>(set by the case)"]
     end

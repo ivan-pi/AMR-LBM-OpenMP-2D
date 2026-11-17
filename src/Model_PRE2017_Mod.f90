@@ -57,40 +57,40 @@ END FUNCTION PRE2017_Model
 !   interior of bubbles on the finest level, which this model needs for
 !   stability (g is normalised by rho/3).
 FUNCTION Interface_Light_Phase_Error( b ) RESULT( err )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C
     INTEGER, INTENT(IN) :: b
     REAL(wp) :: err
 
-    err = MAX( Max_Gradient( Blk(b)%dx, Blk(b)%C ), MAXVAL( 1._wp - Blk(b)%C(1:nx,1:ny) ) )
+    err = MAX( Max_Gradient( Blk(b)%dx, Blk_C(:,:,b) ), MAXVAL( 1._wp - Blk_C(1:nx,1:ny, b) ) )
 
 END FUNCTION Interface_Light_Phase_Error
 
 !**********************************************************************
 
 SUBROUTINE Collide_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk(n)%C, DcDx, DcDy )
-    CALL Collision_h_g( Blk(n)%C, mu, DcDx, DcDy, Blk(n)%P, &
-                        Blk(n)%Ux, Blk(n)%Uy, Blk(n)%h, Blk(n)%g )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
+                        Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Collide_Block
 
 !**********************************************************************
 
 SUBROUTINE Moments_g_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk(n)%C, DcDx, DcDy )
-    CALL Moments_g( Blk(n)%g, Blk(n)%C, mu, DcDx, DcDy, Blk(n)%P, Blk(n)%Ux, Blk(n)%Uy )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Moments_g( Blk_g(:,:,:,n), Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
 
 END SUBROUTINE Moments_g_Block
 
@@ -99,16 +99,16 @@ END SUBROUTINE Moments_g_Block
 !== moments of g and collision of one block with one chemical potential
 !   and gradient of C
 SUBROUTINE Moments_and_Collide_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk(n)%C, mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk(n)%C, DcDx, DcDy )
-    CALL Moments_g( Blk(n)%g, Blk(n)%C, mu, DcDx, DcDy, Blk(n)%P, Blk(n)%Ux, Blk(n)%Uy )
-    CALL Collision_h_g( Blk(n)%C, mu, DcDx, DcDy, Blk(n)%P, &
-                        Blk(n)%Ux, Blk(n)%Uy, Blk(n)%h, Blk(n)%g )
+    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Moments_g( Blk_g(:,:,:,n), Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
+    CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
+                        Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Moments_and_Collide_Block
 
@@ -116,23 +116,24 @@ END SUBROUTINE Moments_and_Collide_Block
 
 !== equilibrium h and g of block n from C, P, Ux, Uy
 SUBROUTINE Initialize_Block( n )
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
     INTEGER :: i, j, k
     REAL(wp) :: eU, eN, Gam, tmp
     REAL(wp), DIMENSION(nx,ny) :: DcDx, DcDy, ni, nj, Pn, U2, aC
 
-    ASSOCIATE( C => Blk(n)%C, Ux => Blk(n)%Ux, Uy => Blk(n)%Uy )
+    !== C: the interior cells only (an associated section starts at index 1)
+    ASSOCIATE( C => Blk_C(1:nx,1:ny,n), Ux => Blk_Ux(:,:,n), Uy => Blk_Uy(:,:,n) )
 
-        CALL Gradient_AMR( Blk(n)%dx, C, DcDx, DcDy )
+        CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
 
         DO j = 1, ny
         DO i = 1, nx
             tmp = SQRT( DcDx(i,j)**2 + DcDy(i,j)**2 + 1.e-32_wp )
             ni(i,j) = DcDx(i,j) / tmp
             nj(i,j) = DcDy(i,j) / tmp
-            Pn(i,j) = 3._wp*Blk(n)%P(i,j) / ( Rhol + C(i,j) * (Rhoh - Rhol) )
+            Pn(i,j) = 3._wp*Blk_P(i,j, n) / ( Rhol + C(i,j) * (Rhoh - Rhol) )
             U2(i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
             aC(i,j) = 4._wp*C(i,j)*(1._wp - C(i,j)) / W
         END DO
@@ -145,8 +146,8 @@ SUBROUTINE Initialize_Block( n )
                 eN  = ex(k) * ni(i,j) + ey(k) * nj(i,j)
                 Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
 
-                Blk(n)%h(i,j,k) = C(i,j)*Gam - 0.5_wp * Wa(k)*aC(i,j)*eN
-                Blk(n)%g(i,j,k) = Pn(i,j)*Wa(k) + (Gam - Wa(k))
+                Blk_h(i,j,k, n) = C(i,j)*Gam - 0.5_wp * Wa(k)*aC(i,j)*eN
+                Blk_g(i,j,k, n) = Pn(i,j)*Wa(k) + (Gam - Wa(k))
             END DO
             END DO
         END DO

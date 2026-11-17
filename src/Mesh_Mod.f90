@@ -15,8 +15,10 @@ CONTAINS
 !   uniformly to the coarsest level minLevels
 SUBROUTINE Create_Domain
     USE Config_Mod, ONLY: minLevels
-    USE Blocks_Mod, ONLY: LevelMin, LevelMax
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax, Init_Block_Pool
     IMPLICIT NONE
+
+    CALL Init_Block_Pool
 
     LevelMin = minLevels
     LevelMax = minLevels
@@ -34,7 +36,7 @@ END SUBROUTINE Create_Domain
 
 SUBROUTINE Initialize_Base_Block( N )
     USE Config_Mod, ONLY: L0, nx
-    USE Blocks_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Blk, Nblks, Link_Neighbor
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: N
 
@@ -47,7 +49,6 @@ SUBROUTINE Initialize_Base_Block( N )
     Blk(N)%I     = 0
     Blk(N)%J     = N-1  !N=1: the lower block
 
-    ALLOCATE( Blk(N)%child(1:4) )
     Blk(N)%child(:)= -1         ! Children will be determined soon
     Blk(N)%Parent  = -1         ! This is the base block and has no parent
 
@@ -58,11 +59,10 @@ SUBROUTINE Initialize_Base_Block( N )
     !============ This is the numbering for the neighboring blocks
 
     DO I = 1, 8
-        ALLOCATE( Blk(N)%nghbr(I)%n )
-        Blk(N)%nghbr(I)%n = -I  !External Boundaries
+        CALL Link_Neighbor( N, I, -I, 0 )   !External Boundaries
     END DO
-    Blk(N)%nghbr(1)%n = N   !Periodic
-    Blk(N)%nghbr(2)%n = N   !Periodic
+    CALL Link_Neighbor( N, 1, N, 0 )        !Periodic
+    CALL Link_Neighbor( N, 2, N, 0 )        !Periodic
 
     Blk(N)%IsLeaf  = .True.
     Blk(N)%hasLeaf = .False.
@@ -74,23 +74,23 @@ END SUBROUTINE Initialize_Base_Block
 !******************************************************************************
 
 SUBROUTINE Fix_Initial_Neighbors_3Blocks
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Link_Neighbor
     IMPLICIT NONE
 
-    Blk(1)%nghbr(4)%n = 2
-    Blk(1)%nghbr(6)%n = 2
-    Blk(1)%nghbr(8)%n = 2
+    CALL Link_Neighbor( 1, 4, 2, 0 )
+    CALL Link_Neighbor( 1, 6, 2, 0 )
+    CALL Link_Neighbor( 1, 8, 2, 0 )
 
-    Blk(2)%nghbr(3)%n = 1
-    Blk(2)%nghbr(4)%n = 3
-    Blk(2)%nghbr(5)%n = 1
-    Blk(2)%nghbr(6)%n = 3
-    Blk(2)%nghbr(7)%n = 1
-    Blk(2)%nghbr(8)%n = 3
+    CALL Link_Neighbor( 2, 3, 1, 0 )
+    CALL Link_Neighbor( 2, 4, 3, 0 )
+    CALL Link_Neighbor( 2, 5, 1, 0 )
+    CALL Link_Neighbor( 2, 6, 3, 0 )
+    CALL Link_Neighbor( 2, 7, 1, 0 )
+    CALL Link_Neighbor( 2, 8, 3, 0 )
 
-    Blk(3)%nghbr(3)%n = 2
-    Blk(3)%nghbr(5)%n = 2
-    Blk(3)%nghbr(7)%n = 2
+    CALL Link_Neighbor( 3, 3, 2, 0 )
+    CALL Link_Neighbor( 3, 5, 2, 0 )
+    CALL Link_Neighbor( 3, 7, 2, 0 )
 
 END
 
@@ -119,8 +119,7 @@ END SUBROUTINE Initial_Mesh
 !******************************************************************************
 
 SUBROUTINE Add_Child_Blocks( par, FreeBlk )
-    USE Config_Mod, ONLY: MaxBlks, nx, ny
-    USE Blocks_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, Nblks, Reserve_Blocks
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: par, FreeBlk
@@ -129,10 +128,7 @@ SUBROUTINE Add_Child_Blocks( par, FreeBlk )
 
     N = FreeBlk - 1
 
-    IF( N+4 > MaxBlks ) THEN
-        PRINT '(/A,2I9)', ' Nblks, MaxBlks:', Nblks, MaxBlks
-        ERROR STOP 'number of blocks exceeded MaxBlks'
-    END IF
+    CALL Reserve_Blocks( N+4 )
 
     DO i = 1, 4
         Blk(par)%child(i) = N + i
@@ -156,7 +152,6 @@ SUBROUTINE Add_Child_Blocks( par, FreeBlk )
 
         Blk(N)%Parent = par
 
-        ALLOCATE( Blk(N)%child(1:4) )
         Blk(N)%child(:) = N
 
         CALL Find_Neighbors( par, N, I, J )
@@ -166,24 +161,17 @@ SUBROUTINE Add_Child_Blocks( par, FreeBlk )
         Blk(N)%Refin   = .False.
         Blk(N)%Deref   = .False.
 
-        ALLOCATE( Blk(N)%h(0:nx+1,0:ny+1,9) )
-        ALLOCATE( Blk(N)%g(0:nx+1,0:ny+1,9) )
-        ALLOCATE( Blk(N)%C(  -1:nx+2,-1:ny+2) )
-        ALLOCATE( Blk(N)%P (nx,ny) )
-        ALLOCATE( Blk(N)%Ux(nx,ny) )
-        ALLOCATE( Blk(N)%Uy(nx,ny) )
-
-        Blk(N)%h  = 0
-        Blk(N)%g  = 0
-        Blk(N)%C  = 0
-        Blk(N)%P  = 0
-        Blk(N)%Ux = 0
-        Blk(N)%Uy = 0
+        Blk_h(:,:,:,N)  = 0
+        Blk_g(:,:,:,N)  = 0
+        Blk_C(:,:,N)  = 0
+        Blk_P(:,:,N)  = 0
+        Blk_Ux(:,:,N) = 0
+        Blk_Uy(:,:,N) = 0
 
     END DO
     END DO
 
-    Nblks = MAX(Nblks,N)    ! because unallocated blocks might have been used
+    Nblks = MAX(Nblks,N)    ! the slots may have been reused from the free queue
 
 END SUBROUTINE Add_Child_Blocks
 

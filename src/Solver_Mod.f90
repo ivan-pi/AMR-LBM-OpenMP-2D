@@ -81,7 +81,7 @@ END SUBROUTINE Initialize_State
 
 SUBROUTINE Main_Loop( model, problem, t_end )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_h, Blk_g, Blk_C
     USE Physics_Mod, ONLY: W, M0, Bo, Ar, taul, tauh, wc, Sigma, Gy, D
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
@@ -204,7 +204,7 @@ SUBROUTINE Main_Loop( model, problem, t_end )
             END IF
         END IF
 
-!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk, LeafBlks, nLeaf, model, moments_done, &
+!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk, Blk_h, Blk_g, Blk_C, LeafBlks, nLeaf, model, moments_done, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
         !== pressure and velocity from g, then the collision, block by block
@@ -233,13 +233,13 @@ SUBROUTINE Main_Loop( model, problem, t_end )
             n = LeafBlks(m)
             cfl = 1._wp/Blk(n)%dx
             IF( cfl > 0.9 ) THEN
-                CALL Perfect_Shift_AMR( Blk(n)%h )
-                CALL Perfect_Shift_AMR( Blk(n)%g )
+                CALL Perfect_Shift_AMR( Blk_h(:,:,:,n) )
+                CALL Perfect_Shift_AMR( Blk_g(:,:,:,n) )
             ELSE
-                CALL Streaming_LaxWendroff_AMR( cfl, Blk(n)%h )
-                CALL Streaming_LaxWendroff_AMR( cfl, Blk(n)%g )
+                CALL Streaming_LaxWendroff_AMR( cfl, Blk_h(:,:,:,n) )
+                CALL Streaming_LaxWendroff_AMR( cfl, Blk_g(:,:,:,n) )
             END IF
-            CALL Macroscopic_Values_h_AMR( Blk(n)%h, Blk(n)%C )
+            CALL Macroscopic_Values_h_AMR( Blk_h(:,:,:,n), Blk_C(:,:,n) )
         END DO
 !$OMP END DO
 !$OMP MASKED
@@ -309,7 +309,7 @@ END SUBROUTINE Main_Loop
 !== one line of diagnostics: density range, maximum vertical velocity, total mass
 SUBROUTINE Print_Diagnostics( Time )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nLeaf, LeafBlks, nUnused
+    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nLeaf, LeafBlks, nUnused, Blk_C, Blk_Uy
     USE Physics_Mod, ONLY: Rhol, Rhoh
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time    ! t* of the current step
@@ -322,7 +322,7 @@ SUBROUTINE Print_Diagnostics( Time )
     Rho_max = -10
     Mass  = 0
     U_max = 0
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, LeafBlks, nLeaf, Rhol, Rhoh ) &
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafBlks, nLeaf, Rhol, Rhoh ) &
 !$OMP   REDUCTION(min:Rho_min) REDUCTION(max:Rho_max,U_max) REDUCTION(+:Mass)
     DO m = 1, nLeaf
         n = LeafBlks(m)
@@ -330,14 +330,14 @@ SUBROUTINE Print_Diagnostics( Time )
         dx = Blk(n)%dx
         DO j = 1, ny
         DO i = 1, nx
-            Rho = Rhol + Blk(n)%C(i,j) * (Rhoh - Rhol)
+            Rho = Rhol + Blk_C(i,j, n) * (Rhoh - Rhol)
             Rho_min = MIN( Rho_min, Rho )
             Rho_max = MAX( Rho_max, Rho )
             Mass    = Mass + REAL(Rho,dp) * dx**2
         END DO
         END DO
 
-        U_max = MAX( U_max, MAXVAL(ABS(Blk(n)%Uy)) )
+        U_max = MAX( U_max, MAXVAL(ABS(Blk_Uy(:,:,n))) )
     END DO
 !$OMP END PARALLEL DO
     WRITE(*,10) Time, Nblks, nLeaf, nUnused, Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax

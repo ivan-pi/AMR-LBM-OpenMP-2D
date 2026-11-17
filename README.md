@@ -70,6 +70,13 @@ OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
 Two drivers are built, one per LBM model (see *Models*): `amr_lbm` (JCP 2016)
 and `amr_lbm_pre2017` (PRE 2017).
 
+The block fields live in one pool array per field, allocated at start-up for
+the blocks of the fully refined quadtree (`4**(maxLevels+1) - 1`, e.g. 4095
+blocks or 67 MiB for the default case). Only the slots that get used are
+written, so the operating system commits only those pages. The environment
+variable `AMR_BLOCK_CAPACITY` sets a smaller start capacity; the pool then
+doubles whenever a refinement needs more blocks.
+
 Configuration options (`cmake -B build -D<option>=<value>`):
 
 | option | default | meaning |
@@ -105,7 +112,7 @@ always accumulated in double precision.
 | `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90` | the two models' kernels and criteria |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
 | `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
-| `Blocks_Mod.f90`, `Mesh_Mod.f90`, `Neighbors_Mod.f90` | block storage (quadtree, leaf lists, free list), the domain and child blocks, neighbours |
+| `Blocks_Mod.f90`, `Mesh_Mod.f90`, `Neighbors_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, neighbours |
 | `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement; data transfer to children and parents |
 | `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers) and of h/g, wall conditions, coarse/fine interpolation |
 | `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |

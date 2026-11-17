@@ -133,7 +133,7 @@ END SUBROUTINE Setup
 !== bubble at rest in leaf block n: C (with ghost layers), P, Ux, Uy
 SUBROUTINE Initial_State( n )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Physics_Mod, ONLY: W, Sigma
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n
@@ -152,7 +152,7 @@ SUBROUTINE Initial_State( n )
 
         Ri = SQRT((Xc-X0)**2 + (Yc-Y0)**2)
 
-        Blk(n)%C(i,j) = 0.5_wp + 0.5_wp*TANH(2._wp*(Ri-R)/W)
+        Blk_C(i,j, n) = 0.5_wp + 0.5_wp*TANH(2._wp*(Ri-R)/W)
 
     END DO
     END DO
@@ -160,10 +160,10 @@ SUBROUTINE Initial_State( n )
     DO j = 1, ny
     DO i = 1, nx
 
-        Blk(n)%Ux(i,j) = 0
-        Blk(n)%Uy(i,j) = 0
+        Blk_Ux(i,j, n) = 0
+        Blk_Uy(i,j, n) = 0
 
-        Blk(n)%P (i,j) = -Sigma/R * Blk(n)%C(i,j)
+        Blk_P(i,j, n) = -Sigma/R * Blk_C(i,j, n)
 
     END DO
     END DO
@@ -181,7 +181,7 @@ END SUBROUTINE Initial_State
 !   y_c jump.
 SUBROUTINE Bubble_Diagnostics( Time )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_Uy
     USE Physics_Mod, ONLY: Rhoh, D
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time
@@ -205,17 +205,17 @@ SUBROUTINE Bubble_Diagnostics( Time )
     A  = 0
     Ay = 0
     Av = 0
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, LeafBlks, nLeaf ) REDUCTION(+:A,Ay,Av)
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafBlks, nLeaf ) REDUCTION(+:A,Ay,Av)
     DO m = 1, nLeaf
         n  = LeafBlks(m)
         dx = Blk(n)%dx
         DO j = 1, ny
         DO i = 1, nx
-            IF( Blk(n)%C(i,j) >= 0.9_wp ) CYCLE
-            wgt = REAL( 1._wp - MAX( Blk(n)%C(i,j), 0._wp ), dp ) * dx**2
+            IF( Blk_C(i,j, n) >= 0.9_wp ) CYCLE
+            wgt = REAL( 1._wp - MAX( Blk_C(i,j, n), 0._wp ), dp ) * dx**2
             A   = A  + wgt
             Ay  = Ay + wgt * ( Blk(n)%J*dx*ny + dx*(j-0.5_dp) )
-            Av  = Av + wgt * Blk(n)%Uy(i,j)
+            Av  = Av + wgt * Blk_Uy(i,j, n)
         END DO
         END DO
     END DO
