@@ -273,6 +273,20 @@ gfortran's results or speed; on the other kernels (streaming, finite
 differences, the other model loops) such hints were neutral or slower with
 one of the two compilers, so they are left out.
 
+The ghost cells of h and g are interpolated from coarser and finer
+neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is
+written once, as a template (`src/Biquadratic.inc`), and instantiated with
+the strip shape fixed at compile time for the three shapes used by
+`Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and with
+run-time sizes for the ghost cells of C. The final division by 64 or 1024 is
+folded into the weights (powers of two, so the results are unchanged). This
+made the ghost cells of h and g about 27 % faster with both compilers (10 %
+of the whole step on one thread); a gprofng line profile showed the generic
+version spending a fifth of its time in a separate division pass and most of
+the rest in loop overhead of the short loops. Most of the remaining ghost
+time is copying the left/right edges, which touches one cache line per value
+in the current layout.
+
 ## GPU offload prototype
 
 `offload/` contains a stand-alone OpenMP target-offload version of the

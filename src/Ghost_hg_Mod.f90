@@ -3,7 +3,7 @@
 !================================================
 MODULE Ghost_hg_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Interpolations_Mod, ONLY: Biquadratic_from_Fine_f, Biquadratic_from_Coarse_f
+    USE Config_Mod, ONLY: nx, ny     ! the fixed block size (strip shapes)
     USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
     IMPLICIT NONE
     PRIVATE
@@ -89,8 +89,8 @@ SUBROUTINE Fill_Left_hg( n, L, N1 )
         h(3:1:-1,ny+1:2*ny,:) = Blk(child+3)%h(nx-2:nx,1:ny,2:9)
         g(3:1:-1,   1:  ny,:) = Blk(child+1)%g(nx-2:nx,1:ny,2:9)
         g(3:1:-1,ny+1:2*ny,:) = Blk(child+3)%g(nx-2:nx,1:ny,2:9)
-        CALL Biquadratic_from_Fine_f( 3,2*ny, 1,ny, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,2*ny, 1,ny, g, bg, 8 )
+        CALL From_Fine_LR( h, bh )
+        CALL From_Fine_LR( g, bg )
 
     ELSEIF( L == Blk(N1)%Level + 1 ) THEN
 
@@ -98,8 +98,8 @@ SUBROUTINE Fill_Left_hg( n, L, N1 )
         Y = (ny/2) * MOD(Blk(n)%J,2)
         H2(2:0:-1,:,:) = Blk(N1)%h(nx-1:nx+1,Y:Y+ny/2+1,2:9)
         G2(2:0:-1,:,:) = Blk(N1)%g(nx-1:nx+1,Y:Y+ny/2+1,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,ny/2+2, 1,ny, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,ny/2+2, 1,ny, G2, bg, 8 )
+        CALL From_Coarse_LR( H2, bh )
+        CALL From_Coarse_LR( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_hg: ", n, N1, L, Blk(N1)%Level
@@ -135,8 +135,8 @@ SUBROUTINE Fill_Right_hg( n, L, N2 )
         h(:,ny+1:2*ny,:) = Blk(child+2)%h(1:3,1:ny,2:9)
         g(:,   1:  ny,:) = Blk(child  )%g(1:3,1:ny,2:9)
         g(:,ny+1:2*ny,:) = Blk(child+2)%g(1:3,1:ny,2:9)
-        CALL Biquadratic_from_Fine_f( 3,2*ny, 1,ny, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,2*ny, 1,ny, g, bg, 8 )
+        CALL From_Fine_LR( h, bh )
+        CALL From_Fine_LR( g, bg )
 
     ELSEIF( L == Blk(N2)%Level + 1 ) THEN
 
@@ -144,8 +144,8 @@ SUBROUTINE Fill_Right_hg( n, L, N2 )
         Y = (ny/2) * MOD(Blk(n)%J,2)
         H2(:,:,:) = Blk(N2)%h(0:2,Y:Y+ny/2+1,2:9)
         G2(:,:,:) = Blk(N2)%g(0:2,Y:Y+ny/2+1,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,ny/2+2, 1,ny, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,ny/2+2, 1,ny, G2, bg, 8 )
+        CALL From_Coarse_LR( H2, bh )
+        CALL From_Coarse_LR( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_hg: ", n, N2, L, Blk(N2)%Level
@@ -181,8 +181,8 @@ SUBROUTINE Fill_Bottom_hg( n, L, N3 )
         h(nx+1:2*nx,3:1:-1,:) = Blk(child+3)%h(1:nx,ny-2:ny,2:9)
         g(   1:  nx,3:1:-1,:) = Blk(child+2)%g(1:nx,ny-2:ny,2:9)
         g(nx+1:2*nx,3:1:-1,:) = Blk(child+3)%g(1:nx,ny-2:ny,2:9)
-        CALL Biquadratic_from_Fine_f( 2*nx,3, nx,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 2*nx,3, nx,1, g, bg, 8 )
+        CALL From_Fine_BT( h, bh )
+        CALL From_Fine_BT( g, bg )
 
     ELSEIF( L == Blk(N3)%Level + 1 ) THEN
 
@@ -190,8 +190,8 @@ SUBROUTINE Fill_Bottom_hg( n, L, N3 )
         X = (nx/2) * MOD(Blk(n)%I,2)
         H2(:,2:0:-1,:) = Blk(N3)%h(X:X+nx/2+1,ny-1:ny+1,2:9)
         G2(:,2:0:-1,:) = Blk(N3)%g(X:X+nx/2+1,ny-1:ny+1,2:9)
-        CALL Biquadratic_from_Coarse_f( nx/2+2,3, nx,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( nx/2+2,3, nx,1, G2, bg, 8 )
+        CALL From_Coarse_BT( H2, bh )
+        CALL From_Coarse_BT( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Bottom_hg: ", n, N3, L, Blk(N3)%Level
@@ -227,8 +227,8 @@ SUBROUTINE Fill_Top_hg( n, L, N4 )
         h(nx+1:2*nx,:,:) = Blk(child+1)%h(1:nx,1:3,2:9)
         g(   1:  nx,:,:) = Blk(child  )%g(1:nx,1:3,2:9)
         g(nx+1:2*nx,:,:) = Blk(child+1)%g(1:nx,1:3,2:9)
-        CALL Biquadratic_from_Fine_f( 2*nx,3, nx,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 2*nx,3, nx,1, g, bg, 8 )
+        CALL From_Fine_BT( h, bh )
+        CALL From_Fine_BT( g, bg )
 
     ELSEIF( L == Blk(N4)%Level + 1 ) THEN
 
@@ -236,8 +236,8 @@ SUBROUTINE Fill_Top_hg( n, L, N4 )
         X = (nx/2) * MOD(Blk(n)%I,2)
         H2(:,:,:) = Blk(N4)%h(X:X+nx/2+1,0:2,2:9)
         G2(:,:,:) = Blk(N4)%g(X:X+nx/2+1,0:2,2:9)
-        CALL Biquadratic_from_Coarse_f( nx/2+2,3, nx,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( nx/2+2,3, nx,1, G2, bg, 8 )
+        CALL From_Coarse_BT( H2, bh )
+        CALL From_Coarse_BT( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Top_hg: ", n, N4, L, Blk(N4)%Level
@@ -271,8 +271,8 @@ SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
         child = Blk(N5)%child(1)
         h(3:1:-1,3:1:-1,:) = Blk(child+3)%h(nx-2:nx,ny-2:ny,2:9)
         g(3:1:-1,3:1:-1,:) = Blk(child+3)%g(nx-2:nx,ny-2:ny,2:9)
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, g, bg, 8 )
+        CALL From_Fine_Corner( h, bh )
+        CALL From_Fine_Corner( g, bg )
 
     ELSEIF( L == Blk(N5)%Level + 1 ) THEN
 
@@ -281,8 +281,8 @@ SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
         J = ny - (ny/2) * MOD(Blk(n)%J,2) - 1
         H2(2:0:-1,2:0:-1,:) = Blk(N5)%h(I:I+2,J:J+2,2:9)
         G2(2:0:-1,2:0:-1,:) = Blk(N5)%g(I:I+2,J:J+2,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, G2, bg, 8 )
+        CALL From_Coarse_Corner( H2, bh )
+        CALL From_Coarse_Corner( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_Bottom_hg: ", n, N5, L, Blk(N5)%Level
@@ -316,8 +316,8 @@ SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
         child = Blk(N6)%child(1)
         h(3:1:-1,:,:) = Blk(child+1)%h(nx-2:nx,1:3,2:9)
         g(3:1:-1,:,:) = Blk(child+1)%g(nx-2:nx,1:3,2:9)
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, g, bg, 8 )
+        CALL From_Fine_Corner( h, bh )
+        CALL From_Fine_Corner( g, bg )
 
     ELSEIF( L == Blk(N6)%Level + 1 ) THEN
 
@@ -326,8 +326,8 @@ SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
         H2(2:0:-1,:,:) = Blk(N6)%h(I:I+2,J:J+2,2:9)
         G2(2:0:-1,:,:) = Blk(N6)%g(I:I+2,J:J+2,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, G2, bg, 8 )
+        CALL From_Coarse_Corner( H2, bh )
+        CALL From_Coarse_Corner( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Left_Top_hg: ", n, N6, L, Blk(N6)%Level
@@ -361,8 +361,8 @@ SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
         child = Blk(N7)%child(1)
         h(:,3:1:-1,:) = Blk(child+2)%h(1:3,ny-2:ny,2:9)
         g(:,3:1:-1,:) = Blk(child+2)%g(1:3,ny-2:ny,2:9)
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, g, bg, 8 )
+        CALL From_Fine_Corner( h, bh )
+        CALL From_Fine_Corner( g, bg )
 
     ELSEIF( L == Blk(N7)%Level + 1 ) THEN
 
@@ -371,8 +371,8 @@ SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
         J = ny   - (ny/2) * MOD(Blk(n)%J,2) - 1
         H2(:,2:0:-1,:) = Blk(N7)%h(I:I+2,J:J+2,2:9)
         G2(:,2:0:-1,:) = Blk(N7)%g(I:I+2,J:J+2,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, G2, bg, 8 )
+        CALL From_Coarse_Corner( H2, bh )
+        CALL From_Coarse_Corner( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_Bottom_hg: ", n, N7, L, Blk(N7)%Level
@@ -406,8 +406,8 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
         child = Blk(N8)%child(1)
         h(:,:,:) = Blk(child)%h(1:3,1:3,2:9)
         g(:,:,:) = Blk(child)%g(1:3,1:3,2:9)
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, h, bh, 8 )
-        CALL Biquadratic_from_Fine_f( 3,3, 1,1, g, bg, 8 )
+        CALL From_Fine_Corner( h, bh )
+        CALL From_Fine_Corner( g, bg )
 
     ELSEIF( L == Blk(N8)%Level + 1 ) THEN
 
@@ -416,8 +416,8 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
         J = ny/2 - (ny/2) * MOD(Blk(n)%J,2)
         H2(:,:,:) = Blk(N8)%h(I:I+2,J:J+2,2:9)
         G2(:,:,:) = Blk(N8)%g(I:I+2,J:J+2,2:9)
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, H2, bh, 8 )
-        CALL Biquadratic_from_Coarse_f( 3,3, 1,1, G2, bg, 8 )
+        CALL From_Coarse_Corner( H2, bh )
+        CALL From_Coarse_Corner( G2, bg )
 
     ELSE
         PRINT '(A,4I5)', " Error in Fill_Right_Top_hg: ", n, N8, L, Blk(N8)%Level
@@ -428,5 +428,52 @@ SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
     Blk(n)%g(nx+1,ny+1,2:9) = bg(1,1,:)
 
 END SUBROUTINE Fill_Right_Top_hg
+
+!******************************************************************************
+
+!== the strip interpolations for the three strip shapes of the 8 moving
+!   directions, with the shape fixed at compile time (from Biquadratic.inc):
+!   left/right edges (LR), bottom/top edges (BT) and corners. With fixed
+!   shapes the compiler unrolls the short loops: ~27% less time in the
+!   ghost cells of h and g than with the sizes as arguments.
+#define FINE_NAME    From_Fine_LR
+#define COARSE_NAME  From_Coarse_LR
+#define SIZE_ARGS
+#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 8
+#include "Biquadratic.inc"
+#undef FINE_NAME
+#undef COARSE_NAME
+#undef SIZE_ARGS
+#undef FINE_SIZES
+#undef COARSE_SIZES
+
+!******************************************************************************
+
+#define FINE_NAME    From_Fine_BT
+#define COARSE_NAME  From_Coarse_BT
+#define SIZE_ARGS
+#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 2*nx, j2 = 3, x2 = nx, y2 = 1, nk = 8
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 8
+#include "Biquadratic.inc"
+#undef FINE_NAME
+#undef COARSE_NAME
+#undef SIZE_ARGS
+#undef FINE_SIZES
+#undef COARSE_SIZES
+
+!******************************************************************************
+
+#define FINE_NAME    From_Fine_Corner
+#define COARSE_NAME  From_Coarse_Corner
+#define SIZE_ARGS
+#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
+#include "Biquadratic.inc"
+#undef FINE_NAME
+#undef COARSE_NAME
+#undef SIZE_ARGS
+#undef FINE_SIZES
+#undef COARSE_SIZES
 
 END MODULE Ghost_hg_Mod
