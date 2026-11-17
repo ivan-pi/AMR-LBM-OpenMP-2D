@@ -1,0 +1,14 @@
+# build products (CMake builds go to build*/)
+build*/
+*.o
+*.mod
+*.modmic
+*.smod
+# run output
+Rising_Bubble_2D_*.dat
+vtk/
+*.pvd
+*.vtkhdf
+*.mp4
+*.gif
+*.png

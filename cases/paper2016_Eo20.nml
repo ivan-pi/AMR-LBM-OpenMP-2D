@@ -1,0 +1,18 @@
+! Rising bubble of Fakhari, Geier & Lee, J. Comput. Phys. 315 (2016), Sec. 5.1,
+! Figs. 3-5: rho_h/rho_l = 1000, mu_h/mu_l = 100, Re_h = 100, Pe = 1.1,
+! Cn = 0.010, t* = 12, Eo = 20. Needs L0 = 512 (l_max = 6):
+!   cmake -B build-paper -DAMR_L0=512 && cmake --build build-paper -j
+!   AMR_CASE=cases/paper2016_Eo20.nml ./build-paper/amr_lbm
+! The gravity in lattice units is not given in the paper. It matters: the model is
+! weakly compressible, so the bubble swells as it rises in the closed box (by ~25%
+! at 2.5e-6, ~50% at 5e-6, proportional to Gy_lu). 2.5e-6 reproduces Fig. 4 best.
+&rising_bubble
+  Eo        = 20
+  Re        = 100
+  rho_ratio = 1000
+  mu_ratio  = 100
+  Gy_lu     = 2.5e-6
+  Pe        = 1.1
+  Cn        = 0.010
+  t_end     = 12
+/
