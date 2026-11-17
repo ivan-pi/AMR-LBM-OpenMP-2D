@@ -146,8 +146,8 @@ SUBROUTINE Array_of_Leaf_Blocks
     USE Blocks_Mod, ONLY: Blk, Nblks, LeafBlks, nLeaf, LeafByLevel, LevelStart
     IMPLICIT NONE
 
-    INTEGER :: n, i, L
-    INTEGER :: tmpArray(Nblks), cnt(0:maxLevels+1)
+    INTEGER :: n, i, L, nz
+    INTEGER :: tmpArray(Nblks), zorder(Nblks), cnt(0:maxLevels+1)
 
     i = 0
     DO n = 1, Nblks
@@ -163,7 +163,16 @@ SUBROUTINE Array_of_Leaf_Blocks
 
     LeafBlks(:) = tmpArray(1:i)
 
-    !== counting sort of the leaves by level (stable: keeps block order per level)
+    !== the leaves in Z-order (Morton order): a depth-first walk of the
+    !   quadtree, as the children 1..4 of a block are (0,0), (1,0), (0,1), (1,1)
+    nz = 0
+    DO n = 1, 3                     ! the base blocks, bottom to top
+        CALL Visit( n )
+    END DO
+
+    !== counting sort of the leaves by level, stable: Z-order within a level, so
+    !   that a static share of a level is a compact patch whose neighbours are
+    !   mostly blocks of the same thread
     cnt = 0
     DO i = 1, nLeaf
         L = Blk(LeafBlks(i))%Level
@@ -178,14 +187,28 @@ SUBROUTINE Array_of_Leaf_Blocks
     ALLOCATE( LeafByLevel(nLeaf) )
     cnt(0:maxLevels) = LevelStart(0:maxLevels)
     DO i = 1, nLeaf
-        n = LeafBlks(i)
+        n = zorder(i)
         L = Blk(n)%Level
         LeafByLevel(cnt(L)) = n
         cnt(L) = cnt(L) + 1
     END DO
 
-
     CALL Rebuild_Neighbor_Table
+
+CONTAINS
+
+    RECURSIVE SUBROUTINE Visit( b )
+        INTEGER, INTENT(IN) :: b
+        INTEGER :: c
+        IF( Blk(b)%IsLeaf ) THEN
+            nz = nz + 1
+            zorder(nz) = b
+        ELSE
+            DO c = 0, 3
+                CALL Visit( Blk(b)%child(1) + c )
+            END DO
+        END IF
+    END SUBROUTINE Visit
 
 END
 

@@ -81,7 +81,7 @@ END SUBROUTINE Initialize_State
 
 SUBROUTINE Main_Loop( model, problem, t_end )
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_h, Blk_g, Blk_C
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
     USE Physics_Mod, ONLY: W, M0, Bo, Ar, taul, tauh, wc, Sigma, Gy, D
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
@@ -91,7 +91,7 @@ SUBROUTINE Main_Loop( model, problem, t_end )
     TYPE(AMR_Case),  INTENT(IN) :: problem
     REAL(wp),        INTENT(IN) :: t_end        ! end time t*
 
-    INTEGER :: T, n, m, Tf, nOutStep, nargs, ios
+    INTEGER :: T, n, m, L, Tf, nOutStep, nargs, ios
     CHARACTER(len=32) :: arg
     REAL(wp)    :: cfl
     LOGICAL    :: changed, moments_done, is_output, is_diagnostic
@@ -205,20 +205,29 @@ SUBROUTINE Main_Loop( model, problem, t_end )
             END IF
         END IF
 
-!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk, Blk_h, Blk_g, Blk_C, LeafBlks, nLeaf, model, moments_done, &
+!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax, &
+!$OMP   model, moments_done, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
-        !== pressure and velocity from g, then the collision, block by block
+        !== pressure and velocity from g, then the collision, block by block.
+        !   This loop and the streaming loop run level by level over LeafByLevel
+        !   with the same static schedule as Fill_Ghost_Cells_hg, so each block
+        !   is collided, ghost-filled and streamed by the same thread (OpenMP
+        !   assigns iterations of static loops of equal length identically);
+        !   NOWAIT: the levels are independent, one barrier follows the last.
+        DO L = LevelMin, LevelMax
 !$OMP DO SCHEDULE(STATIC)
-        DO m = 1, nLeaf
-            n = LeafBlks(m)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
             IF( moments_done ) THEN
                 CALL model%Collide( n )
             ELSE
                 CALL model%Moments_and_Collide( n )
             END IF
         END DO
-!$OMP END DO
+!$OMP END DO NOWAIT
+        END DO
+!$OMP BARRIER
 !$OMP MASKED
         CALL Lap( t_collision )
 !$OMP END MASKED
@@ -229,9 +238,10 @@ SUBROUTINE Main_Loop( model, problem, t_end )
 !$OMP END MASKED
 
         !== streaming, and the phase field C = sum(h) while h of the block is in cache
+        DO L = LevelMin, LevelMax
 !$OMP DO SCHEDULE(STATIC)
-        DO m = 1, nLeaf
-            n = LeafBlks(m)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
             cfl = 1._wp/Blk(n)%dx
             IF( cfl > 0.9 ) THEN
                 CALL Perfect_Shift_AMR( Blk_h(:,:,:,n) )
@@ -242,7 +252,9 @@ SUBROUTINE Main_Loop( model, problem, t_end )
             END IF
             CALL Macroscopic_Values_h_AMR( Blk_h(:,:,:,n), Blk_C(:,:,n) )
         END DO
-!$OMP END DO
+!$OMP END DO NOWAIT
+        END DO
+!$OMP BARRIER
 !$OMP MASKED
         CALL Lap( t_advection )
 !$OMP END MASKED

@@ -67,8 +67,9 @@ MODULE Blocks_Mod
 
     INTEGER, ALLOCATABLE :: LeafBlks(:)
 
-    !== leaf blocks sorted by refinement level (rebuilt in Array_of_Leaf_Blocks):
-    !   the leaves on level L are LeafByLevel( LevelStart(L) : LevelStart(L+1)-1 )
+    !== leaf blocks sorted by refinement level, in Z-order within a level
+    !   (rebuilt in Array_of_Leaf_Blocks): the leaves on level L are
+    !   LeafByLevel( LevelStart(L) : LevelStart(L+1)-1 )
     INTEGER, ALLOCATABLE :: LeafByLevel(:)
     INTEGER :: LevelStart(0:maxLevels+1)
 
