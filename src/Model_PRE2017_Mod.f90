@@ -26,10 +26,11 @@
 !================================================
 MODULE Model_PRE2017_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Parameters_Mod, ONLY: nx, ny     ! the fixed block size
-    USE D2Q9_Mod, ONLY: Wa, W, wc, ex, ey, Gy, taul, tauh, Rhol, Rhoh
+    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
+    USE D2Q9_Mod, ONLY: Wa, ex, ey
+    USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE LBM_Common_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: PRE2017_Model
@@ -45,13 +46,29 @@ FUNCTION PRE2017_Model() RESULT( model )
     model%Collide    => Collide_Block
     model%Moments_g  => Moments_g_Block
     model%Moments_and_Collide => Moments_and_Collide_Block
+    model%Refinement_Error    => Interface_Light_Phase_Error
 
 END FUNCTION PRE2017_Model
 
 !**********************************************************************
 
+!== refinement criterion: the interface (largest |grad C|) and in addition the
+!   light phase (C < 1) of block b, max( |grad C|, max(1-C) ). Keeps the
+!   interior of bubbles on the finest level, which this model needs for
+!   stability (g is normalised by rho/3).
+FUNCTION Interface_Light_Phase_Error( b ) RESULT( err )
+    USE Blocks_Mod, ONLY: Blk
+    INTEGER, INTENT(IN) :: b
+    REAL(wp) :: err
+
+    err = MAX( Max_Gradient( Blk(b)%dx, Blk(b)%C ), MAXVAL( 1._wp - Blk(b)%C(1:nx,1:ny) ) )
+
+END FUNCTION Interface_Light_Phase_Error
+
+!**********************************************************************
+
 SUBROUTINE Collide_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
@@ -66,7 +83,7 @@ END SUBROUTINE Collide_Block
 !**********************************************************************
 
 SUBROUTINE Moments_g_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
@@ -82,7 +99,7 @@ END SUBROUTINE Moments_g_Block
 !== moments of g and collision of one block with one chemical potential
 !   and gradient of C
 SUBROUTINE Moments_and_Collide_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
@@ -99,7 +116,7 @@ END SUBROUTINE Moments_and_Collide_Block
 
 !== equilibrium h and g of block n from C, P, Ux, Uy
 SUBROUTINE Initialize_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     INTEGER :: i, j, k

@@ -1,19 +1,40 @@
 !================================================
-!   Block (quadtree) mesh: base blocks, children, leaf lists, diagnostics
+!   Block (quadtree) mesh: the domain of three base blocks, children,
+!   leaf lists
 !================================================
 MODULE Mesh_Mod
     USE Kinds_Mod, ONLY: wp, dp
     USE Neighbors_Mod, ONLY: Find_Neighbors
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Initialize_Base_Block, Fix_Initial_Neighbors_3Blocks, Initial_Mesh, &
-              Add_Child_Blocks, Array_of_Leaf_Blocks, Determine_Min_Max_Levels, &
-              Print_Diagnostics
+    PUBLIC :: Create_Domain, Add_Child_Blocks, Array_of_Leaf_Blocks, Determine_Min_Max_Levels
 
 CONTAINS
 
+!== the domain L0 x 3*L0 as three base blocks stacked vertically, refined
+!   uniformly to the coarsest level minLevels
+SUBROUTINE Create_Domain
+    USE Config_Mod, ONLY: minLevels
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax
+    IMPLICIT NONE
+
+    LevelMin = minLevels
+    LevelMax = minLevels
+
+    CALL Initialize_Base_Block( 1 ) ! lower  part of the domain
+    CALL Initialize_Base_Block( 2 ) ! middle part of the domain
+    CALL Initialize_Base_Block( 3 ) ! upper  part of the domain
+    CALL Fix_Initial_Neighbors_3Blocks
+
+    CALL Initial_Mesh( LevelMin )
+
+END SUBROUTINE Create_Domain
+
+!******************************************************************************
+
 SUBROUTINE Initialize_Base_Block( N )
-    USE Parameters_Mod, ONLY: Blk, Nblks, L0, nx
+    USE Config_Mod, ONLY: L0, nx
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: N
 
@@ -53,7 +74,7 @@ END SUBROUTINE Initialize_Base_Block
 !******************************************************************************
 
 SUBROUTINE Fix_Initial_Neighbors_3Blocks
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
 
     Blk(1)%nghbr(4)%n = 2
@@ -76,7 +97,7 @@ END
 !******************************************************************************
 
 SUBROUTINE Initial_Mesh( nLevels )
-    USE Parameters_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: nLevels
@@ -98,7 +119,8 @@ END SUBROUTINE Initial_Mesh
 !******************************************************************************
 
 SUBROUTINE Add_Child_Blocks( par, FreeBlk )
-    USE Parameters_Mod, ONLY: Blk, Nblks, MaxBlks, nx, ny
+    USE Config_Mod, ONLY: MaxBlks, nx, ny
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: par, FreeBlk
@@ -108,9 +130,8 @@ SUBROUTINE Add_Child_Blocks( par, FreeBlk )
     N = FreeBlk - 1
 
     IF( N+4 > MaxBlks ) THEN
-        CALL Print_Diagnostics
-        PRINT '(/A/)', ' number of blocks exceeded MaxBlks! ... Program Terminated.'
-        STOP
+        PRINT '(/A,2I9)', ' Nblks, MaxBlks:', Nblks, MaxBlks
+        ERROR STOP 'number of blocks exceeded MaxBlks'
     END IF
 
     DO i = 1, 4
@@ -169,7 +190,8 @@ END SUBROUTINE Add_Child_Blocks
 !******************************************************************************
 
 SUBROUTINE Array_of_Leaf_Blocks
-    USE Parameters_Mod, ONLY: Blk, Nblks, LeafBlks, nLeaf, LeafByLevel, LevelStart, maxLevels
+    USE Config_Mod, ONLY: maxLevels
+    USE Blocks_Mod, ONLY: Blk, Nblks, LeafBlks, nLeaf, LeafByLevel, LevelStart
     IMPLICIT NONE
 
     INTEGER :: n, i, L
@@ -215,7 +237,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Determine_Min_Max_Levels
-    USE Parameters_Mod, ONLY: LevelMin, LevelMax, LevelStart, maxLevels
+    USE Config_Mod, ONLY: maxLevels
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax, LevelStart
     IMPLICIT NONE
 
     INTEGER :: L
@@ -231,43 +254,5 @@ SUBROUTINE Determine_Min_Max_Levels
 
 END SUBROUTINE Determine_Min_Max_Levels
 
-!******************************************************************************
-
-!== one line of diagnostics: density range, maximum vertical velocity, total mass
-SUBROUTINE Print_Diagnostics
-    USE Parameters_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nLeaf, LeafBlks, T, KK, nx, ny
-    USE D2Q9_Mod,   ONLY: Rhol, Rhoh, Gy, D
-    IMPLICIT NONE
-
-    INTEGER :: m, n, dx, i, j
-    REAL(wp) :: Rho, Rho_min, Rho_max, U_max
-    REAL(dp) :: Mass    ! accumulated in double precision independent of wp
-
-    Rho_min =  10
-    Rho_max = -10
-    Mass  = 0
-    U_max = 0
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, LeafBlks, nLeaf, Rhol, Rhoh ) &
-!$OMP   REDUCTION(min:Rho_min) REDUCTION(max:Rho_max,U_max) REDUCTION(+:Mass)
-    DO m = 1, nLeaf
-        n = LeafBlks(m)
-
-        dx = Blk(n)%dx
-        DO j = 1, ny
-        DO i = 1, nx
-            Rho = Rhol + Blk(n)%C(i,j) * (Rhoh - Rhol)
-            Rho_min = MIN( Rho_min, Rho )
-            Rho_max = MAX( Rho_max, Rho )
-            Mass    = Mass + REAL(Rho,dp) * dx**2
-        END DO
-        END DO
-
-        U_max = MAX( U_max, MAXVAL(ABS(Blk(n)%Uy)) )
-    END DO
-!$OMP END PARALLEL DO
-    WRITE(*,10) T*SQRT(Gy/D), Nblks, nLeaf, KK, Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax
-10  FORMAT(F7.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
-
-END SUBROUTINE Print_Diagnostics
 
 END MODULE Mesh_Mod

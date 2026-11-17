@@ -14,7 +14,7 @@ CONTAINS
 
 SUBROUTINE Fill_Ghost_Cells_C( ng )
     !== fill ng ghost layers of C on all leaf blocks, level by level (coarse first)
-    USE Parameters_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
+    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: ng
 
@@ -53,7 +53,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Left_C( n, L, N1, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N1, ng
 
@@ -104,7 +105,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Right_C( n, L, N2, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N2, ng
 
@@ -155,7 +157,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Bottom_C( n, L, N3, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N3, ng
 
@@ -206,7 +209,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Top_C( n, L, N4, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N4, ng
 
@@ -257,7 +261,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Left_Bottom_C( n, L, N5, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N5, ng
 
@@ -304,7 +309,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Left_Top_C( n, L, N6, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N6, ng
 
@@ -351,7 +357,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Right_Bottom_C( n, L, N7, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N7, ng
 
@@ -398,7 +405,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Right_Top_C( n, L, N8, ng )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, L, N8, ng
 

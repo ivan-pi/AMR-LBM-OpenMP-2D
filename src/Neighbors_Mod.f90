@@ -25,8 +25,7 @@ SUBROUTINE Find_Neighbors( par, n, I, J )
 CONTAINS
 
     SUBROUTINE Diagonal_Neighbor( p, n, c )
-        USE Parameters_Mod, ONLY: Blk
-
+        USE Blocks_Mod, ONLY: Blk
         INTEGER, INTENT(IN) :: p, n, c
 
         INTEGER, TARGET :: SW = -5
@@ -111,7 +110,7 @@ END SUBROUTINE Find_Neighbors
 !******************************************************************************
 
 SUBROUTINE Neighbor( p, n, n2, c )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: p, n, n2, c  ! n2: neighbor inside the adjacent block

@@ -11,8 +11,9 @@ CONTAINS
 
 
 SUBROUTINE TecPlot_CellCenter( Time )
-    USE Parameters_Mod, ONLY: Blk, nLeaf, LeafBlks, nx, ny, L0
-    USE D2Q9_Mod,   ONLY: Sigma, D
+    USE Config_Mod, ONLY: nx, ny, L0
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+    USE Physics_Mod, ONLY: Sigma, D
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time    ! physical time written into the zone header
 

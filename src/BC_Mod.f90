@@ -3,7 +3,7 @@
 !================================================
 MODULE BC_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Parameters_Mod, ONLY: nx, ny     ! the fixed block size
+    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
     USE D2Q9_Mod, ONLY: ex, ey
     IMPLICIT NONE
     PRIVATE

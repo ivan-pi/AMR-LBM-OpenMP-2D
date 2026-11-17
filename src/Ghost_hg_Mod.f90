@@ -20,7 +20,7 @@ CONTAINS
 
 
 SUBROUTINE Fill_Ghost_Cells_hg
-    USE Parameters_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
+    USE Blocks_Mod, ONLY: Blk, LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
 
     INTEGER :: L, I, m, n, Nghbr(8)
@@ -68,7 +68,8 @@ END
 !******************************************************************************
 
 SUBROUTINE Fill_Left_hg( n, L, N1 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N1
 
     INTEGER :: child, Y
@@ -113,7 +114,8 @@ END SUBROUTINE Fill_Left_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Right_hg( n, L, N2 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N2
 
     INTEGER :: child, Y
@@ -158,7 +160,8 @@ END SUBROUTINE Fill_Right_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Bottom_hg( n, L, N3 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N3
 
     INTEGER :: child, X
@@ -203,7 +206,8 @@ END SUBROUTINE Fill_Bottom_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Top_hg( n, L, N4 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N4
 
     INTEGER :: child, X
@@ -248,7 +252,8 @@ END SUBROUTINE Fill_Top_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Left_Bottom_hg( n, L, N5 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N5
 
     INTEGER :: child, I, J
@@ -292,7 +297,8 @@ END SUBROUTINE Fill_Left_Bottom_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Left_Top_hg( n, L, N6 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N6
 
     INTEGER :: child, I, J
@@ -336,7 +342,8 @@ END SUBROUTINE Fill_Left_Top_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Right_Bottom_hg( n, L, N7 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N7
 
     INTEGER :: child, I, J
@@ -380,7 +387,8 @@ END SUBROUTINE Fill_Right_Bottom_hg
 !******************************************************************************
 
 SUBROUTINE Fill_Right_Top_hg( n, L, N8 )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n, L, N8
 
     INTEGER :: child, I, J

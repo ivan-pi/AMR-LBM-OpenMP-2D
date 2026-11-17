@@ -29,7 +29,7 @@ MODULE Offload_Pool_Mod
 
     !== local copies of the D2Q9 vectors and weights of D2Q9_Mod (ifx 2026.1
     !   cannot link device code that indexes PARAMETER arrays of another module)
-    !   and of the default mobility (a run-time variable in D2Q9_Mod)
+    !   and of the default mobility (a run-time variable in Physics_Mod)
     INTEGER,  PARAMETER :: ex(9) = [0, 1, 0,-1, 0, 1,-1,-1, 1]
     INTEGER,  PARAMETER :: ey(9) = [0, 0, 1, 0,-1, 1, 1,-1,-1]
     REAL(wp), PARAMETER :: Wa(9) = [16,4, 4, 4, 4, 1, 1, 1, 1] / 36._wp

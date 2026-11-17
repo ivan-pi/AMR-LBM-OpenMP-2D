@@ -4,8 +4,8 @@
 !================================================
 PROGRAM Rising_Bubble_AMR_2D_JCP2016
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS, OMP_GET_NUM_PROCS
-    USE Rising_Bubble_Mod, ONLY: AMR_LBM_Rising_Bubble
-    USE Refine_Mod, ONLY: Interface_Error
+    USE Solver_Mod, ONLY: Run_AMR_LBM
+    USE Rising_Bubble_Mod, ONLY: Rising_Bubble_Case
     USE Model_JCP2016_Mod, ONLY: JCP2016_Model
     IMPLICIT NONE
 
@@ -18,7 +18,7 @@ PROGRAM Rising_Bubble_AMR_2D_JCP2016
 
     CALL SYSTEM_CLOCK( t1, Rate )
 
-    CALL AMR_LBM_Rising_Bubble( JCP2016_Model(), Interface_Error )
+    CALL Run_AMR_LBM( JCP2016_Model(), Rising_Bubble_Case() )
 
     CALL SYSTEM_CLOCK( t2 )
     PRINT '(/A)',' *****************************************'

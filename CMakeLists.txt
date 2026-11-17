@@ -83,24 +83,28 @@ target_compile_options(amr_options INTERFACE
 
 add_library(amr_core OBJECT
   src/Kinds_Mod.f90
-  src/Parameters_Mod.f90
+  src/Config_Mod.f90
+  src/Blocks_Mod.f90
   src/D2Q9_Mod.f90
+  src/Physics_Mod.f90
   src/Model_Mod.f90
+  src/Case_Mod.f90
   src/Interpolations_Mod.f90
   src/BC_Mod.f90
   src/LBM_Common_Mod.f90
+  src/Phase_Field_Mod.f90
   src/Model_JCP2016_Mod.f90
   src/Model_PRE2017_Mod.f90
   src/Neighbors_Mod.f90
   src/Mesh_Mod.f90
   src/Ghost_C_Mod.f90
   src/Ghost_hg_Mod.f90
-  src/Prolong_Mod.f90
-  src/Restrict_Mod.f90
+  src/Prolong_Restrict_Mod.f90
   src/Refine_Mod.f90
   src/TecPlot_Mod.f90
   src/VTK_Output_Mod.f90
   src/Output_Mod.f90
+  src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
 )
 target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL})

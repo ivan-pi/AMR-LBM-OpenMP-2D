@@ -1,16 +1,14 @@
 !================================================
 !   Lattice Boltzmann kernels shared by all models: streaming of the
-!   distribution functions, the phase-field moment C = sum(h), and the
-!   isotropic finite differences (gradient, chemical potential) of C
+!   distribution functions and the phase-field moment C = sum(h)
 !================================================
 MODULE LBM_Common_Mod
     USE Kinds_Mod, ONLY: wp
-    USE D2Q9_Mod, ONLY: ex, ey, Beta, kappa
-    USE Parameters_Mod, ONLY: nx, ny     ! the fixed block size
+    USE D2Q9_Mod, ONLY: ex, ey
+    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR, &
-              Chemical_Potential_AMR, Gradient_AMR
+    PUBLIC :: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR
 
 CONTAINS
 
@@ -81,68 +79,5 @@ SUBROUTINE Macroscopic_Values_h_AMR( h, C )
     END DO
 
 END SUBROUTINE Macroscopic_Values_h_AMR
-
-!**********************************************************************
-
-SUBROUTINE Chemical_Potential_AMR( dx, C, mu )
-    IMPLICIT NONE
-    INTEGER, INTENT(IN)  :: dx
-    REAL(wp), INTENT(IN)  :: C(-1:nx+2,-1:ny+2)
-    REAL(wp), INTENT(OUT) :: mu(nx,ny)
-
-    INTEGER :: i, j
-    REAL(wp) :: D2C(nx,ny)
-
-    CALL Laplacian_AMR( C, D2C )
-
-    DO j = 1, ny
-    DO i = 1, nx
-        mu(i,j) = 4._wp*Beta*C(i,j)*(C(i,j)-1._wp)*(C(i,j)-0.5_wp) - kappa*D2C(i,j)/dx**2
-    END DO
-    END DO
-
-CONTAINS
-
-    SUBROUTINE Laplacian_AMR( C, D2C )
-        REAL(wp), INTENT(IN)  :: C(-1:nx+2,-1:ny+2)
-        REAL(wp), INTENT(OUT) :: D2C(nx,ny)
-
-        INTEGER :: i, j
-
-        DO j = 1, ny
-        DO i = 1, nx
-
-            D2C(i,j) = ( C(i-1,j-1)+C(i+1,j-1)+C(i-1,j+1)+C(i+1,j+1) &
-                     +4*(C(i  ,j-1)+C(i-1,j  )+C(i+1,j  )+C(i  ,j+1)) - 20*C(i,j) )/6
-
-        END DO
-        END DO
-
-    END SUBROUTINE Laplacian_AMR
-
-END SUBROUTINE Chemical_Potential_AMR
-
-!**********************************************************************
-
-SUBROUTINE Gradient_AMR( dx, C, DcDx, DcDy )
-    !== isotropic gradient of C, in units of the finest lattice
-    INTEGER, INTENT(IN)  :: dx
-    REAL(wp), INTENT(IN)  :: C(-1:nx+2,-1:ny+2)
-    REAL(wp), INTENT(OUT) :: DcDx(nx,ny), DcDy(nx,ny)
-
-    INTEGER :: i, j
-
-    DO j = 1, ny
-    DO i = 1, nx
-
-        DcDx(i,j) = ( (C(i+1,j) - C(i-1,j))/3._wp  + &
-                    (C(i+1,j+1) + C(i+1,j-1) - C(i-1,j+1) - C(i-1,j-1))/12._wp )/REAL(dx,wp)
-        DcDy(i,j) = ( (C(i,j+1) - C(i,j-1))/3._wp + &
-                    (C(i+1,j+1) + C(i-1,j+1) - C(i+1,j-1) - C(i-1,j-1))/12._wp )/REAL(dx,wp)
-
-    END DO
-    END DO
-
-END SUBROUTINE Gradient_AMR
 
 END MODULE LBM_Common_Mod

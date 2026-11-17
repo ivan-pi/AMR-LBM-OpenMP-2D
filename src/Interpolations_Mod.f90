@@ -1,12 +1,16 @@
 !================================================
-!   Biquadratic/bilinear interpolation between coarse and fine levels
+!   Biquadratic/bilinear interpolation between coarse and fine levels:
+!   strips for the ghost cells (Biquadratic_*), whole blocks for the
+!   refinement and derefinement (Bilinear_*)
 !================================================
 MODULE Interpolations_Mod
     USE Kinds_Mod, ONLY: wp
+    USE Config_Mod, ONLY: nx, ny     ! block size, for the whole-block prolongation
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Biquadratic_from_Fine, Biquadratic_from_Fine_f, Biquadratic_from_Coarse, &
-              Biquadratic_from_Coarse_f, Bilinear_from_Fine, Bilinear_from_Fine_f
+              Biquadratic_from_Coarse_f, Bilinear_from_Fine, Bilinear_from_Fine_f, &
+              Bilinear_from_Coarse, Bilinear_from_Coarse_f
 
 CONTAINS
 
@@ -148,5 +152,66 @@ SUBROUTINE Bilinear_from_Fine_f( i2, j2, X2, Y2, hin_F, hout_C, nk )
     END DO
 
 END
+
+!******************************************************************************
+
+SUBROUTINE Bilinear_from_Coarse_f( fin_C, fout_F )
+    !== one block (9 directions) to the 2x2 children, bilinear, extrapolated
+    !   at the block edges (no ghost cells)
+    REAL(wp), INTENT(IN ) :: fin_C (nx,ny,9)
+    REAL(wp), INTENT(OUT) :: fout_F(2*nx,2*ny,9)
+
+    INTEGER :: i, X, a, b
+    REAL(wp) :: tmp(2*nx,ny,9)
+
+    DO i = 1, 2*nx
+        X = MAX( 1, MIN(nx-1,i/2) )
+        a = 2*i - 4*X + 1
+        b = 4 - a
+
+        tmp(i,:,:) = b * fin_C(X,:,:) + a * fin_C(X+1,:,:)
+
+    END DO
+    DO i = 1, 2*ny
+        X = MAX( 1, MIN(ny-1,i/2) )
+        a = 2*i - 4*X + 1
+        b = 4 - a
+
+        fout_F(:,i,:) = b * tmp(:,X,:) + a * tmp(:,X+1,:)
+
+    END DO
+    fout_F = fout_F / 16._wp
+
+END SUBROUTINE Bilinear_from_Coarse_f
+
+!******************************************************************************
+
+SUBROUTINE Bilinear_from_Coarse( Cin_C, Cout_F )
+    !== one block of C with one ghost layer to the 2x2 children, bilinear
+    REAL(wp), INTENT(IN ) :: Cin_C (0:  nx+1,0:  ny+1)
+    REAL(wp), INTENT(OUT) :: Cout_F(0:2*nx+1,0:2*ny+1)
+
+    INTEGER :: i, X, a, b
+    REAL(wp) :: tmp(0:2*nx+1,0:ny+1)
+
+    DO i = 0, 2*nx+1
+        X = i/2
+        a = 2*i - 4*X + 1
+        b = 4 - a
+
+        tmp(i,:) = b * Cin_C(X,:) + a * Cin_C(X+1,:)
+
+    END DO
+    DO i = 0, 2*ny+1
+        X = i/2
+        a = 2*i - 4*X + 1
+        b = 4 - a
+
+        Cout_F(:,i) = b * tmp(:,X) + a * tmp(:,X+1)
+
+    END DO
+    Cout_F = Cout_F / 16._wp
+
+END SUBROUTINE Bilinear_from_Coarse
 
 END MODULE Interpolations_Mod

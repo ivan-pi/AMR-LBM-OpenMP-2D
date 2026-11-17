@@ -4,22 +4,11 @@
 MODULE Refine_Mod
     USE Kinds_Mod, ONLY: wp
     USE Mesh_Mod, ONLY: Add_Child_Blocks, Array_of_Leaf_Blocks
-    USE Prolong_Mod, ONLY: Prolong_Bilinear
-    USE Restrict_Mod, ONLY: Restrict_Bilinear
-    USE Model_Mod, ONLY: Block_Kernel
+    USE Prolong_Restrict_Mod, ONLY: Prolong_Bilinear, Restrict_Bilinear
+    USE Model_Mod, ONLY: Block_Kernel, Block_Error
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Block_Error, Refine_Derefine_Mesh, Interface_Error, Interface_Light_Phase_Error
-
-    !== refinement criterion: an error indicator of block b, compared with
-    !   the refinement / derefinement tolerances
-    ABSTRACT INTERFACE
-        FUNCTION Block_Error( b ) RESULT( err )
-            IMPORT :: wp
-            INTEGER, INTENT(IN) :: b
-            REAL(wp) :: err
-        END FUNCTION Block_Error
-    END INTERFACE
+    PUBLIC :: Refine_Derefine_Mesh
 
 CONTAINS
 
@@ -28,7 +17,7 @@ CONTAINS
 !   (the model's kernel) completes the pressure and velocity of new blocks;
 !   changed tells whether any block was refined or derefined
 SUBROUTINE Refine_Derefine_Mesh( criterion, Moments_g, refinTol, derefTol, changed )
-    USE Parameters_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
     PROCEDURE(Block_Error)  :: criterion
     PROCEDURE(Block_Kernel) :: Moments_g
@@ -50,7 +39,8 @@ END SUBROUTINE Refine_Derefine_Mesh
 !******************************************************************************
 
 SUBROUTINE Flag_for_refinement( criterion, refinTol )
-    USE Parameters_Mod, ONLY: Blk, Nblks, minLevels, maxLevels
+    USE Config_Mod, ONLY: minLevels, maxLevels
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: refinTol
@@ -105,7 +95,7 @@ END
 !******************************************************************************
 
 RECURSIVE SUBROUTINE Check_Level_Jump( n, I )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     IMPLICIT NONE
 
     INTEGER, INTENT(IN) :: n, I
@@ -128,7 +118,8 @@ END SUBROUTINE Check_Level_Jump
 !******************************************************************************
 
 SUBROUTINE Flag_for_derefinement( criterion, derefTol )
-    USE Parameters_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, minLevels
+    USE Config_Mod, ONLY: minLevels
+    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: derefTol
@@ -197,8 +188,7 @@ SUBROUTINE enforce_1_Level_jump_deref_2D( n )
 CONTAINS
 
     SUBROUTINE Check_Level_Jump_Deref_2D( n, Neighbor, c1, c2 )
-        USE Parameters_Mod, ONLY: Blk
-
+        USE Blocks_Mod, ONLY: Blk
         INTEGER, INTENT(IN) :: n, Neighbor, c1, c2
 
         INTEGER :: b, c, I
@@ -228,7 +218,7 @@ END SUBROUTINE enforce_1_Level_jump_deref_2D
 !******************************************************************************
 
 SUBROUTINE Derefine
-    USE Parameters_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Blk, Nblks
     IMPLICIT NONE
 
     INTEGER :: n
@@ -243,8 +233,7 @@ SUBROUTINE Derefine
 CONTAINS
 
     SUBROUTINE Remove_Children( par )
-        USE Parameters_Mod, ONLY: Blk, KK, Root, emptyBlk
-
+        USE Blocks_Mod, ONLY: Blk, nUnused, Root, emptyBlk
         INTEGER, INTENT(IN) :: par
 
         INTEGER :: c1, c4, grandpa, s1, s4, c
@@ -282,7 +271,7 @@ CONTAINS
         emptyBlk%N    =  c1
         emptyBlk%next => NULL()
 
-        KK = KK + 4
+        nUnused = nUnused + 4
 
     END SUBROUTINE Remove_Children
 
@@ -292,7 +281,7 @@ END SUBROUTINE Derefine
 !******************************************************************************
 
 SUBROUTINE Refine( Moments_g )
-    USE Parameters_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, KK, Root, Linked_Free_Blocks
+    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nUnused, Root, Linked_Free_Blocks
     IMPLICIT NONE
     PROCEDURE(Block_Kernel) :: Moments_g
 
@@ -307,7 +296,7 @@ SUBROUTINE Refine( Moments_g )
                     IF( ASSOCIATED(Root) )THEN
                         c1 = Root%N
                         CALL Add_Child_Blocks( n, c1 )
-                        KK = KK - 4
+                        nUnused = nUnused - 4
                         used => Root
                         Root => Root%next       ! null after the last free slot
                         DEALLOCATE( used )
@@ -324,61 +313,5 @@ SUBROUTINE Refine( Moments_g )
     END DO
 
 END SUBROUTINE Refine
-
-!******************************************************************************
-
-!== interface criterion: maximum gradient of the phase field C in block b
-FUNCTION Interface_Error( b ) RESULT( err )
-    USE Parameters_Mod, ONLY: Blk
-    IMPLICIT NONE
-    INTEGER, INTENT(IN) :: b
-    REAL(wp) :: err
-
-    err = Max_Gradient( Blk(b)%dx, Blk(b)%C )
-
-CONTAINS
-
-    FUNCTION Max_Gradient( dx, C ) RESULT( err )
-        USE Parameters_Mod, ONLY: nx, ny
-        INTEGER, INTENT(IN ) :: dx
-        REAL(wp), INTENT(IN ) :: C(-1:nx+2,-1:ny+2)
-        REAL(wp) :: err
-
-        INTEGER :: I, J
-        REAL(wp) :: DC
-
-        err = 0
-
-        DO J = 1, ny
-        DO I = 1, nx
-
-            DC = (C(I+1,J) - C(I-1,J))**2 + (C(I,J+1) - C(I,J-1))**2
-
-            err = MAX( err, DC )
-
-        END DO
-        END DO
-
-        err = SQRT(err)/(2._wp*dx)
-
-    END FUNCTION Max_Gradient
-
-END FUNCTION Interface_Error
-
-!******************************************************************************
-
-!== interface criterion, and in addition the light phase (C < 1) of block b:
-!   max( Interface_Error, max(1-C) ). Keeps the interior of bubbles on the
-!   finest level, which models with a pressure normalised by the density
-!   (g ~ p/rho, e.g. Model_PRE2017_Mod) need for stability.
-FUNCTION Interface_Light_Phase_Error( b ) RESULT( err )
-    USE Parameters_Mod, ONLY: Blk, nx, ny
-    IMPLICIT NONE
-    INTEGER, INTENT(IN) :: b
-    REAL(wp) :: err
-
-    err = MAX( Interface_Error(b), MAXVAL( 1._wp - Blk(b)%C(1:nx,1:ny) ) )
-
-END FUNCTION Interface_Light_Phase_Error
 
 END MODULE Refine_Mod

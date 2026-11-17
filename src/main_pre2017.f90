@@ -4,8 +4,8 @@
 !================================================
 PROGRAM Rising_Bubble_AMR_2D_PRE2017
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS, OMP_GET_NUM_PROCS
-    USE Rising_Bubble_Mod, ONLY: AMR_LBM_Rising_Bubble
-    USE Refine_Mod, ONLY: Interface_Light_Phase_Error
+    USE Solver_Mod, ONLY: Run_AMR_LBM
+    USE Rising_Bubble_Mod, ONLY: Rising_Bubble_Case
     USE Model_PRE2017_Mod, ONLY: PRE2017_Model
     IMPLICIT NONE
 
@@ -18,7 +18,7 @@ PROGRAM Rising_Bubble_AMR_2D_PRE2017
 
     CALL SYSTEM_CLOCK( t1, Rate )
 
-    CALL AMR_LBM_Rising_Bubble( PRE2017_Model(), Interface_Light_Phase_Error )
+    CALL Run_AMR_LBM( PRE2017_Model(), Rising_Bubble_Case() )
 
     CALL SYSTEM_CLOCK( t2 )
     PRINT '(/A)',' *****************************************'

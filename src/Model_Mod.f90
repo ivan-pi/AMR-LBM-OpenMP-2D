@@ -3,17 +3,28 @@
 !
 !   The drivers select a model; the time loop, the mesh adaptation and
 !   the initialization call the model only through these kernels, which
-!   act on the leaf block with the given index.
+!   act on the leaf block with the given index. The model also chooses
+!   its refinement criterion, as the blocks it needs on the finest level
+!   depend on the model.
 !================================================
 MODULE Model_Mod
+    USE Kinds_Mod, ONLY: wp
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Block_Kernel, LBM_Model
+    PUBLIC :: Block_Kernel, Block_Error, LBM_Model
 
     ABSTRACT INTERFACE
         SUBROUTINE Block_Kernel( n )
             INTEGER, INTENT(IN) :: n        ! block index
         END SUBROUTINE Block_Kernel
+
+        !== refinement criterion: an error indicator of block b, compared
+        !   with the refinement / derefinement tolerances
+        FUNCTION Block_Error( b ) RESULT( err )
+            IMPORT :: wp
+            INTEGER, INTENT(IN) :: b        ! block index
+            REAL(wp) :: err
+        END FUNCTION Block_Error
     END INTERFACE
 
     TYPE :: LBM_Model
@@ -28,6 +39,11 @@ MODULE Model_Mod
         PROCEDURE(Block_Kernel), POINTER, NOPASS :: Moments_g  => NULL()
         !== Moments_g followed by Collide, sharing the derivatives of C
         PROCEDURE(Block_Kernel), POINTER, NOPASS :: Moments_and_Collide => NULL()
+        !== refinement criterion: blocks with Refinement_Error > refine_tol are
+        !   refined, groups of siblings all below deref_tol are derefined
+        PROCEDURE(Block_Error),  POINTER, NOPASS :: Refinement_Error => NULL()
+        REAL(wp) :: refine_tol = 0.002_wp
+        REAL(wp) :: deref_tol  = 0.001_wp
     END TYPE LBM_Model
 
 END MODULE Model_Mod

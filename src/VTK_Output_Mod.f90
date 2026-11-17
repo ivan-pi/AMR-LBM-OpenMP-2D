@@ -108,7 +108,8 @@ CONTAINS
 
     !== all leaf cells (nx*ny quads per leaf block)
     SUBROUTINE Build_Cells( md )
-        USE Parameters_Mod, ONLY: Blk, nLeaf, LeafBlks, nx, ny, L0
+        USE Config_Mod, ONLY: nx, ny, L0
+        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
         TYPE(Mesh_Data), INTENT(OUT) :: md
 
             INTEGER :: nPts, nCells, m, b, i, j, k, e, p0, dx
@@ -160,7 +161,8 @@ CONTAINS
 
     !== the block structure: one quad per leaf block
     SUBROUTINE Build_Blocks( md )
-        USE Parameters_Mod, ONLY: Blk, nLeaf, LeafBlks, nx, ny, L0
+        USE Config_Mod, ONLY: nx, ny, L0
+        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
         TYPE(Mesh_Data), INTENT(OUT) :: md
 
             INTEGER :: m, b, dx, k

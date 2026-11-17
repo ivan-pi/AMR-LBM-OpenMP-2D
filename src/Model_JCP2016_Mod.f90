@@ -12,10 +12,11 @@
 !================================================
 MODULE Model_JCP2016_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Parameters_Mod, ONLY: nx, ny     ! the fixed block size
-    USE D2Q9_Mod, ONLY: Wa, W, M0, wc, ex, ey, Gy, taul, tauh, Rhol, Rhoh
+    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
+    USE D2Q9_Mod, ONLY: Wa, ex, ey
+    USE Physics_Mod, ONLY: W, M0, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE LBM_Common_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: JCP2016_Model
@@ -31,13 +32,26 @@ FUNCTION JCP2016_Model() RESULT( model )
     model%Collide    => Collide_Block
     model%Moments_g  => Moments_g_Block
     model%Moments_and_Collide => Moments_and_Collide_Block
+    model%Refinement_Error    => Interface_Error
 
 END FUNCTION JCP2016_Model
 
 !**********************************************************************
 
+!== refinement criterion: the interface, i.e. the largest |grad C| of block b
+FUNCTION Interface_Error( b ) RESULT( err )
+    USE Blocks_Mod, ONLY: Blk
+    INTEGER, INTENT(IN) :: b
+    REAL(wp) :: err
+
+    err = Max_Gradient( Blk(b)%dx, Blk(b)%C )
+
+END FUNCTION Interface_Error
+
+!**********************************************************************
+
 SUBROUTINE Collide_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
@@ -51,7 +65,7 @@ END SUBROUTINE Collide_Block
 !**********************************************************************
 
 SUBROUTINE Moments_g_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
@@ -66,7 +80,7 @@ END SUBROUTINE Moments_g_Block
 
 !== moments of g and collision of one block with one chemical potential
 SUBROUTINE Moments_and_Collide_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     REAL(wp) :: mu(nx,ny)
@@ -83,7 +97,7 @@ END SUBROUTINE Moments_and_Collide_Block
 
 !== equilibrium h and g of block n from C, P, Ux, Uy (no body force)
 SUBROUTINE Initialize_Block( n )
-    USE Parameters_Mod, ONLY: Blk
+    USE Blocks_Mod, ONLY: Blk
     INTEGER, INTENT(IN) :: n
 
     INTEGER :: dx, i, j

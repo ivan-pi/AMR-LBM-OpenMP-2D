@@ -98,24 +98,33 @@ always accumulated in double precision.
 
 | file (`src/`) | contents |
 |---|---|
-| `main_jcp2016.f90`, `main_pre2017.f90` | driver programs: select the model and the refinement criterion |
-| `Rising_Bubble_Mod.f90` | rising-bubble case: parameters, initial state, time loop (for any model) |
-| `Kinds_Mod.f90`, `Parameters_Mod.f90`, `D2Q9_Mod.f90` | kinds, mesh/case sizes and block storage, lattice and physical constants |
-| `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) |
-| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90` | the two models' kernels |
-| `LBM_Common_Mod.f90` | kernels shared by the models: streaming, C = sum(h), gradient, chemical potential |
+| `main_jcp2016.f90`, `main_pre2017.f90` | driver programs: select the model and the case |
+| `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
+| `Case_Mod.f90`, `Rising_Bubble_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics); the rising bubble |
+| `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
+| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90` | the two models' kernels and criteria |
+| `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
+| `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
+| `Blocks_Mod.f90`, `Mesh_Mod.f90`, `Neighbors_Mod.f90` | block storage (quadtree, leaf lists, free list), the domain and child blocks, neighbours |
+| `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement; data transfer to children and parents |
 | `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers) and of h/g, wall conditions, coarse/fine interpolation |
-| `Mesh_Mod.f90`, `Neighbors_Mod.f90`, `Refine_Mod.f90`, `Prolong_Mod.f90`, `Restrict_Mod.f90` | block quadtree, neighbours, refinement/derefinement and data transfer |
 | `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
+
+`code_structure.mmd` is a Mermaid diagram of the module dependencies.
 
 Every file holds one module of the same name, so all calls are checked against
 explicit interfaces at compile time. Modules are `PRIVATE` by default and list
 their public entities explicitly; helpers used by a single routine are internal
 procedures of that routine.
 
-Mesh adaptation takes the refinement criterion and the model's moments kernel
-as procedure arguments (`Refine_Derefine_Mesh(criterion, Moments_g, refinTol,
-derefTol)`, criteria with the `Block_Error` interface from `Refine_Mod`).
+The solver knows the model and the case only through the procedure pointers
+of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`): a new case is a new
+module with a constructor like `Rising_Bubble_Case()`, a new model one like
+`JCP2016_Model()`. Each model brings its refinement criterion (`Block_Error`
+interface) and tolerances, since the blocks it needs on the finest level depend
+on the model; mesh adaptation receives them, and the model's moments kernel, as
+procedure arguments (`Refine_Derefine_Mesh(criterion, Moments_g, refine_tol,
+deref_tol)`).
 All sources go through the preprocessor
 (CMake `Fortran_PREPROCESS`); the case size, precision and optional fVTKHDF
 support are set with the CMake options above.
@@ -133,7 +142,7 @@ on the same AMR mesh, ghost-cell, streaming and output machinery.
 | g | physical pressure | normalised by the density (sum g = 3p/ρ) |
 | collision of g | reduced MRT: stress moments relax with 1/τ(C), all others with 1 | the same MRT as in the paper, Eqs. (27)–(29) (the reference code uses BGK); viscous force from the stress relaxed with the same rates, Eq. (31) |
 | relaxation time τ(C) | 1/τ interpolated linearly in C (harmonic) | dynamic viscosity interpolated linearly in C, τ = μ/(ρc²ₛ), Eqs. (24)–(25) |
-| refinement criterion | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block) |
+| refinement criterion (in the model module) | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block) |
 
 The PRE 2017 model needs the bubble interior on the finest level: its g
 carries 3p/ρ, a thousand times the physical pressure in the light phase, and
@@ -250,7 +259,7 @@ The stages of step 4 share work with orphaned `!$OMP DO` constructs whose
 implicit barriers order the stages. Leaf blocks are kept sorted by level, so
 each ghost-cell pass only visits the blocks of its level. Mesh adaptation
 (flagging is parallel) runs between the parallel regions. The block kernels take
-the block size from `Parameters_Mod` (compile-time constants) instead of as
+the block size from `Config_Mod` (compile-time constants) instead of as
 dummy arguments, so their loop bounds and array shapes are known to the
 compiler even when they are not inlined across modules: this made streaming
 plus C = sum(h) 42–48 % faster with gfortran and about 25 % with ifx (8–12 %
@@ -270,5 +279,6 @@ one of the two compilers, so they are left out.
 collision kernel (about half of the time step) on a flat block-pool data
 layout, which compares device results and timings against the host. See the
 header of `offload/collision_offload.f90`. It uses the solver's `Kinds_Mod`
-and `D2Q9_Mod` and follows `AMR_PRECISION` and `AMR_BLOCK_SIZE`. Intel Arc A-series GPUs have no
+(with local copies of the D2Q9 constants) and follows `AMR_PRECISION` and
+`AMR_BLOCK_SIZE`. Intel Arc A-series GPUs have no
 FP64 hardware, so double precision there relies on driver emulation.
