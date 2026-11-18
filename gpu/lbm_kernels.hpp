@@ -12,6 +12,7 @@
 //  Single precision: the Arc A-series GPUs have no FP64 hardware.
 //==============================================================================
 #pragma once
+#include <cstdint>
 #include <sycl/sycl.hpp>
 #include <cstdio>
 #include <cstdlib>
@@ -205,93 +206,90 @@ inline void fill_C(real *C, const Mesh &M, int n, int k, bool second) {
 }
 
 //------------------------------------------------------------------------------
-//  Ghost cells of h or g (Ghost_hg_Mod): side or corner k of leaf n,
-//  direction q. All 8 moving directions are copied (the CPU copies only
+//  One output value of the strip interpolations (as from_fine / from_coarse,
+//  same operation order), in(i,j) the 0-based input: for the ghost fills
+//  of h and g one work-item per ghost cell
+//------------------------------------------------------------------------------
+template <class In>
+inline real fine_at(int X, int Y, In in) {
+    const int JpY = (Y + 1) % 2, j0 = 2 * Y - 1 - JpY, aY = 3 - 4 * JpY, cY = 2 - aY;
+    const int JpX = (X + 1) % 2, i0 = 2 * X - 1 - JpX, aX = 3 - 4 * JpX, cX = 2 - aX;
+    auto tmp = [&](int i) { return real(aY) * in(i, j0 - 1) + real(6) * in(i, j0) + real(cY) * in(i, j0 + 1); };
+    return real(aX) / real(64) * tmp(i0 - 1) + real(6) / real(64) * tmp(i0) + real(cX) / real(64) * tmp(i0 + 1);
+}
+
+template <class In>
+inline real coarse_at(int x, int y, In in) {
+    const int Iy = (y + 1) / 2, ay = 5 - 8 * ((y + 1) % 2), cy = 2 - ay;
+    const int Ix = (x + 1) / 2, ax = 5 - 8 * ((x + 1) % 2), cx = 2 - ax;
+    auto tmp = [&](int i) { return real(ay) * in(i, Iy - 1) + real(30) * in(i, Iy) + real(cy) * in(i, Iy + 1); };
+    return real(ax) / real(1024) * tmp(Ix - 1) + real(30) / real(1024) * tmp(Ix) + real(cx) / real(1024) * tmp(Ix + 1);
+}
+
+//------------------------------------------------------------------------------
+//  Ghost cells of h or g (Ghost_hg_Mod): the ghost cell at position pos
+//  (1..n along a side, ignored at a corner) of side or corner k of leaf n,
+//  direction q. All 8 moving directions are filled (the CPU copies only
 //  those the streaming reads; the others are never read)
 //------------------------------------------------------------------------------
-inline void fill_f(real *f, const Mesh &M, int n, int k, int q, bool second) {
+inline void fill_f_cell(real *f, const Mesh &M, int n, int k, int pos, int q, bool second) {
     const int nb = nbr_of(M, n, k);
     if (nb <= 0) return;
     const bool coarse = M.level[nb - 1] < M.level[n - 1];
     if (coarse != second) return;
+    const bool leaf = M.leaf[nb - 1];
 
-    if (k <= 2) {
-        const int s = di[k], ig = s < 0 ? 0 : NX + 1;
-        real out[1][NY];
+    if (k <= 2) {                                                   // Fill_Side_X
+        const int s = di[k], ig = s < 0 ? 0 : NX + 1, j = pos;
+        real v;
         if (coarse) {
             const int i0 = s < 0 ? NX + 1 : 0, Y = (NY / 2) * (M.bJ[n - 1] % 2);
-            real in[3][NY / 2 + 2];
-            for (int j = 0; j < NY / 2 + 2; ++j)
-                for (int l = 0; l < 3; ++l) in[l][j] = f[hix(i0 + s * l, Y + j, q, nb)];
-            from_coarse<3, NY / 2 + 2, 1, NY>(in, out);
+            v = coarse_at(1, j, [&](int l, int jj) { return f[hix(i0 + s * l, Y + jj, q, nb)]; });
+        } else if (leaf) {
+            v = f[hix(s < 0 ? NX : 1, j, q, nb)];
         } else {
-            const int i0 = s < 0 ? NX : 1;
-            if (M.leaf[nb - 1]) {
-                for (int j = 1; j <= NY; ++j) f[hix(ig, j, q, n)] = f[hix(i0, j, q, nb)];
-                return;
-            }
-            const int c = M.child[nb - 1] + (s < 0 ? 1 : 0);
-            real in[3][2 * NY];
-            for (int j = 1; j <= NY; ++j)
-                for (int l = 0; l < 3; ++l) {
-                    in[l][j - 1]      = f[hix(i0 + s * l, j, q, c)];
-                    in[l][NY + j - 1] = f[hix(i0 + s * l, j, q, c + 2)];
-                }
-            from_fine<3, 2 * NY, 1, NY>(in, out);
+            const int i0 = s < 0 ? NX : 1, c = M.child[nb - 1] + (s < 0 ? 1 : 0);     // children c, c+2
+            v = fine_at(1, j, [&](int l, int jj) {
+                return jj < NY ? f[hix(i0 + s * l, jj + 1, q, c)] : f[hix(i0 + s * l, jj - NY + 1, q, c + 2)];
+            });
         }
-        for (int j = 1; j <= NY; ++j) f[hix(ig, j, q, n)] = out[0][j - 1];
+        f[hix(ig, j, q, n)] = v;
 
-    } else if (k <= 4) {
-        const int s = dj[k], jg = s < 0 ? 0 : NY + 1;
-        real out[NX][1];
+    } else if (k <= 4) {                                            // Fill_Side_Y
+        const int s = dj[k], jg = s < 0 ? 0 : NY + 1, i = pos;
+        real v;
         if (coarse) {
             const int j0 = s < 0 ? NY + 1 : 0, X = (NX / 2) * (M.bI[n - 1] % 2);
-            real in[NX / 2 + 2][3];
-            for (int l = 0; l < 3; ++l)
-                for (int i = 0; i < NX / 2 + 2; ++i) in[i][l] = f[hix(X + i, j0 + s * l, q, nb)];
-            from_coarse<NX / 2 + 2, 3, NX, 1>(in, out);
+            v = coarse_at(i, 1, [&](int ii, int l) { return f[hix(X + ii, j0 + s * l, q, nb)]; });
+        } else if (leaf) {
+            v = f[hix(i, s < 0 ? NY : 1, q, nb)];
         } else {
-            const int j0 = s < 0 ? NY : 1;
-            if (M.leaf[nb - 1]) {
-                for (int i = 1; i <= NX; ++i) f[hix(i, jg, q, n)] = f[hix(i, j0, q, nb)];
-                return;
-            }
-            const int c = M.child[nb - 1] + (s < 0 ? 2 : 0);
-            real in[2 * NX][3];
-            for (int l = 0; l < 3; ++l)
-                for (int i = 1; i <= NX; ++i) {
-                    in[i - 1][l]      = f[hix(i, j0 + s * l, q, c)];
-                    in[NX + i - 1][l] = f[hix(i, j0 + s * l, q, c + 1)];
-                }
-            from_fine<2 * NX, 3, NX, 1>(in, out);
+            const int j0 = s < 0 ? NY : 1, c = M.child[nb - 1] + (s < 0 ? 2 : 0);     // children c, c+1
+            v = fine_at(i, 1, [&](int ii, int l) {
+                return ii < NX ? f[hix(ii + 1, j0 + s * l, q, c)] : f[hix(ii - NX + 1, j0 + s * l, q, c + 1)];
+            });
         }
-        for (int i = 1; i <= NX; ++i) f[hix(i, jg, q, n)] = out[i - 1][0];
+        f[hix(i, jg, q, n)] = v;
 
-    } else {
+    } else {                                                        // Fill_Corner
         const int sx = di[k], sy = dj[k];
         const int ig = sx < 0 ? 0 : NX + 1, jg = sy < 0 ? 0 : NY + 1;
-        real out[1][1];
+        real v;
         if (coarse) {
             const int px = M.bI[n - 1] % 2, py = M.bJ[n - 1] % 2;
             const int i0 = sx < 0 ? NX + 1 - (NX / 2) * px : (NX / 2) * (1 - px);
             const int j0 = sy < 0 ? NY + 1 - (NY / 2) * py : (NY / 2) * (1 - py);
-            real in[3][3];
-            for (int m = 0; m < 3; ++m)
-                for (int l = 0; l < 3; ++l) in[l][m] = f[hix(i0 + sx * l, j0 + sy * m, q, nb)];
-            from_coarse<3, 3, 1, 1>(in, out);
+            v = coarse_at(1, 1, [&](int l, int m) { return f[hix(i0 + sx * l, j0 + sy * m, q, nb)]; });
         } else {
             const int i0 = sx < 0 ? NX : 1, j0 = sy < 0 ? NY : 1;
-            if (M.leaf[nb - 1]) {
-                f[hix(ig, jg, q, n)] = f[hix(i0, j0, q, nb)];
-                return;
+            if (leaf) {
+                v = f[hix(i0, j0, q, nb)];
+            } else {
+                const int c = M.child[nb - 1] + facing1[k];
+                v = fine_at(1, 1, [&](int l, int m) { return f[hix(i0 + sx * l, j0 + sy * m, q, c)]; });
             }
-            const int c = M.child[nb - 1] + facing1[k];
-            real in[3][3];
-            for (int m = 0; m < 3; ++m)
-                for (int l = 0; l < 3; ++l) in[l][m] = f[hix(i0 + sx * l, j0 + sy * m, q, c)];
-            from_fine<3, 3, 1, 1>(in, out);
         }
-        f[hix(ig, jg, q, n)] = out[0][0];
+        f[hix(ig, jg, q, n)] = v;
     }
 }
 
@@ -379,19 +377,29 @@ void ghost_C_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool second) {
 
 //------------------------------------------------------------------------------
 //  Ghost cells of h and g (Ghost_hg_Mod: Fill_Ghost_Cells_hg), one pass:
-//  work-group of 64 per leaf, item = (k, q), then the bounce-back rows
-//  (BC_Mod: Bounce_Back_3/4, first pass only)
+//  work-group of 4*8*NX per leaf, one item per side cell and direction
+//  (position fastest: contiguous along the bottom and top sides), the
+//  first 32 also one corner and direction each; then the bounce-back rows
+//  (BC_Mod: Bounce_Back_3/4, first pass only) after a group barrier
 //------------------------------------------------------------------------------
 inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool second) {
-    constexpr int WG = 64;
+    constexpr int WG = 4 * 8 * NX;
+    static_assert(NX == NY && WG >= 32);
     real *h = F.h, *g = F.g;
     q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
         const int n = M.leaves[it.get_group(0)];
         const int t = int(it.get_local_id(0));
-        if (second && !M.coarser[n - 1]) return;
-        const int k = t / 8 + 1, qd = t % 8 + 2;
-        fill_f(h, M, n, k, qd, second);
-        fill_f(g, M, n, k, qd, second);
+        if (second && !M.coarser[n - 1]) return;          // uniform over the group
+        {
+            const int pos = t % NX + 1, qd = (t / NX) % 8 + 2, k = t / (8 * NX) + 1;
+            fill_f_cell(h, M, n, k, pos, qd, second);
+            fill_f_cell(g, M, n, k, pos, qd, second);
+        }
+        if (t < 32) {
+            const int qd = t % 8 + 2, k = t / 8 + 5;
+            fill_f_cell(h, M, n, k, 0, qd, second);
+            fill_f_cell(g, M, n, k, 0, qd, second);
+        }
         if (second) return;
         sycl::group_barrier(it.get_group());
         const bool bottom = nbr_of(M, n, 3) < 0, top = nbr_of(M, n, 4) < 0;
@@ -413,9 +421,13 @@ inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool seco
 }
 
 //------------------------------------------------------------------------------
-//  refinement criterion of each leaf (Phase_Field_Mod: Max_Gradient)
+//  refinement criterion of each leaf (Phase_Field_Mod: Max_Gradient). The
+//  flagging depends on it only through err > refine_tol and err > deref_tol:
+//  these two bits are kept per leaf (code) and *changed is set when any of
+//  them differs from the previous call
 //------------------------------------------------------------------------------
-inline void criterion(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, real *err) {
+inline void criterion(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, real refine_tol, real deref_tol,
+                      real *err, std::uint8_t *code, int *changed) {
     constexpr int WG = NX * NY;
     const real *C = F.C;
     q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
@@ -424,7 +436,16 @@ inline void criterion(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, rea
         const real dx = C[cix(i + 1, j, n)] - C[cix(i - 1, j, n)];
         const real dy = C[cix(i, j + 1, n)] - C[cix(i, j - 1, n)];
         const real e2 = sycl::reduce_over_group(it.get_group(), dx * dx + dy * dy, sycl::maximum<real>());
-        if (t == 0) err[m] = sycl::sqrt(e2) * (real(0.5) * p.inv_dx[M.level[n - 1]]);
+        if (t == 0) {
+            const real e = sycl::sqrt(e2) * (real(0.5) * p.inv_dx[M.level[n - 1]]);
+            err[m] = e;
+            const std::uint8_t c = std::uint8_t((e > refine_tol ? 1 : 0) | (e > deref_tol ? 2 : 0));
+            if (c != code[m]) {
+                code[m] = c;
+                sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device> a(*changed);
+                a.store(1);
+            }
+        }
     });
 }
 

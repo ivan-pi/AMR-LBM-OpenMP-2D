@@ -713,7 +713,8 @@ public:
     Solver()
         : q_(sycl::gpu_selector_v, sycl::property::queue::in_order{}),
           fields_(q_, MaxBlks), mesh_(q_, MaxBlks),
-          err_(q_, MaxBlks), list_(q_, 4 * size_t(MaxBlks)), list2_(q_, 4 * size_t(MaxBlks)),
+          err_(q_, MaxBlks), code_(q_, MaxBlks), changed_(q_, 1),
+          list_(q_, 4 * size_t(MaxBlks)), list2_(q_, 4 * size_t(MaxBlks)),
           err_slot_(MaxBlks + 1, 0) {}
 
     void run(int argc, char **argv);
@@ -723,6 +724,9 @@ private:
     DeviceFields fields_;
     DeviceMesh mesh_;
     DeviceArray<real> err_;
+    DeviceArray<std::uint8_t> code_;    // criterion bits per leaf (see criterion())
+    DeviceArray<int> changed_;
+    bool reflag_ = true;                // the bits are stale: flag on the host anyway
     DeviceArray<int> list_, list2_;     // block lists for the kernels
     Quadtree tree_;
     BubbleCase case_;
@@ -755,14 +759,22 @@ private:
         for (bool second : {false, true}) ghost_hg_pass(q_, F(), M(), nLeaf(), second);
     }
 
-    //== criterion on the device, flagging on the host, field work on the device
+    //== criterion on the device, flagging on the host, field work on the device.
+    //   The flagging is a function of the criterion bits of the leaves: if
+    //   none changed since a flagging without mesh change, it is skipped
     bool adapt_mesh() {
-        criterion(q_, F(), M(), p_, nLeaf(), err_.get());
+        q_.fill(changed_.get(), 0, 1);
+        criterion(q_, F(), M(), p_, nLeaf(), refine_tol, deref_tol, err_.get(), code_.get(), changed_.get());
+        int changed = 0;
+        changed_.get(&changed, 1);
+        if (!changed && !reflag_) return false;
+
         err_leaf_.resize(nLeaf());
         err_.get(err_leaf_.data(), err_leaf_.size());
         for (int m = 0; m < nLeaf(); ++m) err_slot_[tree_.leaves()[m]] = err_leaf_[m];
 
         const auto change = tree_.adapt(err_slot_, refine_tol, deref_tol);
+        reflag_ = change.has_value();       // a new mesh: the bits belong to the old leaves
         if (!change) return false;
         if (!change->restrict_pairs.empty())
             restrict_children(q_, F(), list_.put(change->restrict_pairs), int(change->restrict_pairs.size() / 2));
