@@ -12,3 +12,5 @@ vtk/
 *.mp4
 *.gif
 *.png
+# Python caches
+__pycache__/
