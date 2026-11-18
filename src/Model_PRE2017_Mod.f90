@@ -63,7 +63,23 @@ FUNCTION Interface_Light_Phase_Error( b ) RESULT( err )
     INTEGER, INTENT(IN) :: b
     REAL(wp) :: err
 
-    err = MAX( Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) ), MAXVAL( 1._wp - Blk_C(1:nx,1:ny, b) ) )
+    INTEGER  :: i, j
+    REAL(wp) :: Cmin, rowmin(nx)
+
+    !== max(1-C) = 1 - min(C) (1-x rounds monotonically), the minimum kept per
+    !   cell of a row and reduced at the end (as in Max_Gradient; MAXVAL
+    !   carries the IEEE NaN handling and does not vectorize)
+    rowmin = Blk_C(1:nx,1, b)
+    DO j = 2, ny
+    DO i = 1, nx
+        rowmin(i) = MIN( rowmin(i), Blk_C(i,j, b) )
+    END DO
+    END DO
+    Cmin = rowmin(1)
+    DO i = 2, nx
+        Cmin = MIN( Cmin, rowmin(i) )
+    END DO
+    err = MAX( Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) ), 1._wp - Cmin )
 
 END FUNCTION Interface_Light_Phase_Error
 

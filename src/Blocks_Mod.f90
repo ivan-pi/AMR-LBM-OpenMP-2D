@@ -58,6 +58,7 @@ MODULE Blocks_Mod
         INTEGER :: child  = -1          ! first of the four children child:child+3; -1 for a leaf
         INTEGER :: nbr(8) =  0
         LOGICAL :: IsLeaf = .FALSE.
+        LOGICAL :: Finer  = .FALSE.     ! a neighbour is refined: finer blocks read its ghost cells
         LOGICAL :: Refin  = .FALSE.
         LOGICAL :: Deref  = .FALSE.
     END TYPE Block_t

@@ -291,7 +291,46 @@ run-time sizes for the ghost cells of C. Both ghost modules have one routine
 per strip shape for the restriction and interpolation, with the side as a
 sign (the strips across an edge run outwards from a fixed start with that
 stride); the same-level copies of h and g, the hot path, are written out per
-direction with constant sections. The final division by 64 or 1024 is
+direction with constant sections. A block whose neighbours are all leaves
+or coarser gets only the directions its own streaming reads (3 of 8 per side
+on the finest level, 6 of 8 with Lax-Wendroff); all 8 only next to a refined
+neighbour, whose children interpolate from its ghost cells (ghost cells of h
+and g 7 % faster on 1 thread, 12 % on 6, results unchanged).
+
+Things that did not help (measured, gfortran 16, i7-11700K): 512-bit vectors
+for the cell kernels (`-mprefer-vector-width=512`; a row of 8 cells per
+vector) make the collision ~20 % faster on 1 thread, but on 6 threads the
+cores clock down from 4.5 to 4.05 GHz and the whole step gets slower; fusing
+the moments of g into the PRE 2017 collision loop makes it 14 % slower
+(register pressure in the already long loop body); and dropping the barrier
+between the levels of the ghost-cell fills does not make them faster (the
+waiting is load imbalance), so a two-phase fill would not pay off. The
+JCP 2016 collision loop spills registers (about 35-50 vector stores to the
+stack per pass of ~450 instructions; PRE 2017: 7), but splitting it into an
+h and a g pass made it 2 % slower: the spills stay in L1.
+
+The ghost cells of h and g are limited by data movement, not by
+instructions: per perf they take ~19 % of the cycles but ~12 % of the
+instructions, ~40 % of the L1-miss stall cycles and ~45 % of the stalls on a
+full store buffer (each left/right ghost value is in its own cache line),
+and on 6 threads a third of the reads of lines modified by another core.
+Two attempts at that did not pay off: filling the ghost cells and streaming
+block by block while the block is in L1 (the streaming then writes into a
+second h/g pool, as the neighbours still read the unstreamed values; no
+copy-back) was 8 % slower on 1 thread, as the doubled data no longer fits
+the caches as well; and copying the left/right columns with an AVX-512
+gather and scatter (a C kernel with intrinsics) was neutral on 1 thread and
+10 % slower on 6, the cores clocking down for the 512-bit instructions.
+This CPU (Rocket Lake) executes 512-bit FMAs on one fused port, so AVX-512
+has no more flops per cycle than AVX2, which the build uses throughout. An
+AVX2 version (two 4-wide gathers, scalar stores as AVX2 has no scatter) made
+the ghost cells 8-10 % slower on 1 thread: gfortran's scalar moves are as fast
+and inline, the C kernel does not.
+
+The refinement criteria reduce over a block with a running maximum
+(minimum) per cell of a row and one short reduction at the end; gfortran's
+MAXVAL/MINVAL follow the IEEE NaN rules and do not vectorize (the PRE 2017
+criterion went from 4 % to 2 % of the run). The final division by 64 or 1024 is
 folded into the weights (powers of two, so the results are unchanged). This
 made the ghost cells of h and g about 27 % faster with both compilers (10 %
 of the whole step on one thread); a gprofng line profile showed the generic

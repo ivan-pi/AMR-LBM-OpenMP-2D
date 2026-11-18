@@ -2,9 +2,14 @@
 !   Ghost cells of the distribution functions h and g
 !
 !   Only the moving directions 2:9 get ghost values: the rest population
-!   (k=1) never streams. (Edge-specific subsets are not enough: the
-!   coarse-to-fine interpolation also reads the coarse neighbour's ghost
-!   rows and corners in the same direction.)
+!   (k=1) never streams. A block's own streaming reads fewer: the exact
+!   shift on the finest level the 3 directions entering across a side (1
+!   at a corner), Lax-Wendroff the 6 crossing a side (2 at a corner). All 8
+!   are needed only where finer blocks interpolate from the ghost cells
+!   (rows and corners included), i.e. next to a refined neighbour
+!   (Blk%Finer); elsewhere the same-level copies fill only the read ones.
+!   The wall conditions stay consistent: the values they compute from
+!   unfilled directions are never read.
 !
 !   The ghost cells of a block in direction k come from the neighbour there:
 !   a copy from a same-level leaf, the restriction of the facing children of
@@ -21,12 +26,22 @@
 !================================================
 MODULE Ghost_hg_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Config_Mod, ONLY: nx, ny     ! the fixed block size (strip shapes)
+    USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, di, dj, facing
     USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Fill_Ghost_Cells_hg
+
+    !== directions read from the ghost cells in direction k by the streaming:
+    !   all moving ones, those of the exact shift, those of Lax-Wendroff
+    INTEGER, PARAMETER :: all_dirs(8) = [ 2, 3, 4, 5, 6, 7, 8, 9 ]
+    INTEGER, PARAMETER :: nShift(8) = [ 3, 3, 3, 3, 1, 1, 1, 1 ]
+    INTEGER, PARAMETER :: shift_dirs(3,8) = RESHAPE( [ 2,6,9, 4,7,8, 3,6,7, 5,8,9, &
+                                                       6,0,0, 9,0,0, 7,0,0, 8,0,0 ], [3,8] )
+    INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 2, 2, 2, 2 ]
+    INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
+                                                    6,8,0,0,0,0, 7,9,0,0,0,0, 7,9,0,0,0,0, 6,8,0,0,0,0 ], [6,8] )
 
 CONTAINS
 
@@ -48,7 +63,13 @@ SUBROUTINE Fill_Ghost_Cells_hg
                 nb = Blk(n)%nbr(k)
                 IF( nb <= 0 ) CYCLE
                 IF( Blk(nb)%Level == L .AND. Blk(nb)%IsLeaf ) THEN
-                    CALL Copy_Same_Level( n, nb, k )
+                    IF( Blk(n)%Finer ) THEN
+                        CALL Copy_Same_Level( n, nb, k, all_dirs )
+                    ELSEIF( L == maxLevels ) THEN
+                        CALL Copy_Same_Level( n, nb, k, shift_dirs(1:nShift(k),k) )
+                    ELSE
+                        CALL Copy_Same_Level( n, nb, k, lw_dirs(1:nLW(k),k) )
+                    END IF
                 ELSEIF( k <= 2 ) THEN
                     CALL Fill_Side_X( n, nb, di(k) )
                 ELSEIF( k <= 4 ) THEN
@@ -75,40 +96,45 @@ END SUBROUTINE Fill_Ghost_Cells_hg
 
 !******************************************************************************
 
-!== the ghost cells of block n from its same-level leaf neighbour nb in
-!   direction k: written out with constant sections, the hot path (with
-!   computed ones the compiler cannot rule out an overlap of the two
-!   sections of the same pool array and copies through a temporary)
-SUBROUTINE Copy_Same_Level( n, nb, k )
+!== the directions dirs of the ghost cells of block n from its same-level leaf
+!   neighbour nb in direction k: written out with constant sections, the hot
+!   path (with computed ones the compiler cannot rule out an overlap of the
+!   two sections of the same pool array and copies through a temporary)
+SUBROUTINE Copy_Same_Level( n, nb, k, dirs )
     IMPLICIT NONE
-    INTEGER, INTENT(IN) :: n, nb, k
+    INTEGER, INTENT(IN) :: n, nb, k, dirs(:)
 
-    SELECT CASE( k )
-    CASE( 1 )
-        Blk_h(0,   1:ny,2:9, n) = Blk_h(nx,1:ny,2:9, nb)
-        Blk_g(0,   1:ny,2:9, n) = Blk_g(nx,1:ny,2:9, nb)
-    CASE( 2 )
-        Blk_h(nx+1,1:ny,2:9, n) = Blk_h(1, 1:ny,2:9, nb)
-        Blk_g(nx+1,1:ny,2:9, n) = Blk_g(1, 1:ny,2:9, nb)
-    CASE( 3 )
-        Blk_h(1:nx,0,   2:9, n) = Blk_h(1:nx,ny,2:9, nb)
-        Blk_g(1:nx,0,   2:9, n) = Blk_g(1:nx,ny,2:9, nb)
-    CASE( 4 )
-        Blk_h(1:nx,ny+1,2:9, n) = Blk_h(1:nx,1, 2:9, nb)
-        Blk_g(1:nx,ny+1,2:9, n) = Blk_g(1:nx,1, 2:9, nb)
-    CASE( 5 )
-        Blk_h(0,   0,   2:9, n) = Blk_h(nx,ny,2:9, nb)
-        Blk_g(0,   0,   2:9, n) = Blk_g(nx,ny,2:9, nb)
-    CASE( 6 )
-        Blk_h(0,   ny+1,2:9, n) = Blk_h(nx,1, 2:9, nb)
-        Blk_g(0,   ny+1,2:9, n) = Blk_g(nx,1, 2:9, nb)
-    CASE( 7 )
-        Blk_h(nx+1,0,   2:9, n) = Blk_h(1, ny,2:9, nb)
-        Blk_g(nx+1,0,   2:9, n) = Blk_g(1, ny,2:9, nb)
-    CASE( 8 )
-        Blk_h(nx+1,ny+1,2:9, n) = Blk_h(1, 1, 2:9, nb)
-        Blk_g(nx+1,ny+1,2:9, n) = Blk_g(1, 1, 2:9, nb)
-    END SELECT
+    INTEGER :: q, d
+
+    DO q = 1, SIZE(dirs)
+        d = dirs(q)
+        SELECT CASE( k )
+        CASE( 1 )
+            Blk_h(0,   1:ny,d, n) = Blk_h(nx,1:ny,d, nb)
+            Blk_g(0,   1:ny,d, n) = Blk_g(nx,1:ny,d, nb)
+        CASE( 2 )
+            Blk_h(nx+1,1:ny,d, n) = Blk_h(1, 1:ny,d, nb)
+            Blk_g(nx+1,1:ny,d, n) = Blk_g(1, 1:ny,d, nb)
+        CASE( 3 )
+            Blk_h(1:nx,0,   d, n) = Blk_h(1:nx,ny,d, nb)
+            Blk_g(1:nx,0,   d, n) = Blk_g(1:nx,ny,d, nb)
+        CASE( 4 )
+            Blk_h(1:nx,ny+1,d, n) = Blk_h(1:nx,1, d, nb)
+            Blk_g(1:nx,ny+1,d, n) = Blk_g(1:nx,1, d, nb)
+        CASE( 5 )
+            Blk_h(0,   0,   d, n) = Blk_h(nx,ny,d, nb)
+            Blk_g(0,   0,   d, n) = Blk_g(nx,ny,d, nb)
+        CASE( 6 )
+            Blk_h(0,   ny+1,d, n) = Blk_h(nx,1, d, nb)
+            Blk_g(0,   ny+1,d, n) = Blk_g(nx,1, d, nb)
+        CASE( 7 )
+            Blk_h(nx+1,0,   d, n) = Blk_h(1, ny,d, nb)
+            Blk_g(nx+1,0,   d, n) = Blk_g(1, ny,d, nb)
+        CASE( 8 )
+            Blk_h(nx+1,ny+1,d, n) = Blk_h(1, 1, d, nb)
+            Blk_g(nx+1,ny+1,d, n) = Blk_g(1, 1, d, nb)
+        END SELECT
+    END DO
 
 END SUBROUTINE Copy_Same_Level
 

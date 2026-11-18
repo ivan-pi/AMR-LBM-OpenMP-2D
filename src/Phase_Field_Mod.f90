@@ -70,27 +70,29 @@ END SUBROUTINE Gradient_AMR
 !**********************************************************************
 
 !== largest |grad C| of a block (central differences), in units of the
-!   finest lattice: the interface indicator of the refinement criteria
+!   finest lattice: the interface indicator of the refinement criteria.
+!   The maximum is kept per cell of a row (one SIMD lane each) and reduced
+!   at the end: a single running maximum chains every cell, and MAXVAL
+!   carries the IEEE NaN handling, both slow
 FUNCTION Max_Gradient( inv_dx, C ) RESULT( err )
     REAL(wp), INTENT(IN ) :: inv_dx         ! 1/dx in finest-level lattice units
     REAL(wp), INTENT(IN ) :: C(-1:nx+2,-1:ny+2)
     REAL(wp) :: err
 
-    INTEGER :: I, J
-    REAL(wp) :: DC
+    INTEGER  :: I, J
+    REAL(wp) :: rowmax(nx)
 
-    err = 0
-
+    rowmax = 0
     DO J = 1, ny
     DO I = 1, nx
-
-        DC = (C(I+1,J) - C(I-1,J))**2 + (C(I,J+1) - C(I,J-1))**2
-
-        err = MAX( err, DC )
-
+        rowmax(I) = MAX( rowmax(I), (C(I+1,J) - C(I-1,J))**2 + (C(I,J+1) - C(I,J-1))**2 )
     END DO
     END DO
 
+    err = 0
+    DO I = 1, nx
+        err = MAX( err, rowmax(I) )
+    END DO
     err = SQRT(err)*(0.5_wp*inv_dx)
 
 END FUNCTION Max_Gradient

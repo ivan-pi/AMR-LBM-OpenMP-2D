@@ -29,19 +29,20 @@ if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
 endif()
 
-# L0/AMR_BLOCK_SIZE blocks per direction on level 0 must be a power of two;
-# its log2 is the finest level, and AMR_MIN_LEVEL must lie in [1, finest level]
-math(EXPR _amr_blocks0 "${AMR_L0} / ${AMR_BLOCK_SIZE}")
-math(EXPR _amr_l0_check "${_amr_blocks0} * ${AMR_BLOCK_SIZE}")
-math(EXPR _amr_pow2 "${_amr_blocks0} & (${_amr_blocks0} - 1)")
-if(AMR_BLOCK_SIZE LESS 4 OR NOT AMR_L0 EQUAL _amr_l0_check OR NOT _amr_pow2 EQUAL 0)
+# The finest level is the L with AMR_BLOCK_SIZE * 2**L == AMR_L0 (none: L0 is
+# not a power-of-two multiple of the block size); AMR_MIN_LEVEL must lie in
+# [1, finest level]
+unset(_amr_max_level)
+foreach(_lv RANGE 30)
+  math(EXPR _amr_width "${AMR_BLOCK_SIZE} << ${_lv}")
+  if(_amr_width EQUAL AMR_L0)
+    set(_amr_max_level ${_lv})
+    break()
+  endif()
+endforeach()
+if(AMR_BLOCK_SIZE LESS 4 OR NOT DEFINED _amr_max_level)
   message(FATAL_ERROR "AMR_L0/AMR_BLOCK_SIZE must be a power of two (block size >= 4)")
 endif()
-set(_amr_max_level 0)
-while(_amr_blocks0 GREATER 1)
-  math(EXPR _amr_blocks0 "${_amr_blocks0} / 2")
-  math(EXPR _amr_max_level "${_amr_max_level} + 1")
-endwhile()
 if(AMR_MIN_LEVEL LESS 1 OR AMR_MIN_LEVEL GREATER _amr_max_level)
   message(FATAL_ERROR "AMR_MIN_LEVEL must be between 1 and ${_amr_max_level} for this L0/AMR_BLOCK_SIZE")
 endif()

@@ -185,6 +185,18 @@ SUBROUTINE Rebuild_Neighbor_Table
         IF( Blk(n)%Level >= 0 ) at( Slot( Blk(n)%Level, Blk(n)%I, Blk(n)%J ) ) = 0
     END DO
 
+    !== blocks next to a refined same-level block: the finer blocks beyond it
+    !   interpolate from their ghost cells
+    DO n = 1, Nblks
+        IF( Blk(n)%Level < 0 ) CYCLE
+        Blk(n)%Finer = .FALSE.
+        DO k = 1, 8
+            b = Blk(n)%nbr(k)
+            IF( b <= 0 ) CYCLE
+            IF( Blk(b)%Level == Blk(n)%Level .AND. .NOT. Blk(b)%IsLeaf ) Blk(n)%Finer = .TRUE.
+        END DO
+    END DO
+
     CALL SYSTEM_CLOCK( t1 )
     t_nbr_table    = t_nbr_table + (t1 - t0)
     n_nbr_rebuilds = n_nbr_rebuilds + 1
