@@ -332,7 +332,8 @@ thread: each update handles the window's input and draws (at most about 60
 frames a second), and while the run is paused or finished the solver thread
 runs the window's event loop. The window therefore reacts to input only at
 updates: choose `--view=N` so that there are several per second. The
-help and status text keep their size on Retina displays.
+help and status text keep their size on Retina displays and use a font
+atlas rendered at twice the size there.
 
 ```
 brew install gcc sdl2 cmake

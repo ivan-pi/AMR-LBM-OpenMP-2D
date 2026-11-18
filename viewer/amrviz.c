@@ -330,6 +330,8 @@ typedef struct {
     int    paused, finished;
     int    redraw, reupload;             /* pending work for the next render_step */
     Uint64 last_draw;                    /* performance counter of the last frame */
+    int    font_scale;                   /* atlas in font_tex: 1 or 2 (high DPI), 0 none yet */
+    double font_ratio;                   /* drawable pixels per window unit it was set for */
 } render_t;
 
 /* owned by the render thread, or by the caller's thread without one */
@@ -428,14 +430,9 @@ static int init_gl(render_t *r)
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
     glEnableVertexAttribArray(3);
-    glGenTextures(1, &r->font_tex);
+    glGenTextures(1, &r->font_tex);      /* the atlas is chosen in draw (set_font) */
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, r->font_tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, AMRVIZ_FONT_W * AMRVIZ_FONT_COUNT, AMRVIZ_FONT_H, 0,
-                 GL_RED, GL_UNSIGNED_BYTE, amrviz_font);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -707,6 +704,31 @@ static void help(render_t *r, int pw, int ph)
 
 /* --- frame --------------------------------------------------------------- */
 
+/* font atlas for `ratio` drawable pixels per window unit: the 2x atlas on
+   high-DPI (Retina) displays, where each glyph pixel is one screen pixel.
+   Checked every frame: the ratio changes when the window moves to another
+   display. Exact ratios 1 and 2 are sampled pixel for pixel, others
+   interpolated. */
+static void set_font(render_t *r, double ratio)
+{
+    int scale = ratio >= 1.5 ? 2 : 1;
+    GLint filter = (ratio == (double)scale) ? GL_NEAREST : GL_LINEAR;
+    if (scale == r->font_scale && ratio == r->font_ratio) return;
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, r->font_tex);
+    if (scale != r->font_scale) {
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, scale * AMRVIZ_FONT_W * AMRVIZ_FONT_COUNT,
+                     scale * AMRVIZ_FONT_H, 0, GL_RED, GL_UNSIGNED_BYTE,
+                     scale == 2 ? amrviz_font_2x : amrviz_font);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glActiveTexture(GL_TEXTURE0);
+    r->font_scale = scale;
+    r->font_ratio = ratio;
+}
+
 static void draw(render_t *r)
 {
     int ww, wh, pw, ph;
@@ -714,6 +736,7 @@ static void draw(render_t *r)
 
     SDL_GL_GetDrawableSize(r->win, &pw, &ph);
     glViewport(0, 0, pw, ph);
+    set_font(r, ww > 0 ? (double)pw / ww : 1.0);
     glClearColor(0.12f, 0.12f, 0.13f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     if (r->have_data && V.front->n > 0) {
