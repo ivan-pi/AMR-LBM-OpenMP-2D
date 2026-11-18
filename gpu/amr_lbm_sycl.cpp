@@ -18,15 +18,20 @@
 //      Quadtree         the mesh on the host; adapt() returns a MeshChange,
 //                       the field work it implies
 //      BubbleCase       parameters (namelist), initial state, diagnostics
+//      HostFields       a copy of C, P, Ux, Uy on the host (output steps)
+//      VtkSeries        VTK XML output, the files of the Fortran VTK writer
 //      StageTimers      wall time per stage of the time step
 //      Solver           the time loop
 //
 //  Usage:  amr_lbm_sycl [number_of_time_steps [output_interval_in_steps]]
 //          AMR_CASE=case.nml   namelist &rising_bubble (as the Fortran code)
 //          AMR_GPU_SYNC=1      wait after every stage (stage timings)
+//          AMR_OUTPUT=vtk|none field output (default vtk)
 //  The host thread waits for the GPU many times per step: on a loaded
 //  machine pin it to an idle CPU (taskset -c <cpu>), or every wait costs a
-//  scheduler time slice. Writes bubble_rise.dat; no field output yet.
+//  scheduler time slice. Writes bubble_rise.dat and, at the output steps,
+//  vtk/Rising_Bubble_2D_NNNN.vtu, vtk/AMR_Blocks_NNNN.vtu with the series
+//  Rising_Bubble_2D.pvd, AMR_Blocks.pvd (as VTK_Output_Mod).
 //==============================================================================
 #include "lbm_kernels.hpp"
 
@@ -35,8 +40,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -496,6 +503,180 @@ private:
 };
 
 //==============================================================================
+//  Host copy of the fields of blocks 1..nblks needed for output: C and Uy at
+//  every diagnostic step, P and Ux as well at the output steps
+//==============================================================================
+struct HostFields {
+    std::vector<real> C, P, Ux, Uy;
+
+    void fetch(const DeviceFields &d, int nblks, bool all) {
+        C.resize(CB * nblks);
+        Uy.resize(PB * nblks);
+        d.C.get(C.data(), C.size());
+        d.Uy.get(Uy.data(), Uy.size());
+        if (!all) return;
+        P.resize(PB * nblks);
+        Ux.resize(PB * nblks);
+        d.P.get(P.data(), P.size());
+        d.Ux.get(Ux.data(), Ux.size());
+    }
+};
+
+//==============================================================================
+//  VTK XML output (VTK_Output_Mod: Write_VTU_Step): per output step the leaf
+//  cells and the leaf blocks as UnstructuredGrids of quads in vtk/, raw
+//  binary appended data with UInt64 size headers, and the two .pvd time
+//  series rewritten every step (valid if the run stops). Coordinates /L0.
+//==============================================================================
+class VtkSeries {
+public:
+    void step(real time, const Quadtree &T, const HostFields &f) {
+        if (times_.empty()) std::filesystem::create_directories(dir_);
+        times_.push_back(time);
+        char id[8];
+        std::snprintf(id, sizeof id, "%04d", int(times_.size()) - 1);
+        cells(T, f).write(dir_ + "/Rising_Bubble_2D_" + id + ".vtu");
+        blocks(T).write(dir_ + "/AMR_Blocks_" + id + ".vtu");
+        pvd("Rising_Bubble_2D");
+        pvd("AMR_Blocks");
+    }
+
+private:
+    const std::string dir_ = "vtk";
+    std::vector<real> times_;
+
+    //== quads with scalar real fields, an optional 3-vector and integer fields
+    struct UGrid {
+        std::vector<real> pts;              // 3 per point
+        std::vector<std::int32_t> conn, offs;
+        std::vector<std::uint8_t> types;
+        std::vector<std::pair<std::string, std::vector<real>>> rfields;
+        std::string vname;
+        std::vector<real> vdata;            // 3 per cell
+        std::vector<std::pair<std::string, std::vector<std::int32_t>>> ifields;
+
+        void add_quad(std::int32_t p0, std::int32_t p1, std::int32_t p2, std::int32_t p3) {
+            conn.insert(conn.end(), {p0, p1, p2, p3});
+            offs.push_back(std::int32_t(conn.size()));
+            types.push_back(9);             // VTK_QUAD
+        }
+
+        void write(const std::string &file) const {
+            static_assert(sizeof(real) == 4, "Float32 output");
+            std::ofstream out(file, std::ios::binary);
+            if (!out) throw std::runtime_error("cannot write " + file);
+            const size_t nCells = types.size(), nPts = pts.size() / 3;
+            std::uint64_t off = 0;
+            auto header = [&](const std::string &name, const char *type, int ncomp, std::uint64_t bytes) {
+                out << "  <DataArray type=\"" << type << "\" Name=\"" << name << "\" NumberOfComponents=\""
+                    << ncomp << "\" format=\"appended\" offset=\"" << off << "\"/>\n";
+                off += 8 + bytes;
+            };
+            out << "<?xml version=\"1.0\"?>\n"
+                << "<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\" header_type=\"UInt64\">\n"
+                << "<UnstructuredGrid>\n"
+                << "<Piece NumberOfPoints=\"" << nPts << "\" NumberOfCells=\"" << nCells << "\">\n"
+                << "<CellData>\n";
+            for (const auto &[name, v] : rfields) header(name, "Float32", 1, v.size() * 4);
+            if (!vname.empty()) header(vname, "Float32", 3, vdata.size() * 4);
+            for (const auto &[name, v] : ifields) header(name, "Int32", 1, v.size() * 4);
+            out << "</CellData>\n<Points>\n";
+            header("Points", "Float32", 3, pts.size() * 4);
+            out << "</Points>\n<Cells>\n";
+            header("connectivity", "Int32", 1, conn.size() * 4);
+            header("offsets", "Int32", 1, offs.size() * 4);
+            header("types", "UInt8", 1, types.size());
+            out << "</Cells>\n</Piece>\n</UnstructuredGrid>\n<AppendedData encoding=\"raw\">\n_";
+            auto blob = [&](const auto &v) {
+                const std::uint64_t n = v.size() * sizeof(v[0]);
+                out.write(reinterpret_cast<const char *>(&n), 8);
+                out.write(reinterpret_cast<const char *>(v.data()), std::streamsize(n));
+            };
+            for (const auto &[name, v] : rfields) blob(v);
+            if (!vname.empty()) blob(vdata);
+            for (const auto &[name, v] : ifields) blob(v);
+            blob(pts); blob(conn); blob(offs); blob(types);
+            out << "\n</AppendedData>\n</VTKFile>\n";
+        }
+    };
+
+    //== all leaf cells, with C, P, Velocity, Level and Block
+    static UGrid cells(const Quadtree &T, const HostFields &f) {
+        UGrid g;
+        const size_t nCells = size_t(T.nLeaf()) * NX * NY;
+        std::vector<real> C, P;
+        std::vector<std::int32_t> level, block;
+        C.reserve(nCells); P.reserve(nCells); level.reserve(nCells); block.reserve(nCells);
+        g.vname = "Velocity";
+        std::int32_t p0 = 0;
+        for (int b : T.leaves()) {
+            const Block &blk = T[b];
+            const int dx = dx_level(blk.level);
+            for (int j = 1; j <= NY + 1; ++j)
+                for (int i = 1; i <= NX + 1; ++i)
+                    g.pts.insert(g.pts.end(), {real(blk.I * dx * NX + dx * (i - 1)) / real(L0),
+                                               real(blk.J * dx * NY + dx * (j - 1)) / real(L0), real(0)});
+            for (int j = 1; j <= NY; ++j)
+                for (int i = 1; i <= NX; ++i) {
+                    const std::int32_t k = p0 + (j - 1) * (NX + 1) + i - 1;    // lower-left point
+                    g.add_quad(k, k + 1, k + 1 + NX + 1, k + NX + 1);
+                    C.push_back(f.C[cix(i, j, b)]);
+                    P.push_back(f.P[pix(i, j, b)]);
+                    g.vdata.insert(g.vdata.end(), {f.Ux[pix(i, j, b)], f.Uy[pix(i, j, b)], real(0)});
+                    level.push_back(blk.level);
+                    block.push_back(b);
+                }
+            p0 += (NX + 1) * (NY + 1);
+        }
+        g.rfields = {{"C", std::move(C)}, {"P", std::move(P)}};
+        g.ifields = {{"Level", std::move(level)}, {"Block", std::move(block)}};
+        return g;
+    }
+
+    //== one quad per leaf block, with dx, Level, Block and Parent
+    static UGrid blocks(const Quadtree &T) {
+        UGrid g;
+        std::vector<real> dxs;
+        std::vector<std::int32_t> level, block, parent;
+        std::int32_t k = 0;
+        for (int b : T.leaves()) {
+            const Block &blk = T[b];
+            const int dx = dx_level(blk.level);
+            const real x0 = real(blk.I * dx * NX) / real(L0), x1 = real((blk.I + 1) * dx * NX) / real(L0);
+            const real y0 = real(blk.J * dx * NY) / real(L0), y1 = real((blk.J + 1) * dx * NY) / real(L0);
+            g.pts.insert(g.pts.end(), {x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y1, 0});
+            g.add_quad(k, k + 1, k + 2, k + 3);
+            k += 4;
+            dxs.push_back(real(dx) / real(L0));
+            level.push_back(blk.level);
+            block.push_back(b);
+            parent.push_back(blk.parent);
+        }
+        g.rfields = {{"dx", std::move(dxs)}};
+        g.ifields = {{"Level", std::move(level)}, {"Block", std::move(block)}, {"Parent", std::move(parent)}};
+        return g;
+    }
+
+    //== the time series of the files written so far (timestep as Fortran ES16.8E3)
+    void pvd(const std::string &base) const {
+        std::ofstream out(base + ".pvd");
+        out << "<?xml version=\"1.0\"?>\n<VTKFile type=\"Collection\" version=\"0.1\">\n<Collection>\n";
+        for (size_t k = 0; k < times_.size(); ++k) {
+            char t[32], id[8];
+            std::snprintf(t, sizeof t, "%.8E", double(times_[k]));
+            std::string ts(t);                                  // exponent with 3 digits
+            const auto e = ts.find('E');
+            const std::string mant = ts.substr(0, e + 2), ex = ts.substr(e + 2);
+            ts = mant + std::string(3 - std::min<size_t>(3, ex.size()), '0') + ex;
+            std::snprintf(id, sizeof id, "%04zu", k);
+            out << "  <DataSet timestep=\"" << ts << "\" part=\"0\" file=\"" << dir_ << "/" << base << "_" << id
+                << ".vtu\"/>\n";
+        }
+        out << "</Collection>\n</VTKFile>\n";
+    }
+};
+
+//==============================================================================
 //  Wall time per stage; with sync the queue is drained before each reading
 //==============================================================================
 class StageTimers {
@@ -546,7 +727,9 @@ private:
     Quadtree tree_;
     BubbleCase case_;
     Params p_{};
-    std::vector<real> err_leaf_, err_slot_, hC_, hUy_;
+    std::vector<real> err_leaf_, err_slot_;
+    HostFields host_;
+    std::optional<VtkSeries> vtk_;     // empty: AMR_OUTPUT=none
 
     static constexpr int ghost_C = 2;   // JCP 2016: mixed differences reach two cells
     static constexpr real refine_tol = real(0.002), deref_tol = real(0.001);
@@ -592,12 +775,6 @@ private:
         return true;
     }
 
-    void fetch_C_Uy() {
-        hC_.resize(CB * tree_.nblks());
-        hUy_.resize(PB * tree_.nblks());
-        fields_.C.get(hC_.data(), hC_.size());
-        fields_.Uy.get(hUy_.data(), hUy_.size());
-    }
 };
 
 void Solver::run(int argc, char **argv) {
@@ -608,6 +785,11 @@ void Solver::run(int argc, char **argv) {
     std::printf("\nGPU: %s\n", q_.get_device().get_info<sycl::info::device::name>().c_str());
     std::printf("\nCase: rising bubble (Fakhari, Geier & Lee, JCP 2016, Sec. 5.1)\n");
     p_ = case_.setup();
+    const char *o = std::getenv("AMR_OUTPUT");
+    const std::string writer = o && *o ? o : "vtk";
+    if (writer == "vtk") vtk_.emplace();
+    else if (writer != "none") throw std::runtime_error("AMR_OUTPUT: unknown writer " + writer + " (vtk, none)");
+    std::printf("\nOutput writer: %s\n", writer.c_str());
     std::printf("\nBlock pool: %d blocks (%.0f MiB on the device)\n", MaxBlks,
                 MaxBlks * DeviceFields::mib_per_block());
 
@@ -665,10 +847,13 @@ void Solver::run(int argc, char **argv) {
                     moments(q_, F(), p_, put_refs(r), int(r.size()));
                     moments_done = true;
                 }
-                fetch_C_Uy();
+                host_.fetch(fields_, tree_.nblks(), is_output && vtk_);
                 const real time = real(Tn) * case_.time_per_step;
-                if (is_output) case_.print_line(time, tree_, hC_, hUy_);
-                case_.rise(time, tree_, hC_, hUy_);
+                if (is_output) {
+                    if (vtk_) vtk_->step(time, tree_, host_);
+                    case_.print_line(time, tree_, host_.C, host_.Uy);
+                }
+                case_.rise(time, tree_, host_.C, host_.Uy);
             });
             if (Tn == Tf) break;
         }

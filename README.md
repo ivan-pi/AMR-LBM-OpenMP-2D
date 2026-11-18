@@ -356,7 +356,8 @@ same build directory has the Fortran programs in FP32, for comparison: on
 the default case the diagnostics (block counts, U_max) are identical and
 mass and bubble position agree to about 1e-5. The host thread waits for the
 GPU several times per step; on a loaded machine pin it to an idle CPU.
-`AMR_GPU_SYNC=1` gives per-stage times. No field output yet.
+`AMR_GPU_SYNC=1` gives per-stage times. Field output (`AMR_OUTPUT=vtk`, the
+default, or `none`) writes the same VTK series as the Fortran VTK writer.
 
 ## GPU offload prototype
 
