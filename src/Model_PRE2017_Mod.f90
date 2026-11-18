@@ -26,14 +26,16 @@
 !================================================
 MODULE Model_PRE2017_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
-    USE D2Q9_Mod, ONLY: Wa, ex, ey
+    USE Config_Mod, ONLY: nx, ny, inv_dx_level     ! the fixed block size, 1/dx per level
+    USE D2Q9_Mod, ONLY: Wa, exr, eyr
     USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: PRE2017_Model
+
+    REAL(wp), PARAMETER :: c13 = 1._wp/3._wp
 
 CONTAINS
 
@@ -61,7 +63,7 @@ FUNCTION Interface_Light_Phase_Error( b ) RESULT( err )
     INTEGER, INTENT(IN) :: b
     REAL(wp) :: err
 
-    err = MAX( Max_Gradient( Blk(b)%dx, Blk_C(:,:,b) ), MAXVAL( 1._wp - Blk_C(1:nx,1:ny, b) ) )
+    err = MAX( Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) ), MAXVAL( 1._wp - Blk_C(1:nx,1:ny, b) ) )
 
 END FUNCTION Interface_Light_Phase_Error
 
@@ -73,8 +75,8 @@ SUBROUTINE Collide_Block( n )
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Chemical_Potential_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
     CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
                         Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
@@ -88,8 +90,8 @@ SUBROUTINE Moments_g_Block( n )
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Chemical_Potential_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
     CALL Moments_g( Blk_g(:,:,:,n), Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
 
 END SUBROUTINE Moments_g_Block
@@ -104,8 +106,8 @@ SUBROUTINE Moments_and_Collide_Block( n )
 
     REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+    CALL Chemical_Potential_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), mu )
+    CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
     CALL Moments_g( Blk_g(:,:,:,n), Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
     CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
                         Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
@@ -120,30 +122,35 @@ SUBROUTINE Initialize_Block( n )
     INTEGER, INTENT(IN) :: n
 
     INTEGER :: i, j, k
-    REAL(wp) :: eU, eN, Gam, tmp
+    REAL(wp) :: eU, eN, Gam, tmp, g2, c4W
     REAL(wp), DIMENSION(nx,ny) :: DcDx, DcDy, ni, nj, Pn, U2, aC
+
+    c4W = 4._wp/W
 
     !== C: the interior cells only (an associated section starts at index 1)
     ASSOCIATE( C => Blk_C(1:nx,1:ny,n), Ux => Blk_Ux(:,:,n), Uy => Blk_Uy(:,:,n) )
 
-        CALL Gradient_AMR( Blk(n)%dx, Blk_C(:,:,n), DcDx, DcDy )
+        CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
 
         DO j = 1, ny
         DO i = 1, nx
-            tmp = SQRT( DcDx(i,j)**2 + DcDy(i,j)**2 + 1.e-32_wp )
-            ni(i,j) = DcDx(i,j) / tmp
-            nj(i,j) = DcDy(i,j) / tmp
+            !== unit normal; zero away from the interface (|grad C|**2 <= grad2_min),
+            !   branch-free (a mask over a clamped root) so that the loop vectorizes
+            g2 = DcDx(i,j)**2 + DcDy(i,j)**2
+            tmp = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
+            ni(i,j) = DcDx(i,j) * tmp
+            nj(i,j) = DcDy(i,j) * tmp
             Pn(i,j) = 3._wp*Blk_P(i,j, n) / ( Rhol + C(i,j) * (Rhoh - Rhol) )
             U2(i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
-            aC(i,j) = 4._wp*C(i,j)*(1._wp - C(i,j)) / W
+            aC(i,j) = c4W*C(i,j)*(1._wp - C(i,j))
         END DO
         END DO
 
         DO k = 1, 9
             DO j = 1, ny
             DO i = 1, nx
-                eU  = ex(k) * Ux(i,j) + ey(k) * Uy(i,j)
-                eN  = ex(k) * ni(i,j) + ey(k) * nj(i,j)
+                eU  = exr(k) * Ux(i,j) + eyr(k) * Uy(i,j)
+                eN  = exr(k) * ni(i,j) + eyr(k) * nj(i,j)
                 Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
 
                 Blk_h(i,j,k, n) = C(i,j)*Gam - 0.5_wp * Wa(k)*aC(i,j)*eN
@@ -171,24 +178,30 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
 
     INTEGER :: i, j, k
-    REAL(wp) :: tmp, eU, eN, Gam, hS, dg
+    REAL(wp) :: tmp, eU, eN, Gam, hS, dg, g2, c4W
     !== signs of g_k - geq_k in the stress moments m8 = Pxx-Pyy and m9 = Pxy
     REAL(wp), PARAMETER :: w8(9) = [0, 1,-1, 1,-1, 0, 0, 0, 0]
     REAL(wp), PARAMETER :: w9(9) = [0, 0, 0, 0, 0, 1,-1, 1,-1]
     REAL(wp), DIMENSION(nx,ny,9) :: geq, gS
-    REAL(wp), DIMENSION(nx,ny) :: ni, nj, Rho, Pn, tau, U2, aC, &
-                                  sxx, sxy, syy, Fx, Fy, m8, m9
+    REAL(wp), DIMENSION(nx,ny) :: ni, nj, Rho, r3Rho, Pn, tau, U2, aC, &
+                                  sxx, sxy, syy, Fx, Fy, m8, m9, sm
+
+    c4W = 4._wp/W
 
     DO j = 1, ny
     DO i = 1, nx
-        tmp = SQRT( DcDx(i,j)**2 + DcDy(i,j)**2 + 1.e-32_wp )
-        ni (i,j) = DcDx(i,j) / tmp
-        nj (i,j) = DcDy(i,j) / tmp
+        !== unit normal; zero away from the interface (|grad C|**2 <= grad2_min),
+        !   branch-free (a mask over a clamped root) so that the loop vectorizes
+        g2 = DcDx(i,j)**2 + DcDy(i,j)**2
+        tmp = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
+        ni (i,j) = DcDx(i,j) * tmp
+        nj (i,j) = DcDy(i,j) * tmp
         Rho(i,j) = Rhol + C(i,j) * (Rhoh - Rhol)
-        Pn (i,j) = 3._wp*P(i,j) / Rho(i,j)
+        r3Rho(i,j) = 3._wp/Rho(i,j)
+        Pn (i,j) = P(i,j) * r3Rho(i,j)
         tau(i,j) = Relaxation_Time( C(i,j) )
         U2 (i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
-        aC (i,j) = 4._wp*C(i,j)*(1._wp - C(i,j)) / W
+        aC (i,j) = c4W*C(i,j)*(1._wp - C(i,j))
     END DO
     END DO
 
@@ -198,8 +211,8 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     DO k = 1, 9
         DO j = 1, ny
         DO i = 1, nx
-            eU  = ex(k) * Ux(i,j) + ey(k) * Uy(i,j)
-            eN  = ex(k) * ni(i,j) + ey(k) * nj(i,j)
+            eU  = exr(k) * Ux(i,j) + eyr(k) * Uy(i,j)
+            eN  = exr(k) * ni(i,j) + eyr(k) * nj(i,j)
             Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
 
             !== h: equilibrium C*Gamma, sharpening source hS (half in the equilibrium)
@@ -209,9 +222,9 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
             !== g: equilibrium and the stress of the non-equilibrium part
             geq(i,j,k) = Pn(i,j)*Wa(k) + (Gam - Wa(k))
             dg = g(i,j,k) - geq(i,j,k)
-            sxx(i,j) = sxx(i,j) + dg*ex(k)*ex(k)
-            sxy(i,j) = sxy(i,j) + dg*ex(k)*ey(k)
-            syy(i,j) = syy(i,j) + dg*ey(k)*ey(k)
+            sxx(i,j) = sxx(i,j) + dg*exr(k)*exr(k)
+            sxy(i,j) = sxy(i,j) + dg*exr(k)*eyr(k)
+            syy(i,j) = syy(i,j) + dg*eyr(k)*eyr(k)
         END DO
         END DO
     END DO
@@ -225,7 +238,7 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     DO k = 1, 9
         DO j = 1, ny
         DO i = 1, nx
-            gS (i,j,k) = 3._wp*Wa(k) * ( ex(k)*Fx(i,j) + ey(k)*Fy(i,j) ) / Rho(i,j)
+            gS (i,j,k) = Wa(k) * ( exr(k)*Fx(i,j) + eyr(k)*Fy(i,j) ) * r3Rho(i,j)
             geq(i,j,k) = geq(i,j,k) - 0.5_wp*gS(i,j,k)
             m8(i,j) = m8(i,j) + w8(k)*( g(i,j,k) - geq(i,j,k) )
             m9(i,j) = m9(i,j) + w9(k)*( g(i,j,k) - geq(i,j,k) )
@@ -234,8 +247,9 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     END DO
 
     !== reduced MRT: the stress moments relax with s = 1/tau, all others with 1
-    m8 = m8 * (1._wp - 1._wp/tau) * 0.25_wp
-    m9 = m9 * (1._wp - 1._wp/tau) * 0.25_wp
+    sm = 0.25_wp*( 1._wp - 1._wp/tau )        ! one division per cell for both moments
+    m8 = m8 * sm
+    m9 = m9 * sm
     DO k = 1, 9
         g(1:nx,1:ny,k) = geq(:,:,k) + w8(k)*m8 + w9(k)*m9 + gS(:,:,k)
     END DO
@@ -254,7 +268,7 @@ SUBROUTINE Moments_g( g, C, mu, DcDx, DcDy, P, Ux, Uy )
 
     INTEGER :: i, j, k
     REAL(wp) :: eU, Gam, dg
-    REAL(wp), DIMENSION(nx,ny) :: Rho, Pn, tau, U2, &
+    REAL(wp), DIMENSION(nx,ny) :: Rho, hRho, Pn, tau, U2, &
                                   S0, Sx, Sy, sxx, sxy, syy, Fx, Fy
 
     !== zeroth and first moments, one fused loop over the directions
@@ -269,8 +283,8 @@ SUBROUTINE Moments_g( g, C, mu, DcDx, DcDy, P, Ux, Uy )
 !$OMP SIMD
         DO i = 1, nx
             S0(i,j) = S0(i,j) + g(i,j,k)
-            Sx(i,j) = Sx(i,j) + g(i,j,k)*ex(k)
-            Sy(i,j) = Sy(i,j) + g(i,j,k)*ey(k)
+            Sx(i,j) = Sx(i,j) + g(i,j,k)*exr(k)
+            Sy(i,j) = Sy(i,j) + g(i,j,k)*eyr(k)
         END DO
         END DO
     END DO
@@ -292,21 +306,22 @@ SUBROUTINE Moments_g( g, C, mu, DcDx, DcDy, P, Ux, Uy )
         DO j = 1, ny
 !$OMP SIMD PRIVATE( eU, Gam, dg )
         DO i = 1, nx
-            eU  = ex(k) * Ux(i,j) + ey(k) * Uy(i,j)
+            eU  = exr(k) * Ux(i,j) + eyr(k) * Uy(i,j)
             Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
             dg  = g(i,j,k) - ( Pn(i,j)*Wa(k) + (Gam - Wa(k)) )
-            sxx(i,j) = sxx(i,j) + dg*ex(k)*ex(k)
-            sxy(i,j) = sxy(i,j) + dg*ex(k)*ey(k)
-            syy(i,j) = syy(i,j) + dg*ey(k)*ey(k)
+            sxx(i,j) = sxx(i,j) + dg*exr(k)*exr(k)
+            sxy(i,j) = sxy(i,j) + dg*exr(k)*eyr(k)
+            syy(i,j) = syy(i,j) + dg*eyr(k)*eyr(k)
         END DO
         END DO
     END DO
 
     CALL Total_Force( DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy, Fx, Fy )
 
-    Ux = Sx + 0.5_wp*Fx/Rho
-    Uy = Sy + 0.5_wp*Fy/Rho
-    P  = Pn*Rho/3._wp
+    hRho = 0.5_wp/Rho                           ! one division per cell for both components
+    Ux = Sx + Fx*hRho
+    Uy = Sy + Fy*hRho
+    P  = Pn*Rho*c13
 
 END SUBROUTINE Moments_g
 
@@ -322,7 +337,7 @@ SUBROUTINE Total_Force( DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy, Fx, Fy )
     INTEGER :: i, j
     REAL(wp) :: dRho3, s, txx, tyy, txy
 
-    dRho3 = (Rhoh - Rhol)/3._wp
+    dRho3 = (Rhoh - Rhol)*c13
 
     DO j = 1, ny
     DO i = 1, nx

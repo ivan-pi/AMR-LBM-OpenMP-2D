@@ -44,9 +44,9 @@ SUBROUTINE Streaming_LaxWendroff_AMR( cfl, f )
     REAL(wp) :: fnew(nx,ny,2:9), cU, c0, cD
 
     !== Lax-Wendroff weights of the upwind, central and downwind values
-    cU = cfl/2*(1+cfl)
-    c0 = 1 - cfl**2
-    cD = cfl/2*(1-cfl)
+    cU = 0.5_wp*cfl*(1._wp+cfl)
+    c0 = 1._wp - cfl*cfl
+    cD = 0.5_wp*cfl*(1._wp-cfl)
 
     DO i = 2, 9
     DO Y = 1, ny

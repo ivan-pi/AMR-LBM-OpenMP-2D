@@ -12,14 +12,16 @@
 !================================================
 MODULE Model_JCP2016_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
-    USE D2Q9_Mod, ONLY: Wa, ex, ey
+    USE Config_Mod, ONLY: nx, ny, inv_dx_level     ! the fixed block size, 1/dx per level
+    USE D2Q9_Mod, ONLY: Wa, ex, ey, exr, eyr, w0, ws, wd
     USE Physics_Mod, ONLY: W, M0, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: JCP2016_Model
+
+    REAL(wp), PARAMETER :: c13 = 1._wp/3._wp, c112 = 1._wp/12._wp, c23 = 2._wp/3._wp, c16 = 1._wp/6._wp
 
 CONTAINS
 
@@ -44,7 +46,7 @@ FUNCTION Interface_Error( b ) RESULT( err )
     INTEGER, INTENT(IN) :: b
     REAL(wp) :: err
 
-    err = Max_Gradient( Blk(b)%dx, Blk_C(:,:,b) )
+    err = Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) )
 
 END FUNCTION Interface_Error
 
@@ -54,10 +56,11 @@ SUBROUTINE Collide_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    REAL(wp) :: mu(nx,ny)
+    REAL(wp) :: mu(nx,ny), inv_dx
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Collision_h_g_AMR( Blk(n)%dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
+    inv_dx = inv_dx_level( Blk(n)%Level )
+    CALL Chemical_Potential_AMR( inv_dx, Blk_C(:,:,n), mu )
+    CALL Collision_h_g_AMR( inv_dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
                             Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Collide_Block
@@ -68,10 +71,11 @@ SUBROUTINE Moments_g_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    REAL(wp) :: mu(nx,ny)
+    REAL(wp) :: mu(nx,ny), inv_dx
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
+    inv_dx = inv_dx_level( Blk(n)%Level )
+    CALL Chemical_Potential_AMR( inv_dx, Blk_C(:,:,n), mu )
+    CALL Macroscopic_Values_g_AMR( inv_dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
                                    Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
 
 END SUBROUTINE Moments_g_Block
@@ -83,277 +87,306 @@ SUBROUTINE Moments_and_Collide_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    REAL(wp) :: mu(nx,ny)
+    REAL(wp) :: mu(nx,ny), inv_dx
 
-    CALL Chemical_Potential_AMR( Blk(n)%dx, Blk_C(:,:,n), mu )
-    CALL Macroscopic_Values_g_AMR( Blk(n)%dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
+    inv_dx = inv_dx_level( Blk(n)%Level )
+    CALL Chemical_Potential_AMR( inv_dx, Blk_C(:,:,n), mu )
+    CALL Macroscopic_Values_g_AMR( inv_dx, Blk_g(:,:,:,n), Blk_C(:,:,n), mu, &
                                    Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
-    CALL Collision_h_g_AMR( Blk(n)%dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
+    CALL Collision_h_g_AMR( inv_dx, Blk_C(:,:,n), mu, Blk_P(:,:,n), &
                             Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Moments_and_Collide_Block
 
 !**********************************************************************
 
-!== equilibrium h and g of block n from C, P, Ux, Uy (no body force)
+!== equilibrium h and g of block n from C, P, Ux, Uy (no body force);
+!   runs once per block at the start, so it is written for clarity
 SUBROUTINE Initialize_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    INTEGER :: dx, i, j
-    REAL(wp) :: Fb, Rho, dRho3, ni, nj, DcDx, DcDy
-    REAL(wp) :: eDc(9), hlp(9), Gamma(9), mu(nx,ny)
+    INTEGER :: i, j, k
+    REAL(wp) :: inv_dx, Rho, dRho3, cT, ni, nj, DcDx, DcDy, g2, rn, U, V
+    REAL(wp) :: eDc(9), hlp(9), Gamma(9), eU(9), eN(9), mu(nx,ny)
 
-    dx    = Blk(n)%dx
-    dRho3 = (Rhoh - Rhol)/3._wp
+    inv_dx = inv_dx_level( Blk(n)%Level )
+    dRho3  = (Rhoh - Rhol)*c13
+    cT     = 12._wp*M0/W
 
-    CALL Chemical_Potential_AMR( dx, Blk_C(:,:,n), mu )
+    CALL Chemical_Potential_AMR( inv_dx, Blk_C(:,:,n), mu )
 
     DO j = 1, ny
     DO i = 1, nx
+        !== central differences along e_k and the isotropic gradient
+        DO k = 1, 9
+            eDc(k) = ( Blk_C(i+ex(k),j+ey(k), n) - Blk_C(i-ex(k),j-ey(k), n) )*(0.5_wp*inv_dx)
+        END DO
+        DcDx = c13*( eDc(2)-eDc(4) ) + c112*( eDc(6)-eDc(7)-eDc(8)+eDc(9) )
+        DcDy = c13*( eDc(3)-eDc(5) ) + c112*( eDc(6)+eDc(7)-eDc(8)-eDc(9) )
 
-        CALL ED_C_AMR( dx, Blk_C(i-1:i+1,j-1:j+1, n), eDc(:) )
+        !== unit normal (zero away from the interface)
+        g2 = DcDx*DcDx + DcDy*DcDy
+        rn = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
+        ni = DcDx*rn
+        nj = DcDy*rn
 
-        CALL Gradient_ED_AMR( eDc(:), DcDx, DcDy )
-
-        CALL normal_AMR( DcDx, DcDy, ni, nj )
-
+        U   = Blk_Ux(i,j, n)
+        V   = Blk_Uy(i,j, n)
         Rho = Rhol + Blk_C(i,j, n) * (Rhoh - Rhol)
 
-        Fb = 0  !(Rhoh - Rho) * Gy
+        eU(:) = exr(:)*U  + eyr(:)*V
+        eN(:) = exr(:)*ni + eyr(:)*nj
+        Gamma(:) = Wa(:) * ( 1._wp + eU(:)*(3._wp + 4.5_wp*eU(:)) - 1.5_wp*(U*U + V*V) )
 
-        CALL Equilibrium_h_g_AMR( Blk_C(i,j, n), Blk_Ux(i,j, n), Blk_Uy(i,j, n), &
-                                  ni, nj, Gamma(:), Blk_h(i,j,:, n) )
+        Blk_h(i,j,:, n) = Blk_C(i,j, n) * ( Gamma(:) + cT*(1._wp - Blk_C(i,j, n)) * Wa(:) * eN(:) )
 
-        hlp(:) = ( (Gamma(:)-Wa(:))*dRho3 + Gamma(:)*mu(i,j) ) * ( eDc(:) &
-                - (Blk_Ux(i,j, n)*DcDx + Blk_Uy(i,j, n)*DcDy) ) + (ey(:)-Blk_Uy(i,j, n))*Gamma(:) * Fb
-
-        Blk_g(i,j,:, n) = Blk_P(i,j, n)*Wa(:) &
-                         + (Gamma(:)-Wa(:))*Rho/3._wp - 0.5_wp*hlp(:)
-
+        hlp(:) = ( (Gamma(:)-Wa(:))*dRho3 + Gamma(:)*mu(i,j) ) * ( eDc(:) - (U*DcDx + V*DcDy) )
+        Blk_g(i,j,:, n) = Blk_P(i,j, n)*Wa(:) + (Gamma(:)-Wa(:))*(Rho*c13) - 0.5_wp*hlp(:)
     END DO
     END DO
-
-CONTAINS
-
-    SUBROUTINE Equilibrium_h_g_AMR( C, U, V, ni, nj, Gamma, heq )
-        REAL(wp), INTENT(IN)  :: C, U, V, ni, nj
-        REAL(wp), INTENT(OUT) :: Gamma(9), heq(:)     ! assumed shape: h(i,j,:) is strided
-
-        REAL(wp) :: U2, eU(9), eN(9), tmp
-
-        tmp = ( 12*(1-C) )/W * M0
-
-        U2 = U*U + V*V
-
-        eU(:) = ex(:) * U  + ey(:) * V
-        eN(:) = ex(:) * ni + ey(:) * nj
-
-        Gamma(:) = Wa(:) * ( 1._wp + eU(:)*(3._wp + 4.5_wp*eU(:)) - 1.5_wp*U2 )
-
-        heq(:) = C * ( Gamma(:) + tmp * Wa(:) * eN(:) )
-
-    END SUBROUTINE Equilibrium_h_g_AMR
-
-    SUBROUTINE normal_AMR( DcDx, DcDy, ni, nj )
-        REAL(wp), INTENT(IN)  :: DcDx, DcDy
-        REAL(wp), INTENT(OUT) :: ni, nj
-
-        REAL(wp) :: tmp
-
-        tmp = SQRT( DcDx**2 + DcDy**2 + 1.e-32_wp )
-
-        ni = DcDx / tmp
-        nj = DcDy / tmp
-
-    END SUBROUTINE normal_AMR
-
-    SUBROUTINE ED_C_AMR( dx, C, EdotDelC )
-        INTEGER, INTENT(IN)  :: dx
-        REAL(wp), INTENT(IN)  :: C(-1:,-1:)
-        REAL(wp), INTENT(OUT) :: EdotDelC(9)
-
-        INTEGER :: i
-
-        DO i = 1, 9
-            EdotDelC(i) = C(ex(i),ey(i)) - C(-ex(i),-ey(i))
-        END DO
-        EdotDelC(:) = EdotDelC(:) * 0.5_wp/REAL(dx,wp)
-
-    END SUBROUTINE ED_C_AMR
-
-    SUBROUTINE Gradient_ED_AMR( ED, Dx, Dy )
-        REAL(wp),INTENT(IN) :: ED(9)
-        REAL(wp),INTENT(OUT):: Dx, Dy
-
-        Dx = ( ED(2)-ED(4) )/3._wp + ( ED(6)-ED(7)-ED(8)+ED(9) )/12._wp
-        Dy = ( ED(3)-ED(5) )/3._wp + ( ED(6)+ED(7)-ED(8)-ED(9) )/12._wp
-
-    END SUBROUTINE Gradient_ED_AMR
 
 END SUBROUTINE Initialize_Block
 
 !**********************************************************************
 
-SUBROUTINE Collision_h_g_AMR( dx, C, mu, P, Ux, Uy, h, g )
-    !== Collision of h and g for one block:
-    !   1) block buffers: directional stencils, gradients, normals, rho, s9
-    !   2) a direction loop with cells innermost does equilibria and relaxation.
-    !   MRT: g <- g - M^-1 S M (g - geq) with S = diag(1,...,1,s9,s9). As all
-    !   other moments relax with rate 1, this reduces to g = geq plus (1-s9)
-    !   times the two stress moments m8, m9 of g - geq, mapped back as +-m8/4
-    !   (directions 2-5) and +-m9/4 (directions 6-9).
+SUBROUTINE Collision_h_g_AMR( inv_dx, C, mu, P, Ux, Uy, h, g )
+    !== Collision of h and g for one block, cell by cell in a single pass.
+    !   The directions come in opposite pairs (2,4), (3,5), (6,8), (7,9),
+    !   e_k' = -e_k: a pair shares e.u, e.n and the central difference of C
+    !   (which changes sign), so its equilibria are a common part plus/minus
+    !   an odd part.
+    !   h: BGK relaxation to C (Gamma + sharpening term) with rate wc.
+    !   g: MRT g <- g - M^-1 S M (g - geq) with S = diag(1,...,1,s9,s9) reduces
+    !   to g = geq plus (1-s9) times the stress moments m8, m9 of g - geq,
+    !   mapped back as +-m8/4 (directions 2-5) and +-m9/4 (6-9); plus the
+    !   forcing term hM of the mixed differences.
     IMPLICIT NONE
-    INTEGER, INTENT(IN)    :: dx
+    REAL(wp), INTENT(IN)    :: inv_dx      ! 1/dx in finest-level lattice units
     REAL(wp), INTENT(IN)    :: C(-1:nx+2,-1:ny+2), mu(nx,ny)    ! mu: chemical potential
     REAL(wp), INTENT(IN)    :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
     REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
 
-    INTEGER :: i, j, k, ix, iy
-    REAL(wp) :: dRho3, invTaul, dInvTau, tmp, eU, eN, Gam, A, hlpC, geq
-    !== signs of g_k - geq_k in the stress moments m8 (k=2..5) and m9 (k=6..9)
-    REAL(wp), PARAMETER :: w8(9) = [0, 1,-1, 1,-1, 0, 0, 0, 0]
-    REAL(wp), PARAMETER :: w9(9) = [0, 0, 0, 0, 0, 1,-1, 1,-1]
-    REAL(wp), DIMENSION(nx,ny,9) :: eC, eM, hM
-    REAL(wp), DIMENSION(nx,ny) :: DcDx, DcDy, DmDx, DmDy, ni, nj, Rho, Fb, s9, &
-                                  U2, uDc, uDm, tC, m8, m9
+    INTEGER :: i, j
+    !== per block
+    REAL(wp) :: cC, cM, dRho, dRho3, invTaul, dInvTau, cT, omwc, w0d, wsd, wdd
+    !== per cell
+    REAL(wp) :: C0, C3, eC2, eC3, eC6, eC7, eM2, eM3, eM4, eM5, eM6, eM7, eM8, eM9
+    REAL(wp) :: DcDx, DcDy, DmDx, DmDy, g2, rn, ni, nj, vx, vy, base0, uDc, uDm
+    REAL(wp) :: Rho, rho3, Fb, Pc, amu, cH, tCH, t, s9, m8, m9
+    REAL(wp) :: v, base, Gp, Gm, sq, Apl, Ami, fp, fm, geqp, geqm
+    REAL(wp) :: gb2, gb3, gb4, gb5, gb6, gb7, gb8, gb9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9
 
-    dRho3   = (Rhoh - Rhol)/3._wp
+    cC      = 0.5_wp *inv_dx               ! central difference (C(x+e)-C(x-e))/(2 dx)
+    cM      = 0.25_wp*inv_dx               ! mixed difference over 4 dx
+    dRho    = Rhoh - Rhol
+    dRho3   = dRho*c13
     invTaul = 1._wp/taul                    ! 1/tau is linear in C between
-    dInvTau = 1._wp/tauh - 1._wp/taul       ! the light (C=0) and heavy (C=1) fluid
+    dInvTau = 1._wp/tauh - invTaul          ! the light (C=0) and heavy (C=1) fluid
+    cT      = 12._wp*M0/W                   ! sharpening: tC = 12 M0 (1-C)/W
+    omwc    = 1._wp - wc
+    w0d     = w0*dRho3
+    wsd     = ws*dRho3
+    wdd     = wd*dRho3
 
-    !== directional differences along e_k: central (eC) and mixed (eM);
-    !   Cm, Cp, Cpp are C shifted by -e_k, +e_k, +2e_k, C0 the block interior
-    eC(:,:,1) = 0._wp
-    eM(:,:,1) = 0._wp
-    DO k = 2, 9
-        ix = ex(k); iy = ey(k)
-        ASSOCIATE( C0  => C(1     :nx     ,1     :ny     ), &
-                   Cm  => C(1-ix  :nx-ix  ,1-iy  :ny-iy  ), &
-                   Cp  => C(1+ix  :nx+ix  ,1+iy  :ny+iy  ), &
-                   Cpp => C(1+2*ix:nx+2*ix,1+2*iy:ny+2*iy) )
-            eC(:,:,k) = ( Cp - Cm ) * 0.5_wp/REAL(dx,wp)
-            eM(:,:,k) = ( - Cm - 3._wp*C0 + 5._wp*Cp - Cpp ) * 0.25_wp/REAL(dx,wp)
-        END ASSOCIATE
-    END DO
-
-    !== per-cell quantities: gradients, normal, density, forcing, relaxation rate
-    !   (one fused loop; as separate array statements this is ~3% slower)
     DO j = 1, ny
-!$OMP SIMD PRIVATE( tmp )
+!$OMP SIMD PRIVATE( C0, C3, eC2, eC3, eC6, eC7, eM2, eM3, eM4, eM5, eM6, eM7, eM8, eM9, &
+!$OMP   DcDx, DcDy, DmDx, DmDy, g2, rn, ni, nj, vx, vy, base0, uDc, uDm, &
+!$OMP   Rho, rho3, Fb, Pc, amu, cH, tCH, t, s9, m8, m9, &
+!$OMP   v, base, Gp, Gm, sq, Apl, Ami, fp, fm, geqp, geqm, &
+!$OMP   gb2, gb3, gb4, gb5, gb6, gb7, gb8, gb9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9 )
     DO i = 1, nx
-        DcDx(i,j) = ( eC(i,j,2)-eC(i,j,4) )/3._wp + ( eC(i,j,6)-eC(i,j,7)-eC(i,j,8)+eC(i,j,9) )/12._wp
-        DcDy(i,j) = ( eC(i,j,3)-eC(i,j,5) )/3._wp + ( eC(i,j,6)+eC(i,j,7)-eC(i,j,8)-eC(i,j,9) )/12._wp
-        DmDx(i,j) = ( eM(i,j,2)-eM(i,j,4) )/3._wp + ( eM(i,j,6)-eM(i,j,7)-eM(i,j,8)+eM(i,j,9) )/12._wp
-        DmDy(i,j) = ( eM(i,j,3)-eM(i,j,5) )/3._wp + ( eM(i,j,6)+eM(i,j,7)-eM(i,j,8)-eM(i,j,9) )/12._wp
+        C0 = C(i,j)
 
-        tmp = SQRT( DcDx(i,j)**2 + DcDy(i,j)**2 + 1.e-32_wp )
-        ni(i,j) = DcDx(i,j) / tmp
-        nj(i,j) = DcDy(i,j) / tmp
+        !== central differences along e2 = (1,0), e3 = (0,1), e6 = (1,1),
+        !   e7 = (-1,1); the opposite directions have the negative values
+        eC2 = ( C(i+1,j  ) - C(i-1,j  ) )*cC
+        eC3 = ( C(i  ,j+1) - C(i  ,j-1) )*cC
+        eC6 = ( C(i+1,j+1) - C(i-1,j-1) )*cC
+        eC7 = ( C(i-1,j+1) - C(i+1,j-1) )*cC
 
-        tC  (i,j) = ( 12*(1-C(i,j)) )/W * M0
-        Rho (i,j) = Rhol + C(i,j) * (Rhoh - Rhol)
-        Fb  (i,j) = (Rhoh - Rho(i,j)) * Gy
-        U2  (i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
-        uDc (i,j) = Ux(i,j)*DcDx(i,j) + Uy(i,j)*DcDy(i,j)
-        uDm (i,j) = Ux(i,j)*DmDx(i,j) + Uy(i,j)*DmDy(i,j)
+        !== mixed differences ( -C(x-e) - 3 C(x) + 5 C(x+e) - C(x+2e) )/(4 dx)
+        C3  = 3._wp*C0
+        eM2 = ( 5._wp*C(i+1,j  ) - C(i-1,j  ) - C3 - C(i+2,j  ) )*cM
+        eM4 = ( 5._wp*C(i-1,j  ) - C(i+1,j  ) - C3 - C(i-2,j  ) )*cM
+        eM3 = ( 5._wp*C(i  ,j+1) - C(i  ,j-1) - C3 - C(i  ,j+2) )*cM
+        eM5 = ( 5._wp*C(i  ,j-1) - C(i  ,j+1) - C3 - C(i  ,j-2) )*cM
+        eM6 = ( 5._wp*C(i+1,j+1) - C(i-1,j-1) - C3 - C(i+2,j+2) )*cM
+        eM8 = ( 5._wp*C(i-1,j-1) - C(i+1,j+1) - C3 - C(i-2,j-2) )*cM
+        eM7 = ( 5._wp*C(i-1,j+1) - C(i+1,j-1) - C3 - C(i-2,j+2) )*cM
+        eM9 = ( 5._wp*C(i+1,j-1) - C(i-1,j+1) - C3 - C(i+2,j-2) )*cM
+
+        !== isotropic gradients: sum_k w_k e_k (differences along e_k)/cs^2
+        DcDx = c23*eC2 + c16*( eC6 - eC7 )
+        DcDy = c23*eC3 + c16*( eC6 + eC7 )
+        DmDx = c13*( eM2 - eM4 ) + c112*( (eM6 - eM8) - (eM7 - eM9) )
+        DmDy = c13*( eM3 - eM5 ) + c112*( (eM6 - eM8) + (eM7 - eM9) )
+
+        !== unit normal; zero away from the interface (|grad C|**2 <= grad2_min),
+        !   branch-free (a mask over a clamped root) so that the loop vectorizes
+        g2 = DcDx*DcDx + DcDy*DcDy
+        rn = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
+        ni = DcDx*rn
+        nj = DcDy*rn
+
+        !== per-cell quantities
+        vx    = Ux(i,j)
+        vy    = Uy(i,j)
+        base0 = 1._wp - 1.5_wp*( vx*vx + vy*vy )
+        uDc   = vx*DcDx + vy*DcDy
+        uDm   = vx*DmDx + vy*DmDy
+        Rho   = Rhol + C0*dRho
+        rho3  = Rho*c13
+        Fb    = (Rhoh - Rho)*Gy
+        Pc    = P(i,j)
+        amu    = dRho3 + mu(i,j)                 ! A_k = Gamma_k amu - w_k dRho3
+        cH    = wc*C0                           ! h relaxes towards C (Gamma + tC w e.n)
+        tCH   = cT*(1._wp - C0)
 
         !== relaxation rate s9 = 1/tau with tau = 1/x + 1/2, where x = 1/tau_fluid is
         !   interpolated in C (C clamped, as it may overshoot [0,1] at the interface)
-        tmp = MIN( MAX( C(i,j), 0._wp ), 1._wp ) * dInvTau + invTaul
-        s9(i,j) = tmp / ( 1._wp + 0.5_wp*tmp )
+        t  = MIN( MAX( C0, 0._wp ), 1._wp ) * dInvTau + invTaul
+        s9 = t / ( 1._wp + 0.5_wp*t )
+
+        !== rest direction (e = 0): no stress moments
+        Gp   = w0*base0
+        h(i,j,1) = omwc*h(i,j,1) + cH*Gp
+        Apl   = Gp*amu - w0d
+        fp   = -vy*Gp*Fb
+        geqp = Pc*w0 + (Gp - w0)*rho3 + 0.5_wp*( Apl*uDc - fp )
+        g(i,j,1) = geqp - Apl*uDm + fp
+
+        !== pair (2,4): e = (+-1, 0)
+        v    = vx
+        base = base0 + 4.5_wp*v*v
+        Gp   = ws*( base + 3._wp*v )
+        Gm   = ws*( base - 3._wp*v )
+        sq   = tCH*ws*ni
+        h(i,j,2) = omwc*h(i,j,2) + cH*( Gp + sq )
+        h(i,j,4) = omwc*h(i,j,4) + cH*( Gm - sq )
+        Apl   = Gp*amu - wsd
+        Ami   = Gm*amu - wsd
+        fp   = -vy*Gp*Fb
+        fm   = -vy*Gm*Fb
+        geqp = Pc*ws + (Gp - ws)*rho3 - 0.5_wp*( Apl*( eC2 - uDc) + fp )
+        geqm = Pc*ws + (Gm - ws)*rho3 - 0.5_wp*( Ami*(-eC2 - uDc) + fm )
+        dg2  = g(i,j,2) - geqp
+        dg4  = g(i,j,4) - geqm
+        gb2  = geqp + Apl*( eM2 - uDm ) + fp
+        gb4  = geqm + Ami*( eM4 - uDm ) + fm
+
+        !== pair (3,5): e = (0, +-1)
+        v    = vy
+        base = base0 + 4.5_wp*v*v
+        Gp   = ws*( base + 3._wp*v )
+        Gm   = ws*( base - 3._wp*v )
+        sq   = tCH*ws*nj
+        h(i,j,3) = omwc*h(i,j,3) + cH*( Gp + sq )
+        h(i,j,5) = omwc*h(i,j,5) + cH*( Gm - sq )
+        Apl   = Gp*amu - wsd
+        Ami   = Gm*amu - wsd
+        fp   = ( 1._wp - vy)*Gp*Fb
+        fm   = (-1._wp - vy)*Gm*Fb
+        geqp = Pc*ws + (Gp - ws)*rho3 - 0.5_wp*( Apl*( eC3 - uDc) + fp )
+        geqm = Pc*ws + (Gm - ws)*rho3 - 0.5_wp*( Ami*(-eC3 - uDc) + fm )
+        dg3  = g(i,j,3) - geqp
+        dg5  = g(i,j,5) - geqm
+        gb3  = geqp + Apl*( eM3 - uDm ) + fp
+        gb5  = geqm + Ami*( eM5 - uDm ) + fm
+
+        !== pair (6,8): e = +-(1, 1)
+        v    = vx + vy
+        base = base0 + 4.5_wp*v*v
+        Gp   = wd*( base + 3._wp*v )
+        Gm   = wd*( base - 3._wp*v )
+        sq   = tCH*wd*( ni + nj )
+        h(i,j,6) = omwc*h(i,j,6) + cH*( Gp + sq )
+        h(i,j,8) = omwc*h(i,j,8) + cH*( Gm - sq )
+        Apl   = Gp*amu - wdd
+        Ami   = Gm*amu - wdd
+        fp   = ( 1._wp - vy)*Gp*Fb
+        fm   = (-1._wp - vy)*Gm*Fb
+        geqp = Pc*wd + (Gp - wd)*rho3 - 0.5_wp*( Apl*( eC6 - uDc) + fp )
+        geqm = Pc*wd + (Gm - wd)*rho3 - 0.5_wp*( Ami*(-eC6 - uDc) + fm )
+        dg6  = g(i,j,6) - geqp
+        dg8  = g(i,j,8) - geqm
+        gb6  = geqp + Apl*( eM6 - uDm ) + fp
+        gb8  = geqm + Ami*( eM8 - uDm ) + fm
+
+        !== pair (7,9): e = +-(-1, 1)
+        v    = vy - vx
+        base = base0 + 4.5_wp*v*v
+        Gp   = wd*( base + 3._wp*v )
+        Gm   = wd*( base - 3._wp*v )
+        sq   = tCH*wd*( nj - ni )
+        h(i,j,7) = omwc*h(i,j,7) + cH*( Gp + sq )
+        h(i,j,9) = omwc*h(i,j,9) + cH*( Gm - sq )
+        Apl   = Gp*amu - wdd
+        Ami   = Gm*amu - wdd
+        fp   = ( 1._wp - vy)*Gp*Fb
+        fm   = (-1._wp - vy)*Gm*Fb
+        geqp = Pc*wd + (Gp - wd)*rho3 - 0.5_wp*( Apl*( eC7 - uDc) + fp )
+        geqm = Pc*wd + (Gm - wd)*rho3 - 0.5_wp*( Ami*(-eC7 - uDc) + fm )
+        dg7  = g(i,j,7) - geqp
+        dg9  = g(i,j,9) - geqm
+        gb7  = geqp + Apl*( eM7 - uDm ) + fp
+        gb9  = geqm + Ami*( eM9 - uDm ) + fm
+
+        !== relax the stress moments of g - geq with s9 (all others with 1)
+        m8 = ( (dg2 + dg4) - (dg3 + dg5) ) * (1._wp - s9) * 0.25_wp
+        m9 = ( (dg6 + dg8) - (dg7 + dg9) ) * (1._wp - s9) * 0.25_wp
+        g(i,j,2) = gb2 + m8
+        g(i,j,4) = gb4 + m8
+        g(i,j,3) = gb3 - m8
+        g(i,j,5) = gb5 - m8
+        g(i,j,6) = gb6 + m9
+        g(i,j,8) = gb8 + m9
+        g(i,j,7) = gb7 - m9
+        g(i,j,9) = gb9 - m9
     END DO
-    END DO
-
-    !== equilibria, h relaxation, g equilibrium and forcing, direction by direction;
-    !   g temporarily holds geq, hM the forcing term of the mixed difference
-    m8 = 0._wp
-    m9 = 0._wp
-    DO k = 1, 9
-        DO j = 1, ny
-!$OMP SIMD PRIVATE( A, Gam, eN, eU, geq, hlpC )
-        DO i = 1, nx
-            eU  = ex(k) * Ux(i,j) + ey(k) * Uy(i,j)
-            eN  = ex(k) * ni(i,j) + ey(k) * nj(i,j)
-            Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
-
-            h(i,j,k) = h(i,j,k) * (1._wp-wc) + ( C(i,j) * ( Gam + tC(i,j) * Wa(k) * eN ) )*wc
-
-            A    = (Gam-Wa(k))*dRho3 + Gam*mu(i,j)
-            hlpC = A * ( eC(i,j,k) - uDc(i,j) ) + (ey(k)-Uy(i,j)) * Gam * Fb(i,j)
-            hM(i,j,k) = A * ( eM(i,j,k) - uDm(i,j) ) + (ey(k)-Uy(i,j)) * Gam * Fb(i,j)
-            geq  = P(i,j)*Wa(k) + (Gam-Wa(k))*Rho(i,j)/3._wp - 0.5_wp * hlpC
-
-            m8(i,j) = m8(i,j) + w8(k)*( g(i,j,k) - geq )
-            m9(i,j) = m9(i,j) + w9(k)*( g(i,j,k) - geq )
-            g(i,j,k) = geq
-        END DO
-        END DO
-    END DO
-
-    !== relax the stress moments and add the forcing term
-    m8 = m8 * (1._wp-s9) * 0.25_wp
-    m9 = m9 * (1._wp-s9) * 0.25_wp
-    DO k = 1, 9
-        g(1:nx,1:ny,k) = ( g(1:nx,1:ny,k) + w8(k)*m8 + w9(k)*m9 ) + hM(:,:,k)
     END DO
 
 END SUBROUTINE Collision_h_g_AMR
 
 !**********************************************************************
 
-SUBROUTINE Macroscopic_Values_g_AMR( dx, g, C, mu, P, Ux, Uy )
+SUBROUTINE Macroscopic_Values_g_AMR( inv_dx, g, C, mu, P, Ux, Uy )
+    !== pressure and velocity from g (zeroth and first moments) and the forces
     IMPLICIT NONE
-    INTEGER, INTENT(IN)  :: dx
+    REAL(wp), INTENT(IN)  :: inv_dx         ! 1/dx in finest-level lattice units
     REAL(wp), INTENT(IN)  :: g(0:nx+1,0:ny+1,9), C(-1:nx+2,-1:ny+2), mu(nx,ny)
     REAL(wp), INTENT(OUT) :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
 
-    INTEGER :: i, j, k
-    REAL(wp) :: Rho, dRho6, Fx, Fy, Fb
+    INTEGER :: i, j
+    REAL(wp) :: dRho, dRho6, S0, Sx, Sy, Rho, rRho, Fx, Fy
     REAL(wp) :: DcDx(nx,ny), DcDy(nx,ny)
-    REAL(wp) :: Sx(nx,ny), Sy(nx,ny), S0(nx,ny)
 
-    dRho6 = (Rhoh-Rhol)/6._wp
+    dRho  = Rhoh - Rhol
+    dRho6 = dRho*c16
 
-    CALL Gradient_AMR( dx, C, DcDx, DcDy )
-
-    !== zeroth and first moments, accumulated direction by direction in one fused
-    !   loop (as three array statements this is ~8% slower)
-    DO j = 1, ny
-    DO i = 1, nx
-        Sx(i,j) = g(i,j,2)*ex(2)
-        Sy(i,j) = g(i,j,2)*ey(2)
-        S0(i,j) = g(i,j,1) + g(i,j,2)
-    END DO
-    END DO
-    DO k = 3, 9
-        DO j = 1, ny
-        DO i = 1, nx
-            Sx(i,j) = Sx(i,j) + g(i,j,k)*ex(k)
-            Sy(i,j) = Sy(i,j) + g(i,j,k)*ey(k)
-            S0(i,j) = S0(i,j) + g(i,j,k)
-        END DO
-        END DO
-    END DO
+    CALL Gradient_AMR( inv_dx, C, DcDx, DcDy )
 
     DO j = 1, ny
+!$OMP SIMD PRIVATE( S0, Sx, Sy, Rho, rRho, Fx, Fy )
     DO i = 1, nx
+        S0 = g(i,j,1) + ( (g(i,j,2) + g(i,j,3)) + (g(i,j,4) + g(i,j,5)) ) &
+                      + ( (g(i,j,6) + g(i,j,7)) + (g(i,j,8) + g(i,j,9)) )
+        Sx = ( g(i,j,2) - g(i,j,4) ) + ( (g(i,j,6) - g(i,j,7)) + (g(i,j,9) - g(i,j,8)) )
+        Sy = ( g(i,j,3) - g(i,j,5) ) + ( (g(i,j,6) + g(i,j,7)) - (g(i,j,8) + g(i,j,9)) )
 
-        Rho = Rhol + C(i,j) * (Rhoh - Rhol)
+        Rho  = Rhol + C(i,j)*dRho
+        rRho = 1._wp/Rho
 
-        Fb = (Rhoh - Rho) * Gy
-
-        Fx = mu(i,j) * DcDx(i,j)
-        Fy = mu(i,j) * DcDy(i,j) + Fb
+        Fx = mu(i,j)*DcDx(i,j)
+        Fy = mu(i,j)*DcDy(i,j) + (Rhoh - Rho)*Gy
 
         !== u = ( sum(g e)/cs^2 + F/2 )/rho, from rho u = sum(f e) + F/2 and
         !   sum(g e) = cs^2 sum(f e). (Eq. (35) of the paper prints the force term
         !   without the factor cs^2; this form is consistent with its Eq. (24).)
-        Ux(i,j) = ( 3._wp*Sx(i,j) + 0.5_wp*Fx )/Rho
-        Uy(i,j) = ( 3._wp*Sy(i,j) + 0.5_wp*Fy )/Rho
+        Ux(i,j) = ( 3._wp*Sx + 0.5_wp*Fx )*rRho
+        Uy(i,j) = ( 3._wp*Sy + 0.5_wp*Fy )*rRho
 
-        P (i,j) = S0(i,j) + dRho6*( Ux(i,j)*DcDx(i,j) + Uy(i,j)*DcDy(i,j) )
-
+        P (i,j) = S0 + dRho6*( Ux(i,j)*DcDx(i,j) + Uy(i,j)*DcDy(i,j) )
     END DO
     END DO
 

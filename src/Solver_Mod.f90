@@ -80,7 +80,7 @@ END SUBROUTINE Initialize_State
 !******************************************************************************
 
 SUBROUTINE Main_Loop( model, problem, t_end )
-    USE Config_Mod, ONLY: nx, ny
+    USE Config_Mod, ONLY: nx, ny, inv_dx_level
     USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
     USE Physics_Mod, ONLY: W, M0, Bo, Ar, taul, tauh, wc, Sigma, Gy, D
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
@@ -242,7 +242,7 @@ SUBROUTINE Main_Loop( model, problem, t_end )
 !$OMP DO SCHEDULE(STATIC)
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
-            cfl = 1._wp/Blk(n)%dx
+            cfl = inv_dx_level( Blk(n)%Level )      ! 1/dx: a time step of 1
             IF( cfl > 0.9 ) THEN
                 CALL Perfect_Shift_AMR( Blk_h(:,:,:,n) )
                 CALL Perfect_Shift_AMR( Blk_g(:,:,:,n) )
