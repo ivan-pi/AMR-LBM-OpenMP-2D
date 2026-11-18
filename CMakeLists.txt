@@ -27,7 +27,7 @@ set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of t
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
-option(AMR_NATIVE "Optimize for the build machine (gfortran: -mcpu=native on Arm, -march=native elsewhere; ifx: -xHost)" ON)
+option(AMR_NATIVE "Optimize for the build machine (gfortran, flang: -mcpu=native on Arm, -march=native elsewhere; ifx: -xHost)" ON)
 
 if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
@@ -73,13 +73,18 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   set(AMR_FLAGS_RELEASE -O3)
   set(AMR_FLAGS_DEBUG   -O0 -g -check all -traceback -warn all)
   set(AMR_FLAG_NATIVE   -xHost)
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang")
+  # LLVM flang (its OpenMP runtime is LLVM's libomp)
+  set(AMR_FLAGS_RELEASE -O3)
+  set(AMR_FLAGS_DEBUG   -O0 -g)
+  set(AMR_FLAG_NATIVE   -march=native)
 endif()
 
-# GCC on Arm (Apple Silicon, Graviton, ...) takes -mcpu=native, which sets
+# GCC and flang on Arm (Apple Silicon, Graviton, ...) take -mcpu=native, which sets
 # the architecture and the tuning; there -march=native can turn into a CPU
 # name (-march=apple-m2) that GCC then rejects. Elsewhere -march=native.
 # The first of the two that the compiler accepts is used, or none.
-if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID MATCHES "^(GNU|LLVMFlang)$")
   include(CheckFortranCompilerFlag)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64|aarch64|AARCH64|arm.*)$")
     set(_amr_native_flags -mcpu=native -march=native)
