@@ -169,7 +169,7 @@ END SUBROUTINE Initialize_Block
 !   directions come in opposite pairs (2,4), (3,5), (6,8), (7,9), e_k' = -e_k,
 !   sharing e.u, e.n and e.F (the odd parts change sign). Per cell:
 !   1) equilibria, h relaxation with the sharpening source, g - geq
-!   2) the stress of g - geq and the total force (as Total_Force)
+!   2) the stress of g - geq and the total force (as in Moments_g)
 !   3) reduced MRT of g with the forcing term gS = 3 w e.F/rho: the stress
 !      moments m8 = Pxx-Pyy, m9 = Pxy relax with s = 1/tau, all others with 1.
 !      gS is odd within a pair and m8, m9 are even, so the shift of geq by
@@ -216,7 +216,7 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
         nj = dcy*rn
 
         !== per-cell quantities; relaxation time (with the 1/2) from the dynamic
-        !   viscosity interpolated linearly in C (as Relaxation_Time)
+        !   viscosity interpolated linearly in C (see Moments_g)
         vx    = Ux(i,j)
         vy    = Uy(i,j)
         base0 = 1._wp - 1.5_wp*( vx*vx + vy*vy )
@@ -324,118 +324,82 @@ END SUBROUTINE Collision_h_g
 
 !**********************************************************************
 
-!== normalised pressure and velocity from g; the viscous force uses the
-!   stress of g - geq with the velocity of the previous step (in Ux, Uy)
+!== normalised pressure and velocity from g, cell by cell in one pass. The
+!   force (as in Collision_h_g) needs the stress of g - geq, with geq from the
+!   new pressure and the velocity of the previous step (in Ux, Uy). Only the
+!   sums g_k + g_k' of opposite directions enter the stress, and in them the
+!   odd parts of the equilibrium cancel: per pair g_k + g_k' - 2 w (Pn - 1
+!   + 1 - 3/2 u.u + 9/2 (e.u)**2).
+!   Relaxation time (with the 1/2), Eqs. (24)-(25): the dynamic viscosity is
+!   interpolated linearly in C (clamped to [0,1]) between the light and heavy
+!   fluid and tau - 1/2 = mu/(rho cs^2), with taul, tauh = 3 mu/rho of the
+!   pure phases. Force: surface tension mu grad C, pressure -Pn (Rhoh-Rhol)/3
+!   grad C, the viscous force -(tau-1/2) (S P) . grad C (Rhoh-Rhol) with the
+!   non-equilibrium stress P relaxed with the MRT rates (deviatoric part with
+!   s = 1/tau, trace with 1), and buoyancy.
 SUBROUTINE Moments_g( g, C, mu, DcDx, DcDy, P, Ux, Uy )
     REAL(wp), INTENT(IN)    :: g(0:nx+1,0:ny+1,9), C(-1:nx+2,-1:ny+2)
     REAL(wp), INTENT(IN), DIMENSION(nx,ny) :: mu, DcDx, DcDy    ! chemical potential, grad C
     REAL(wp), INTENT(OUT)   :: P(nx,ny)
     REAL(wp), INTENT(INOUT) :: Ux(nx,ny), Uy(nx,ny)
 
-    INTEGER :: i, j, k
-    REAL(wp) :: eU, Gam, dg
-    REAL(wp), DIMENSION(nx,ny) :: Rho, hRho, Pn, tau, U2, &
-                                  S0, Sx, Sy, sxx, sxy, syy, Fx, Fy
+    INTEGER :: i, j
+    !== per block
+    REAL(wp) :: dRho, dRho3, RT0, dRT
+    !== per cell
+    REAL(wp) :: S0, Sx, Sy, vx, vy, base0, pb, dx2, dy2, dd6, dd7, sxx, syy, sxy
+    REAL(wp) :: C0, Rho, Cc, tau, s, txx, tyy, txy, vis, prs, Fx, Fy, hR
 
-    !== zeroth and first moments, one fused loop over the directions
-    !   (OMP SIMD on the cell loops of both direction sums: with the block size
-    !   known at compile time ifx otherwise unrolls k and i completely and
-    !   vectorizes j with gathers, ~30% slower collision; gfortran unaffected)
-    S0 = 0._wp
-    Sx = 0._wp
-    Sy = 0._wp
-    DO k = 1, 9
-        DO j = 1, ny
-!$OMP SIMD
-        DO i = 1, nx
-            S0(i,j) = S0(i,j) + g(i,j,k)
-            Sx(i,j) = Sx(i,j) + g(i,j,k)*exr(k)
-            Sy(i,j) = Sy(i,j) + g(i,j,k)*eyr(k)
-        END DO
-        END DO
-    END DO
+    dRho  = Rhoh - Rhol
+    dRho3 = dRho*c13
+    RT0   = Rhol*taul
+    dRT   = Rhoh*tauh - Rhol*taul
 
     DO j = 1, ny
+!$OMP SIMD PRIVATE( S0, Sx, Sy, vx, vy, base0, pb, dx2, dy2, dd6, dd7, sxx, syy, sxy, &
+!$OMP   C0, Rho, Cc, tau, s, txx, tyy, txy, vis, prs, Fx, Fy, hR )
     DO i = 1, nx
-        Rho(i,j) = Rhol + C(i,j) * (Rhoh - Rhol)
-        Pn (i,j) = S0(i,j)
-        tau(i,j) = Relaxation_Time( C(i,j) )
-        U2 (i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
+        !== zeroth and first moments: Pn = sum g, sum g e
+        S0 = g(i,j,1) + ( (g(i,j,2) + g(i,j,3)) + (g(i,j,4) + g(i,j,5)) ) &
+                      + ( (g(i,j,6) + g(i,j,7)) + (g(i,j,8) + g(i,j,9)) )
+        Sx = ( g(i,j,2) - g(i,j,4) ) + ( (g(i,j,6) - g(i,j,7)) + (g(i,j,9) - g(i,j,8)) )
+        Sy = ( g(i,j,3) - g(i,j,5) ) + ( (g(i,j,6) + g(i,j,7)) - (g(i,j,8) + g(i,j,9)) )
+
+        !== pair sums of g - geq (previous velocity), and the stress
+        vx    = Ux(i,j)
+        vy    = Uy(i,j)
+        base0 = 1._wp - 1.5_wp*( vx*vx + vy*vy )
+        pb    = S0 - 1._wp + base0                      ! Pn - 1 + base0
+        dx2 = ( g(i,j,2) + g(i,j,4) ) - 2._wp*ws*( pb + 4.5_wp*vx*vx )
+        dy2 = ( g(i,j,3) + g(i,j,5) ) - 2._wp*ws*( pb + 4.5_wp*vy*vy )
+        dd6 = ( g(i,j,6) + g(i,j,8) ) - 2._wp*wd*( pb + 4.5_wp*(vx + vy)**2 )
+        dd7 = ( g(i,j,7) + g(i,j,9) ) - 2._wp*wd*( pb + 4.5_wp*(vy - vx)**2 )
+        sxx = dx2 + ( dd6 + dd7 )
+        syy = dy2 + ( dd6 + dd7 )
+        sxy = dd6 - dd7
+
+        !== density, relaxation time, force
+        C0  = C(i,j)
+        Rho = Rhol + C0*dRho
+        Cc  = MIN( MAX( C0, 0._wp ), 1._wp )
+        tau = ( RT0 + Cc*dRT ) / ( Rhol + Cc*dRho ) + 0.5_wp
+        s   = 1._wp/tau
+        txx = 0.5_wp*( sxx + syy + s*(sxx - syy) )
+        tyy = 0.5_wp*( sxx + syy - s*(sxx - syy) )
+        txy = s*sxy
+        vis = (tau - 0.5_wp)*dRho
+        prs = mu(i,j) - S0*dRho3
+        Fx  = prs*DcDx(i,j) - vis*( txx*DcDx(i,j) + txy*DcDy(i,j) )
+        Fy  = prs*DcDy(i,j) - vis*( txy*DcDx(i,j) + tyy*DcDy(i,j) ) + (Rhoh - Rho)*Gy
+
+        !== velocity u = sum g e + F/(2 rho), pressure p = Pn rho/3
+        hR = 0.5_wp/Rho
+        Ux(i,j) = Sx + Fx*hR
+        Uy(i,j) = Sy + Fy*hR
+        P (i,j) = S0*Rho*c13
     END DO
     END DO
-
-    !== stress of g - geq (geq with the new pressure and the previous velocity)
-    sxx = 0._wp
-    sxy = 0._wp
-    syy = 0._wp
-    DO k = 1, 9
-        DO j = 1, ny
-!$OMP SIMD PRIVATE( eU, Gam, dg )
-        DO i = 1, nx
-            eU  = exr(k) * Ux(i,j) + eyr(k) * Uy(i,j)
-            Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
-            dg  = g(i,j,k) - ( Pn(i,j)*Wa(k) + (Gam - Wa(k)) )
-            sxx(i,j) = sxx(i,j) + dg*exr(k)*exr(k)
-            sxy(i,j) = sxy(i,j) + dg*exr(k)*eyr(k)
-            syy(i,j) = syy(i,j) + dg*eyr(k)*eyr(k)
-        END DO
-        END DO
-    END DO
-
-    CALL Total_Force( DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy, Fx, Fy )
-
-    hRho = 0.5_wp/Rho                           ! one division per cell for both components
-    Ux = Sx + Fx*hRho
-    Uy = Sy + Fy*hRho
-    P  = Pn*Rho*c13
 
 END SUBROUTINE Moments_g
-
-!**********************************************************************
-
-!== surface tension, pressure, viscous and buoyancy force; the viscous force
-!   -(tau-1/2) (S P) . grad C (Rhoh-Rhol) uses the non-equilibrium stress P
-!   relaxed with the MRT rates: deviatoric part with s = 1/tau, trace with 1
-SUBROUTINE Total_Force( DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy, Fx, Fy )
-    REAL(wp), INTENT(IN), DIMENSION(nx,ny)  :: DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy
-    REAL(wp), INTENT(OUT), DIMENSION(nx,ny) :: Fx, Fy
-
-    INTEGER :: i, j
-    REAL(wp) :: dRho3, s, txx, tyy, txy
-
-    dRho3 = (Rhoh - Rhol)*c13
-
-    DO j = 1, ny
-    DO i = 1, nx
-        s   = 1._wp/tau(i,j)
-        txx = 0.5_wp*( sxx(i,j) + syy(i,j) + s*(sxx(i,j) - syy(i,j)) )
-        tyy = 0.5_wp*( sxx(i,j) + syy(i,j) - s*(sxx(i,j) - syy(i,j)) )
-        txy = s*sxy(i,j)
-        Fx(i,j) = ( mu(i,j) - Pn(i,j)*dRho3 )*DcDx(i,j) &
-                - (tau(i,j)-0.5_wp) * ( txx*DcDx(i,j) + txy*DcDy(i,j) ) * (Rhoh-Rhol)
-        Fy(i,j) = ( mu(i,j) - Pn(i,j)*dRho3 )*DcDy(i,j) &
-                - (tau(i,j)-0.5_wp) * ( txy*DcDx(i,j) + tyy*DcDy(i,j) ) * (Rhoh-Rhol) &
-                + (Rhoh - Rho(i,j))*Gy
-    END DO
-    END DO
-
-END SUBROUTINE Total_Force
-
-!**********************************************************************
-
-!== relaxation time (including the 1/2) of the hydrodynamics, Eqs. (24)-(25):
-!   the dynamic viscosity mu is interpolated linearly in C between the light
-!   (C=0) and heavy (C=1) fluid and tau - 1/2 = mu/(rho cs^2); with
-!   taul, tauh = 3 mu/rho of the pure phases. C is clamped to [0,1].
-ELEMENTAL FUNCTION Relaxation_Time( C ) RESULT( tau )
-    REAL(wp), INTENT(IN) :: C
-    REAL(wp) :: tau
-
-    REAL(wp) :: Cc
-
-    Cc  = MIN( MAX( C, 0._wp ), 1._wp )
-    tau = ( Rhol*taul + Cc*(Rhoh*tauh - Rhol*taul) ) / ( Rhol + Cc*(Rhoh - Rhol) ) + 0.5_wp
-
-END FUNCTION Relaxation_Time
 
 END MODULE Model_PRE2017_Mod
