@@ -298,7 +298,10 @@ static void snapshot_free(snapshot_t *s)
 /* ------------------------------------------------------------------------ */
 /* Render thread                                                             */
 
-enum { LAYER_FIELD = 1, LAYER_BLOCKS = 2, LAYER_CELLS = 4, LAYER_HUD = 8, LAYER_CBAR = 16 };
+enum { LAYER_FIELD = 1, LAYER_BLOCKS = 2, LAYER_CELLS = 4, LAYER_HUD = 8, LAYER_CBAR = 16,
+       LAYER_ZCURVE = 32 };
+
+typedef struct { unsigned long long key; int block; } zkey_t;   /* Z-order sort entry */
 enum { OV_SOLID = 0, OV_GLYPH = 1, OV_BAR = 2 };
 #define OV_FLOATS 9                      /* x, y, u, v, r, g, b, a, mode */
 
@@ -327,6 +330,8 @@ typedef struct {
     int    dragging, mx, my;
     int    have_data;
     int    lev_min, lev_max;
+    zkey_t *zk;                          /* blocks of the front snapshot in Z-order (6) */
+    int    zn, zcap, zdirty;             /* entries, capacity, to be sorted again */
     double rate;                         /* solver steps per second */
     long   rate_step;
     Uint64 rate_tick;
@@ -628,6 +633,24 @@ static void ov_quad(render_t *r, float x, float y, float w, float h,
     ov_vertex(r, x,     y + h, u0, v1, c, mode);
 }
 
+/* a straight line of width w (window units) from (x0, y0) to (x1, y1),
+   extended by w/2 at both ends so that the segments of a polyline join */
+static void ov_line(render_t *r, float x0, float y0, float x1, float y1, float w, const float *c)
+{
+    float dx = x1 - x0, dy = y1 - y0, len = sqrtf(dx * dx + dy * dy);
+    float tx, ty, nx, ny;
+    if (len < 1e-6f) return;
+    tx = 0.5f * w * dx / len;  ty = 0.5f * w * dy / len;     /* along the line */
+    nx = -ty;                  ny = tx;                       /* across it */
+    x0 -= tx; y0 -= ty; x1 += tx; y1 += ty;
+    ov_vertex(r, x0 + nx, y0 + ny, 0, 0, c, OV_SOLID);
+    ov_vertex(r, x1 + nx, y1 + ny, 0, 0, c, OV_SOLID);
+    ov_vertex(r, x0 - nx, y0 - ny, 0, 0, c, OV_SOLID);
+    ov_vertex(r, x1 + nx, y1 + ny, 0, 0, c, OV_SOLID);
+    ov_vertex(r, x1 - nx, y1 - ny, 0, 0, c, OV_SOLID);
+    ov_vertex(r, x0 - nx, y0 - ny, 0, 0, c, OV_SOLID);
+}
+
 static const float WHITE[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 static const float GREY[4]  = { 0.70f, 0.70f, 0.72f, 1.0f };
 static const float AMBER[4] = { 1.0f, 0.78f, 0.25f, 1.0f };
@@ -764,6 +787,7 @@ static const char *help_lines[] = {
     "3            cell outlines on/off",
     "4            status panel on/off",
     "5            colour bar on/off",
+    "6            Z-order curve on/off",
     "C, Shift+C   next / previous colour map",
     "F            fit colour range to the data",
     "A            auto colour range on/off",
@@ -793,6 +817,104 @@ static void help(render_t *r, int pw, int ph)
     ov_quad(r, x, y, w, h, 0, 0, 0, 0, PANEL, OV_SOLID);
     for (k = 0; k < n; k++)
         ov_text(r, x + pad, y + pad + k * lh, k == 0 ? AMBER : (k == n - 1 ? GREY : WHITE), help_lines[k]);
+}
+
+/* --- Z-order curve (6) ---------------------------------------------------- */
+
+/* the bits of i in the even and those of j in the odd positions */
+static unsigned long long morton2(unsigned long long i, unsigned long long j)
+{
+    unsigned long long key = 0;
+    int b;
+    for (b = 0; b < 32; b++)
+        key |= ((i >> b) & 1ull) << (2 * b) | ((j >> b) & 1ull) << (2 * b + 1);
+    return key;
+}
+
+static int zkey_cmp(const void *a, const void *b)
+{
+    unsigned long long ka = ((const zkey_t *)a)->key, kb = ((const zkey_t *)b)->key;
+    return (ka > kb) - (ka < kb);
+}
+
+/* sort the blocks of the front snapshot into the Z-order (Morton order) of
+   the quadtree: the base blocks row by row from the bottom, inside each a
+   depth-first walk with the children (0,0), (1,0), (0,1), (1,1). A block of
+   level l is taken to be 1/2^l of a base block, so the order follows from
+   the positions: the base block, then the interleaved bits of the position
+   in units of the finest blocks. The solver keeps its leaves in this order
+   within each level. */
+static void zorder_update(render_t *r)
+{
+    const snapshot_t *s = V.front;
+    double base_w, base_h, ux, uy;
+    long long nbx;
+    int b, depth = 0;
+
+    r->zdirty = 0;
+    r->zn = 0;
+    if (s->n < 1) return;
+    if (s->n > r->zcap) {
+        zkey_t *z = realloc(r->zk, (size_t)s->n * sizeof *z);
+        if (!z) return;
+        r->zk = z;
+        r->zcap = s->n;
+    }
+    for (b = 0; b < s->n; b++)
+        if ((int)s->meta[4 * (size_t)b + 3] > depth) depth = (int)s->meta[4 * (size_t)b + 3];
+    if (depth > 24) depth = 24;
+    base_w = V.nx * (double)s->meta[2] * ldexp(1.0, (int)s->meta[3]);
+    base_h = V.ny * (double)s->meta[2] * ldexp(1.0, (int)s->meta[3]);
+    ux = base_w / ldexp(1.0, depth);     /* a block of the finest level */
+    uy = base_h / ldexp(1.0, depth);
+    nbx = llround(V.dom_w / base_w);
+    if (nbx < 1) nbx = 1;
+    for (b = 0; b < s->n; b++) {
+        const float *m = s->meta + 4 * (size_t)b;
+        long long gi = llround(m[0] / ux), gj = llround(m[1] / uy);
+        unsigned long long mask = (1ull << depth) - 1, base;
+        if (gi < 0) gi = 0;
+        if (gj < 0) gj = 0;
+        base = (unsigned long long)((gj >> depth) * nbx + (gi >> depth));
+        r->zk[b].key = base << (2 * depth) | morton2((unsigned long long)gi & mask,
+                                                     (unsigned long long)gj & mask);
+        r->zk[b].block = b;
+    }
+    qsort(r->zk, (size_t)s->n, sizeof *r->zk, zkey_cmp);
+    r->zn = s->n;
+}
+
+/* a line through the block centres in Z-order: dark under light so that it
+   shows on any colour, a green square at the start, a red one at the end */
+static void zcurve(render_t *r)
+{
+    static const float DARK[4]  = { 0.0f, 0.0f, 0.0f, 0.70f };
+    static const float LIGHT[4] = { 1.0f, 1.0f, 1.0f, 0.95f };
+    static const float START[4] = { 0.20f, 0.85f, 0.30f, 1.0f };
+    static const float END[4]   = { 0.95f, 0.25f, 0.20f, 1.0f };
+    const snapshot_t *s = V.front;
+    int ww, wh, k, pass;
+    double sc = view_scale(r, &ww, &wh);
+    float px = 0, py = 0;
+
+    if (r->zdirty) zorder_update(r);
+    if (r->zn < 1) return;
+#define ZC_X(b) (float)(0.5 * ww + (s->meta[4 * (size_t)(b)] + 0.5 * V.nx * s->meta[4 * (size_t)(b) + 2] - r->cx) * sc)
+#define ZC_Y(b) (float)(0.5 * wh - (s->meta[4 * (size_t)(b) + 1] + 0.5 * V.ny * s->meta[4 * (size_t)(b) + 2] - r->cy) * sc)
+    for (pass = 0; pass < 2; pass++) {
+        for (k = 0; k < r->zn; k++) {
+            int b = r->zk[k].block;
+            float x = ZC_X(b), y = ZC_Y(b);
+            if (k > 0) ov_line(r, px, py, x, y, pass ? 1.5f : 3.5f, pass ? LIGHT : DARK);
+            px = x;
+            py = y;
+        }
+    }
+    ov_quad(r, ZC_X(r->zk[0].block) - 4, ZC_Y(r->zk[0].block) - 4, 8, 8, 0, 0, 0, 0, START, OV_SOLID);
+    ov_quad(r, ZC_X(r->zk[r->zn - 1].block) - 4, ZC_Y(r->zk[r->zn - 1].block) - 4, 8, 8,
+            0, 0, 0, 0, END, OV_SOLID);
+#undef ZC_X
+#undef ZC_Y
 }
 
 /* --- frame --------------------------------------------------------------- */
@@ -853,6 +975,7 @@ static void draw(render_t *r)
        (Retina) display one unit is several drawable pixels, and the text
        keeps its size on screen */
     r->ov_n = 0;
+    if (r->have_data && (r->layers & LAYER_ZCURVE)) zcurve(r);
     if (r->have_data) hud(r);
     if (r->help) help(r, ww, wh);
     else if (!r->have_data) ov_text(r, 10, 10, GREY, "waiting for the first snapshot ...  (H: help)");
@@ -930,6 +1053,7 @@ static int handle_event(render_t *r, const SDL_Event *e)
         case SDLK_3:   r->layers ^= LAYER_CELLS;  break;
         case SDLK_4:   r->layers ^= LAYER_HUD;    break;
         case SDLK_5:   r->layers ^= LAYER_CBAR;   break;
+        case SDLK_6:   r->layers ^= LAYER_ZCURVE; break;
         case SDLK_f:   r->refit = 1; r->reupload = 1; break;
         case SDLK_a:   r->autorange = !r->autorange; r->reupload = 1; break;
         case SDLK_c:
@@ -1079,6 +1203,7 @@ static int render_step(render_t *r, int wait_ms)
         V.has_new = 0;
         r->have_data = 1;
         r->reupload = 1;
+        r->zdirty = 1;
         update_rate(r);
     }
     paused = V.paused; finished = V.finished; quit = V.quit_req;
@@ -1111,6 +1236,9 @@ static void render_shutdown(render_t *r)
     set_state(ST_CLOSED);
     free(r->ov);
     r->ov = NULL;
+    free(r->zk);
+    r->zk = NULL;
+    r->zn = r->zcap = 0;
     SDL_GL_DeleteContext(r->ctx);
     SDL_DestroyWindow(r->win);
     r->ctx = NULL;

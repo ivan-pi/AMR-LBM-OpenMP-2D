@@ -281,6 +281,7 @@ The controls are inspired by [FluidX3D](https://github.com/ProjectPhysX/FluidX3D
 | `Z` / Shift+`Z`, Tab | field: C, P, Ux, Uy, \|U\|, level |
 | `C` / Shift+`C` | colour map: viridis, magma, coolwarm (range symmetric about zero), gray |
 | `1` `2` `3` `4` `5` | field colouring, block outlines, cell outlines, status panel, colour bar on/off |
+| `6` | Z-order (Morton) curve through the leaf blocks on/off: the order of the quadtree walk, in which the solver keeps the blocks of each level (green: start, red: end) |
 | `F` | fit the colour range to the current data (each field keeps its range, taken when first shown, rounded) |
 | `A` | auto colour range: follow every update |
 | `+` `-`, wheel | zoom |

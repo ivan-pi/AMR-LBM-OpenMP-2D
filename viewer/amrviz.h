@@ -37,6 +37,8 @@
  *                           coolwarm with a range symmetric about zero, gray)
  *   1 2 3 4 5               field colouring, block outlines, cell outlines,
  *                           status panel, colour bar on/off
+ *   6                       Z-order (Morton) curve through the blocks on/off
+ *                           (block level l = 1/2^l of a base block)
  *   F                       fit the colour range to the current data
  *   A                       auto colour range on/off (follows every snapshot)
  *   +, -, mouse wheel       zoom (the wheel about the cursor)

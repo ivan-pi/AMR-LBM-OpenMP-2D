@@ -467,6 +467,7 @@ CONTAINS
             '  Z, Tab      next field: C, P, Ux, Uy, |U|, level (Shift+Z: previous)', &
             '  C           next colour map (Shift+C: previous)', &
             '  1 2 3 4 5   toggle field, block outlines, cell outlines, status, colour bar', &
+            '  6           Z-order curve through the blocks', &
             '  F           fit the colour range to the data    A   auto range on/off', &
             '  wheel, + -  zoom                  drag, arrows, I J K L   pan', &
             '  R           reset the view        G           print the view settings', &
