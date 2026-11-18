@@ -2,6 +2,8 @@ flowchart TD
     subgraph EXE["Executables (CMake)"]
         mainJ["main_jcp2016<br/><i>amr_lbm</i>"]
         mainP["main_pre2017<br/><i>amr_lbm_pre2017</i>"]
+        mainRJ["main_rt_jcp2016<br/><i>amr_lbm_rt</i>"]
+        mainRP["main_rt_pre2017<br/><i>amr_lbm_rt_pre2017</i>"]
     end
 
     subgraph DRV["Solver"]
@@ -11,6 +13,7 @@ flowchart TD
     subgraph CASE["Test cases"]
         CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics, Finish)"]
         RB["Rising_Bubble_Mod<br/>parameters (namelist), bubble,<br/>bubble_rise.dat"]
+        RT["Rayleigh_Taylor_Mod<br/>parameters (namelist), perturbed interface,<br/>rt_fronts.dat"]
     end
 
     subgraph MOD["Physics models"]
@@ -55,6 +58,12 @@ flowchart TD
     mainP --> SOL
     mainP --> PRE
     mainP --> RB
+    mainRJ --> SOL
+    mainRJ --> JCP
+    mainRJ --> RT
+    mainRP --> SOL
+    mainRP --> PRE
+    mainRP --> RT
 
     SOL --> MM
     SOL --> CM
@@ -66,6 +75,7 @@ flowchart TD
     SOL --> OM
 
     RB --> CM
+    RT --> CM
     CM --> MM
     JCP --> MM
     JCP --> PF

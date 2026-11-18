@@ -31,7 +31,7 @@
 !================================================
 MODULE Blocks_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Config_Mod, ONLY: nx, ny, maxLevels, MaxBlks
+    USE Config_Mod, ONLY: nx, ny, maxLevels, MaxBlks, nBaseX, nBaseY
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Block_t, Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, &
@@ -83,7 +83,7 @@ MODULE Blocks_Mod
     INTEGER :: LevelStart(0:maxLevels+1)
 
     !== FIFO ring of the first slots of free sibling groups
-    INTEGER :: free_first((MaxBlks+1)/4)
+    INTEGER :: free_first((MaxBlks - nBaseX*nBaseY)/4)    ! at most one entry per sibling group
     INTEGER :: free_head = 1, free_len = 0
 
 CONTAINS
