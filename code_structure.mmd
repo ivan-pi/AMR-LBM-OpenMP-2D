@@ -1,0 +1,91 @@
+flowchart TD
+    subgraph EXE["Executables (CMake)"]
+        mainJ["main_jcp2016<br/><i>amr_lbm</i>"]
+        mainP["main_pre2017<br/><i>amr_lbm_pre2017</i>"]
+    end
+
+    subgraph DRV["Solver"]
+        SOL["Solver_Mod<br/>initialization · time loop<br/>progress / MLUPS · diagnostics line"]
+    end
+
+    subgraph CASE["Test cases"]
+        CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics, Finish)"]
+        RB["Rising_Bubble_Mod<br/>parameters (namelist), bubble,<br/>bubble_rise.dat"]
+    end
+
+    subgraph MOD["Physics models"]
+        MM["Model_Mod<br/>LBM_Model type<br/>(kernels, Refinement_Error, tolerances)"]
+        JCP["Model_JCP2016_Mod<br/>kernels + interface criterion"]
+        PRE["Model_PRE2017_Mod<br/>kernels + interface/light-phase criterion"]
+        LBC["LBM_Common_Mod<br/>streaming (LW / shift), C = Σh"]
+        PF["Phase_Field_Mod<br/>chemical potential, gradient,<br/>largest gradient"]
+    end
+
+    subgraph AMR["Block-structured AMR"]
+        REF["Refine_Mod<br/>flagging, refine / derefine"]
+        PR["Prolong_Restrict_Mod<br/>children ↔ parent"]
+        MESH["Mesh_Mod<br/>domain, child blocks, leaf lists,<br/>neighbour table"]
+    end
+
+    subgraph GH["Ghost cells & boundaries"]
+        GC["Ghost_C_Mod"]
+        GHG["Ghost_hg_Mod"]
+        INT["Interpolations_Mod<br/>biquadratic strips, bilinear blocks"]
+        BC["BC_Mod<br/>bounce-back, symmetric C"]
+    end
+
+    subgraph OUT["Output"]
+        OM["Output_Mod<br/>writer chosen by AMR_OUTPUT"]
+        VTK["VTK_Output_Mod<br/>.vtu/.pvd, VTKHDF"]
+        TEC["TecPlot_Mod"]
+        FV[("fVTKHDF<br/>(optional)")]
+    end
+
+    subgraph BASE["Foundation (used by nearly every module)"]
+        K["Kinds_Mod<br/>wp, dp"]
+        CFG["Config_Mod<br/>nx, ny, L0, levels<br/>(compile-time, CMake)"]
+        BLK["Blocks_Mod<br/>Blk(:) metadata, field pools, leaf lists, free queue"]
+        D["D2Q9_Mod<br/>lattice"]
+        PH["Physics_Mod<br/>fluid & interface parameters<br/>(set by the case)"]
+    end
+
+    mainJ --> SOL
+    mainJ --> JCP
+    mainJ --> RB
+    mainP --> SOL
+    mainP --> PRE
+    mainP --> RB
+
+    SOL --> MM
+    SOL --> CM
+    SOL --> LBC
+    SOL --> REF
+    SOL --> MESH
+    SOL --> GC
+    SOL --> GHG
+    SOL --> OM
+
+    RB --> CM
+    CM --> MM
+    JCP --> MM
+    JCP --> PF
+    PRE --> MM
+    PRE --> PF
+
+    REF --> MESH
+    REF --> PR
+    REF --> MM
+    PR --> INT
+
+    GC --> INT
+    GC --> BC
+    GHG --> INT
+    GHG --> BC
+
+    OM --> VTK
+    OM --> TEC
+    VTK -.-> FV
+
+    MESH ~~~ BASE
+    INT ~~~ BASE
+    MM ~~~ BASE
