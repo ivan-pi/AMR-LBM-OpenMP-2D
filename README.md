@@ -247,8 +247,9 @@ One output writer is selected at start-up with the environment variable
 
 ## Plotting and animation
 
-`tools/animate_vtk.py` plots or animates the VTK/VTKHDF output with only
-numpy and matplotlib (h5py for `.vtkhdf`):
+`tools/animate_vtk.py` plots or animates the VTK/VTKHDF output (also that of
+the GPU solver); it reads the files with pyvista and draws with matplotlib
+(`pip install pyvista matplotlib`):
 
 ```
 python3 tools/animate_vtk.py Rising_Bubble_2D.pvd -o bubble.mp4          # C + AMR blocks
@@ -459,6 +460,44 @@ version spending a fifth of its time in a separate division pass and most of
 the rest in loop overhead of the short loops. Most of the remaining ghost
 time is copying the left/right edges, which touches one cache line per value
 in the current layout.
+
+## GPU solver (SYCL)
+
+`gpu/` contains a C++/SYCL version of the solver for the JCP 2016 model and
+the rising bubble, in single precision (Intel Arc A-series GPUs have no FP64
+hardware):
+
+    cmake -B build-gpu -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4
+    cmake --build build-gpu
+    ./build-gpu/amr_lbm_sycl [steps [output_interval]]     # AMR_CASE as above
+
+The host keeps the quadtree and runs the same mesh logic as the Fortran code
+(slot allocation, Z-order, neighbour table, flagging); all field work runs
+on the device (`gpu/lbm_kernels.hpp`, one kernel per Fortran routine). The
+same build directory has the Fortran programs in FP32, for comparison: on
+the default case the diagnostics (block counts, U_max) are identical and
+mass and bubble position agree to about 1e-5. The host thread waits for the
+GPU several times per step; on a loaded machine pin it to an idle CPU.
+`AMR_GPU_SYNC=1` gives per-stage times. Field output (`AMR_OUTPUT=vtk`, the
+default, or `none`) writes the same VTK series as the Fortran VTK writer.
+
+The case follows the namelist group in the `AMR_CASE` file: `&rising_bubble`
+(also the default without a file) or `&rayleigh_taylor`, the Rayleigh–Taylor
+instability of Fakhari et al. (PRE 2017, Sec. IV B; bubble front and spike tip
+in `rt_fronts.dat`). `-DAMR_DOMAIN_HEIGHT` sets the domain height in units of
+L0 (default 3; 4 for the paper's Rayleigh–Taylor case, 8 for
+`cases/gpu_RT_At05_L1024.nml`, which runs to t* = 8 at four times the paper's
+resolution, until well after the spike has reached the bottom).
+
+In-situ rendering: with `AMR_RENDER` set to a command, every output step's
+fields (C, density, speed) are copied to the host and streamed, from a
+background thread, to that command's standard input while the run goes on.
+`tools/render_stream.py` draws the frames into a movie as they arrive, one
+column per field (default: density, speed and the refinement level of each
+block), without field files on disk:
+
+    AMR_OUTPUT=none AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" \
+        ./build-gpu/amr_lbm_sycl 320000 1280
 
 ## GPU offload prototype
 
