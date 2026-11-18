@@ -20,36 +20,74 @@ MODULE Ghost_C_Mod
 CONTAINS
 
 
-!== fill ng ghost layers of C on all leaf blocks, level by level (coarse
-!   first: an interpolation from a coarser neighbour reads its ghost cells)
+!== fill ng ghost layers of C on all leaf blocks, in two passes over the
+!   levels as for h and g (Fill_Ghost_Cells_hg): copies, restrictions and
+!   walls first, then the interpolations from coarser neighbours. The wall
+!   ghost cells in the end columns next to an interpolated side copy its
+!   ghost cells and are redone then; the collision stencils read them.
 SUBROUTINE Fill_Ghost_Cells_C( ng )
     USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: ng
 
-    INTEGER :: L, k, m, n
+    INTEGER :: L, k, m, n, X1
 
     DO L = LevelMin, LevelMax
 !$OMP DO schedule(static)
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
-
-            DO k = 1, 2
-                IF( Blk(n)%nbr(k) > 0 ) CALL Fill_Side_X( n, Blk(n)%nbr(k), di(k), ng )
-            END DO
-            DO k = 3, 4
-                IF( Blk(n)%nbr(k) > 0 ) CALL Fill_Side_Y( n, Blk(n)%nbr(k), dj(k), ng )
-            END DO
-            DO k = 5, 8
-                IF( Blk(n)%nbr(k) > 0 ) CALL Fill_Corner( n, k, ng )
-            END DO
-
-            IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk_C(:,:,n) )
-            IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk_C(:,:,n) )
-
+            CALL Fill( n, L, .FALSE. )
+            CALL Walls( n, 1-ng, nx+ng )
         END DO
-!$OMP END DO
+!$OMP END DO NOWAIT
     END DO
+!$OMP BARRIER
+
+    DO L = LevelMin+1, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+            IF( .NOT. Blk(n)%Coarser ) CYCLE
+            CALL Fill( n, L, .TRUE. )
+            DO k = 1, 2
+                IF( Blk(n)%nbr(k) <= 0 ) CYCLE
+                IF( Blk(Blk(n)%nbr(k))%Level == L ) CYCLE
+                X1 = MERGE( 1-ng, nx+1, k == 1 )
+                CALL Walls( n, X1, X1+ng-1 )
+            END DO
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+CONTAINS
+
+    !== the sides and corners of block n on level L from same-level and
+    !   refined neighbours (second = F) or from coarser ones (second = T)
+    SUBROUTINE Fill( n, L, second )
+        INTEGER, INTENT(IN) :: n, L
+        LOGICAL, INTENT(IN) :: second
+        INTEGER :: k, nb
+        DO k = 1, 8
+            nb = Blk(n)%nbr(k)
+            IF( nb <= 0 ) CYCLE
+            IF( (Blk(nb)%Level < L) .NEQV. second ) CYCLE
+            IF( k <= 2 ) THEN
+                CALL Fill_Side_X( n, nb, di(k), ng )
+            ELSEIF( k <= 4 ) THEN
+                CALL Fill_Side_Y( n, nb, dj(k), ng )
+            ELSE
+                CALL Fill_Corner( n, k, ng )
+            END IF
+        END DO
+    END SUBROUTINE Fill
+
+    !== symmetry on the bottom and top walls, columns X1:X2
+    SUBROUTINE Walls( n, X1, X2 )
+        INTEGER, INTENT(IN) :: n, X1, X2
+        IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk_C(:,:,n), X1, X2 )
+        IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk_C(:,:,n), X1, X2 )
+    END SUBROUTINE Walls
 
 END SUBROUTINE Fill_Ghost_Cells_C
 

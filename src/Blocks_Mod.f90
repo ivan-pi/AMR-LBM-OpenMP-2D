@@ -59,6 +59,7 @@ MODULE Blocks_Mod
         INTEGER :: nbr(8) =  0
         LOGICAL :: IsLeaf = .FALSE.
         LOGICAL :: Finer  = .FALSE.     ! a neighbour is refined: finer blocks read its ghost cells
+        LOGICAL :: Coarser = .FALSE.    ! a neighbour is coarser: ghost cells interpolated from it
         LOGICAL :: Refin  = .FALSE.
         LOGICAL :: Deref  = .FALSE.
     END TYPE Block_t

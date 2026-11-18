@@ -46,8 +46,21 @@ MODULE Ghost_hg_Mod
 CONTAINS
 
 
-!== one ghost layer of h and g on all leaf blocks, level by level (coarse
-!   first: an interpolation from a coarser neighbour reads its ghost cells)
+!== one ghost layer of h and g on all leaf blocks, in two passes over the
+!   levels. The first does the copies from same-level leaves and the
+!   restrictions of refined neighbours, which read interior cells only, and
+!   the wall conditions. The second interpolates from coarser neighbours,
+!   which also reads ghost cells of the coarser block: by the 2:1 balance
+!   (diagonal neighbours included) those lie towards blocks of the
+!   interpolating block's level or the coarser one, filled by the first
+!   pass. So the levels need no barrier between them (NOWAIT), the passes
+!   one. The wall conditions run in the first pass only: their values that
+!   come from a side ghost cell still to be interpolated (end columns,
+!   directions with ex*ey /= 0 pointing out of the block) are read neither
+!   by the streaming nor by finer neighbours, which read the wall row on
+!   their own side (restricted in the first pass). The static
+!   schedules per level are those of the collision and streaming loops:
+!   each block stays with one thread.
 SUBROUTINE Fill_Ghost_Cells_hg
     USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
@@ -62,7 +75,8 @@ SUBROUTINE Fill_Ghost_Cells_hg
             DO k = 1, 8
                 nb = Blk(n)%nbr(k)
                 IF( nb <= 0 ) CYCLE
-                IF( Blk(nb)%Level == L .AND. Blk(nb)%IsLeaf ) THEN
+                IF( Blk(nb)%Level < L ) CYCLE                 ! second pass
+                IF( Blk(nb)%IsLeaf ) THEN
                     IF( Blk(n)%Finer ) THEN
                         CALL Copy_Same_Level( n, nb, k, all_dirs )
                     ELSEIF( L == maxLevels ) THEN
@@ -79,18 +93,51 @@ SUBROUTINE Fill_Ghost_Cells_hg
                 END IF
             END DO
 
-            IF( Blk(n)%nbr(3) < 0 ) THEN
-                CALL Bounce_Back_3( Blk_h(:,:,:,n) )
-                CALL Bounce_Back_3( Blk_g(:,:,:,n) )
-            END IF
-            IF( Blk(n)%nbr(4) < 0 ) THEN
-                CALL Bounce_Back_4( Blk_h(:,:,:,n) )
-                CALL Bounce_Back_4( Blk_g(:,:,:,n) )
-            END IF
+            CALL Walls( n, 0, nx+1 )
 
         END DO
-!$OMP END DO
+!$OMP END DO NOWAIT
     END DO
+!$OMP BARRIER
+
+    DO L = LevelMin+1, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+            IF( .NOT. Blk(n)%Coarser ) CYCLE
+
+            DO k = 1, 8
+                nb = Blk(n)%nbr(k)
+                IF( nb <= 0 ) CYCLE
+                IF( Blk(nb)%Level == L ) CYCLE                ! first pass
+                IF( k <= 2 ) THEN
+                    CALL Fill_Side_X( n, nb, di(k) )
+                ELSEIF( k <= 4 ) THEN
+                    CALL Fill_Side_Y( n, nb, dj(k) )
+                ELSE
+                    CALL Fill_Corner( n, k )
+                END IF
+            END DO
+
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+CONTAINS
+
+    !== bounce-back on the bottom and top walls, columns X1:X2
+    SUBROUTINE Walls( n, X1, X2 )
+        INTEGER, INTENT(IN) :: n, X1, X2
+        IF( Blk(n)%nbr(3) < 0 ) THEN
+            CALL Bounce_Back_3( Blk_h(:,:,:,n), X1, X2 )
+            CALL Bounce_Back_3( Blk_g(:,:,:,n), X1, X2 )
+        END IF
+        IF( Blk(n)%nbr(4) < 0 ) THEN
+            CALL Bounce_Back_4( Blk_h(:,:,:,n), X1, X2 )
+            CALL Bounce_Back_4( Blk_g(:,:,:,n), X1, X2 )
+        END IF
+    END SUBROUTINE Walls
 
 END SUBROUTINE Fill_Ghost_Cells_hg
 
