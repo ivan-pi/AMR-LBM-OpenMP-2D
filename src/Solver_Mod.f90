@@ -97,8 +97,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     REAL(wp),        INTENT(IN) :: t_end            ! end time, in the case's time unit
     REAL(wp),        INTENT(IN) :: time_per_step    ! the case's time unit per time step
 
-    INTEGER :: T, n, m, L, Tf, nOutStep, nargs, ios
-    CHARACTER(len=32) :: arg
+    INTEGER :: T, n, m, L, Tf, nOutStep, nViewStep
     REAL(wp)    :: cfl
     LOGICAL    :: changed, moments_done, is_output, is_diagnostic
     INTEGER    :: nDiagStep
@@ -108,24 +107,13 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     INTEGER(8) :: tp0, tpLast, cellUpdates
 
     !==================================
-    Tf   = NINT(t_end / time_per_step /20)*20
-    !== optional command-line override of the number of time steps
-    nargs = COMMAND_ARGUMENT_COUNT()
-    IF( nargs >= 1 ) THEN
-        CALL GET_COMMAND_ARGUMENT( 1, arg )
-        READ( arg, *, IOSTAT=ios ) Tf
-        IF( ios /= 0 .OR. Tf < 1 ) STOP 'usage: amr_lbm [number_of_time_steps [output_interval_in_steps]]'
-    END IF
-    !== optional output interval in time steps (default: 20 outputs over the run);
-    !   the initial and the final state are always written
-    nOutStep = MAX( Tf/20, 1 )
-    IF( nargs >= 2 ) THEN
-        CALL GET_COMMAND_ARGUMENT( 2, arg )
-        READ( arg, *, IOSTAT=ios ) nOutStep
-        IF( ios /= 0 .OR. nOutStep < 1 ) STOP 'usage: amr_lbm [number_of_time_steps [output_interval_in_steps]]'
-    END IF
+    !== command line: number of time steps (default: the case's end time),
+    !   output interval in time steps (default: 20 outputs over the run; the
+    !   initial and the final state are always written), real-time view
+    Tf = NINT(t_end / time_per_step /20)*20
+    CALL Read_Command_Line( Tf, nOutStep, nViewStep )
     CALL Select_Writer
-    CALL Viewer_Open
+    CALL Viewer_Open( nViewStep )
     !== the case's diagnostics are recorded 120 times per run and at every output
     nDiagStep = MAX( Tf/120, 1 )
     !== a progress line (speed, estimated time left) 20 times per run
@@ -184,7 +172,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
             CALL Lap( t_refine )
         END IF
 
-        !== real-time view (optional, AMR_VIEW): C of this step, P and U of the last moments
+        !== real-time view (optional, --view): C of this step, P and U of the last moments
         IF( Viewer_Due( T, Tf ) ) THEN
             CALL Viewer_Update( T, T*time_per_step )
             CALL Lap( t_Output )
@@ -374,5 +362,67 @@ SUBROUTINE Print_Diagnostics( Time )
 10  FORMAT(F7.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
 
 END SUBROUTINE Print_Diagnostics
+
+!******************************************************************************
+
+!== command line: [--view[=N]] [number_of_time_steps [output_interval_in_steps]];
+!   options may come anywhere. Tf holds the default number of steps on entry.
+SUBROUTINE Read_Command_Line( Tf, nOutStep, nViewStep )
+    IMPLICIT NONE
+    INTEGER, INTENT(INOUT) :: Tf
+    INTEGER, INTENT(OUT)   :: nOutStep, nViewStep
+
+    INTEGER, PARAMETER :: nViewDefault = 20      ! --view without an interval
+    CHARACTER(len=64) :: arg, prog
+    INTEGER :: k, length, ios, npos, nout_arg
+
+    CALL GET_COMMAND_ARGUMENT( 0, prog )
+    nViewStep = 0
+    nout_arg  = 0
+    npos      = 0
+    DO k = 1, COMMAND_ARGUMENT_COUNT()
+        CALL GET_COMMAND_ARGUMENT( k, arg, length )
+        IF( length > LEN(arg) ) CALL Usage( 'argument too long: ' // arg )
+        IF( arg == '-h' .OR. arg == '--help' ) THEN
+            CALL Usage( '' )
+        ELSE IF( arg == '--view' ) THEN
+            nViewStep = nViewDefault
+        ELSE IF( arg(1:7) == '--view=' ) THEN
+            READ( arg(8:), *, IOSTAT=ios ) nViewStep
+            IF( ios /= 0 .OR. nViewStep < 1 ) CALL Usage( 'update interval in time steps expected: ' // arg )
+        ELSE IF( arg(1:1) == '-' ) THEN
+            CALL Usage( 'unknown option ' // arg )
+        ELSE
+            npos = npos + 1
+            SELECT CASE( npos )
+            CASE( 1 )
+                READ( arg, *, IOSTAT=ios ) Tf
+                IF( ios /= 0 .OR. Tf < 1 ) CALL Usage( 'number of time steps expected: ' // arg )
+            CASE( 2 )
+                READ( arg, *, IOSTAT=ios ) nout_arg
+                IF( ios /= 0 .OR. nout_arg < 1 ) CALL Usage( 'output interval in time steps expected: ' // arg )
+            CASE DEFAULT
+                CALL Usage( 'too many arguments: ' // arg )
+            END SELECT
+        END IF
+    END DO
+    nOutStep = MAX( Tf/20, 1 )
+    IF( nout_arg > 0 ) nOutStep = nout_arg
+
+CONTAINS
+
+    !== print the usage (after the error, if any) and stop
+    SUBROUTINE Usage( error )
+        CHARACTER(len=*), INTENT(IN) :: error
+        IF( LEN_TRIM(error) > 0 ) PRINT '(/2A)', 'Error: ', TRIM(error)
+        PRINT '(/3A)', 'usage: ', TRIM(prog), ' [--view[=N]] [number_of_time_steps [output_interval_in_steps]]'
+        PRINT '(A)',   '  --view[=N]   real-time view of the mesh and a field, updated every N steps', &
+                       '               (default 20; needs a build with -DAMR_WITH_VIEWER=ON)', &
+                       '  -h, --help   this message'
+        IF( LEN_TRIM(error) > 0 ) ERROR STOP 2
+        STOP
+    END SUBROUTINE Usage
+
+END SUBROUTINE Read_Command_Line
 
 END MODULE Solver_Mod

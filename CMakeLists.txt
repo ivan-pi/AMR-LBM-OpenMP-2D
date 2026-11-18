@@ -149,7 +149,7 @@ endif()
 
 # real-time viewer: C library with an SDL2 window and an OpenGL 3.3 context
 # (the GL functions are loaded through SDL, no libGL link); enabled at run
-# time with AMR_VIEW=<update interval in steps>
+# time with the option --view[=<update interval in steps>]
 if(AMR_WITH_VIEWER)
   enable_language(C)
   find_package(SDL2 REQUIRED)

@@ -64,7 +64,7 @@ The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
 ```
 cmake -B build                                  # Release, double precision
 cmake --build build -j
-OMP_NUM_THREADS=8 ./build/amr_lbm [number_of_time_steps [output_interval_in_steps]]
+OMP_NUM_THREADS=8 ./build/amr_lbm [--view[=N]] [number_of_time_steps [output_interval_in_steps]]
 OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
 ```
 
@@ -98,7 +98,8 @@ The number of threads is taken from `OMP_NUM_THREADS`. The optional arguments
 override the number of time steps (default: 8 bubble-rise time units) and the
 output interval in time steps (default: one twentieth of the run; use a smaller
 interval for smooth animations). The initial and the final state are always
-written.
+written. `--view[=N]` opens the real-time view (see *Real-time view*), `-h`
+prints the usage.
 
 All floating-point data use the kind parameter `wp` from `Kinds_Mod`
 (`real64` by default, `real32` with `-DAMR_PRECISION=4`). The total-mass diagnostic is
@@ -261,12 +262,13 @@ Run `python3 tools/animate_vtk.py -h` for all options.
 ### Real-time view
 
 With `-DAMR_WITH_VIEWER=ON` (needs SDL2 and OpenGL 3.3) the solver can show the
-leaf blocks and a field in a window while it runs. `AMR_VIEW` turns it on
-and sets the update interval in time steps:
+leaf blocks and a field in a window while it runs. The option `--view[=N]`
+turns it on and sets the update interval in time steps (default 20); it can
+come before or after the numbers:
 
 ```
 cmake -B build-view -DAMR_WITH_VIEWER=ON && cmake --build build-view -j
-AMR_VIEW=20 AMR_OUTPUT=none ./build-view/amr_lbm
+AMR_OUTPUT=none ./build-view/amr_lbm --view=20
 ```
 
 The controls are inspired by [FluidX3D](https://github.com/ProjectPhysX/FluidX3D);
@@ -329,13 +331,13 @@ thread, which here is the solver's, so on macOS the viewer has no render
 thread: each update handles the window's input and draws (at most about 60
 frames a second), and while the run is paused or finished the solver thread
 runs the window's event loop. The window therefore reacts to input only at
-updates: choose `AMR_VIEW` so that there are several per second. The
+updates: choose `--view=N` so that there are several per second. The
 help and status text keep their size on Retina displays.
 
 ```
 brew install gcc sdl2 cmake
 cmake -B build-view -DAMR_WITH_VIEWER=ON -DCMAKE_Fortran_COMPILER=gfortran && cmake --build build-view -j
-AMR_VIEW=20 AMR_OUTPUT=none ./build-view/amr_lbm
+AMR_OUTPUT=none ./build-view/amr_lbm --view=20
 ```
 
 `AMRVIZ_THREAD=0` selects the same single-thread mode on Linux, which is how
