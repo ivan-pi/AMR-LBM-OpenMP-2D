@@ -1,5 +1,6 @@
 !================================================
-!   Ghost cells of the phase field C (ng = 1 or 2 layers)
+!   Ghost cells of the phase field C (ng = 1 or 2 layers), and of the
+!   second scalar C2 of two-scalar models (Blocks_Mod nScalars = 2)
 !
 !   As for h and g (Ghost_hg_Mod, where the strip layout is described): a
 !   copy from a same-level leaf, the restriction of the facing children of a
@@ -10,7 +11,7 @@
 MODULE Ghost_C_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, Blk_C, di, dj, facing
+    USE Blocks_Mod, ONLY: Blk, Blk_C, Blk_C2, nScalars, di, dj, facing
     USE Interpolations_Mod, ONLY: Biquadratic_from_Fine, Biquadratic_from_Coarse
     USE BC_Mod, ONLY: Symmetric_C_3, Symmetric_C_4
     IMPLICIT NONE
@@ -36,8 +37,12 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
 !$OMP DO schedule(static)
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
-            CALL Fill( n, L, .FALSE. )
-            CALL Walls( n, 1-ng, nx+ng )
+            CALL Fill( n, L, .FALSE., Blk_C )
+            CALL Walls( n, 1-ng, nx+ng, Blk_C )
+            IF( nScalars == 2 ) THEN
+                CALL Fill( n, L, .FALSE., Blk_C2 )
+                CALL Walls( n, 1-ng, nx+ng, Blk_C2 )
+            END IF
         END DO
 !$OMP END DO NOWAIT
     END DO
@@ -48,12 +53,14 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
             IF( .NOT. Blk(n)%Coarser ) CYCLE
-            CALL Fill( n, L, .TRUE. )
+            CALL Fill( n, L, .TRUE., Blk_C )
+            IF( nScalars == 2 ) CALL Fill( n, L, .TRUE., Blk_C2 )
             DO k = 1, 2
                 IF( Blk(n)%nbr(k) <= 0 ) CYCLE
                 IF( Blk(Blk(n)%nbr(k))%Level == L ) CYCLE
                 X1 = MERGE( 1-ng, nx+1, k == 1 )
-                CALL Walls( n, X1, X1+ng-1 )
+                CALL Walls( n, X1, X1+ng-1, Blk_C )
+                IF( nScalars == 2 ) CALL Walls( n, X1, X1+ng-1, Blk_C2 )
             END DO
         END DO
 !$OMP END DO NOWAIT
@@ -62,31 +69,34 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
 
 CONTAINS
 
-    !== the sides and corners of block n on level L from same-level and
-    !   refined neighbours (second = F) or from coarser ones (second = T)
-    SUBROUTINE Fill( n, L, second )
+    !== the sides and corners of block n on level L of the scalar pool C from
+    !   same-level and refined neighbours (second = F) or from coarser ones
+    !   (second = T)
+    SUBROUTINE Fill( n, L, second, C )
         INTEGER, INTENT(IN) :: n, L
         LOGICAL, INTENT(IN) :: second
+        REAL(wp), INTENT(INOUT) :: C(-1:nx+2,-1:ny+2,*)
         INTEGER :: k, nb
         DO k = 1, 8
             nb = Blk(n)%nbr(k)
             IF( nb <= 0 ) CYCLE
             IF( (Blk(nb)%Level < L) .NEQV. second ) CYCLE
             IF( k <= 2 ) THEN
-                CALL Fill_Side_X( n, nb, di(k), ng )
+                CALL Fill_Side_X( n, nb, di(k), ng, C )
             ELSEIF( k <= 4 ) THEN
-                CALL Fill_Side_Y( n, nb, dj(k), ng )
+                CALL Fill_Side_Y( n, nb, dj(k), ng, C )
             ELSE
-                CALL Fill_Corner( n, k, ng )
+                CALL Fill_Corner( n, k, ng, C )
             END IF
         END DO
     END SUBROUTINE Fill
 
-    !== symmetry on the bottom and top walls, columns X1:X2
-    SUBROUTINE Walls( n, X1, X2 )
+    !== symmetry on the bottom and top walls, columns X1:X2, of the scalar pool C
+    SUBROUTINE Walls( n, X1, X2, C )
         INTEGER, INTENT(IN) :: n, X1, X2
-        IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk_C(:,:,n), X1, X2 )
-        IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk_C(:,:,n), X1, X2 )
+        REAL(wp), INTENT(INOUT) :: C(-1:nx+2,-1:ny+2,*)
+        IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, C(:,:,n), X1, X2 )
+        IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, C(:,:,n), X1, X2 )
     END SUBROUTINE Walls
 
 END SUBROUTINE Fill_Ghost_Cells_C
@@ -96,9 +106,10 @@ END SUBROUTINE Fill_Ghost_Cells_C
 !== the ng ghost columns of block n towards its left (s = -1) or right (s = +1)
 !   neighbour nb. Copies are element loops: as sections of the same pool
 !   array they would go through a temporary (no proof that they don't overlap).
-SUBROUTINE Fill_Side_X( n, nb, s, ng )
+SUBROUTINE Fill_Side_X( n, nb, s, ng, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s, ng
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
 
     INTEGER  :: ig, i0, c, l, j, Y
     REAL(wp) :: Cf(2+ng,2*ny), Cc(3,ny/2+2), Cg(ng,ny)
@@ -142,9 +153,10 @@ END SUBROUTINE Fill_Side_X
 
 !== the ng ghost rows of block n towards its bottom (s = -1) or top (s = +1)
 !   neighbour nb
-SUBROUTINE Fill_Side_Y( n, nb, s, ng )
+SUBROUTINE Fill_Side_Y( n, nb, s, ng, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s, ng
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
 
     INTEGER  :: jg, j0, c, l, i, X
     REAL(wp) :: Cf(2*nx,2+ng), Cc(nx/2+2,3), Cg(nx,ng)
@@ -187,9 +199,10 @@ END SUBROUTINE Fill_Side_Y
 !******************************************************************************
 
 !== the ng x ng ghost corner of block n towards its neighbour in direction k = 5..8
-SUBROUTINE Fill_Corner( n, k, ng )
+SUBROUTINE Fill_Corner( n, k, ng, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, k, ng
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
 
     INTEGER  :: nb, sx, sy, ig, jg, i0, j0, px, py, c, l, m
     REAL(wp) :: Cf(2+ng,2+ng), Cc(3,3), Cg(ng,ng)

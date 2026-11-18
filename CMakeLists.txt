@@ -26,6 +26,7 @@ set(AMR_L0 256 CACHE STRING "Domain width in finest-level lattice units (domain 
 set(AMR_DOMAIN_HEIGHT 3 CACHE STRING "Domain height in base blocks of L0 x L0 (rising bubble: 3, Rayleigh-Taylor: 4)")
 set(AMR_MIN_LEVEL 1 CACHE STRING "Minimum refinement level (uniform background refinement)")
 set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of two dividing AMR_L0)")
+option(AMR_PERIODIC_Y "Periodic in y as well (default: walls at the bottom and top)" OFF)
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
@@ -107,6 +108,7 @@ add_library(amr_core OBJECT
   src/Phase_Field_Mod.f90
   src/Model_JCP2016_Mod.f90
   src/Model_PRE2017_Mod.f90
+  src/Model_Parker2009_Mod.f90
   src/Mesh_Mod.f90
   src/Ghost_C_Mod.f90
   src/Ghost_hg_Mod.f90
@@ -119,9 +121,11 @@ add_library(amr_core OBJECT
   src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
   src/Rayleigh_Taylor_Mod.f90
+  src/Parker_Cases_Mod.f90
 )
 target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
-                                            AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT})
+                                            AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT}
+                                            $<$<BOOL:${AMR_PERIODIC_Y}>:AMR_PERIODIC_Y>)
 target_link_libraries(amr_core PUBLIC amr_options OpenMP::OpenMP_Fortran)
 set_target_properties(amr_core PROPERTIES
   Fortran_PREPROCESS ON
@@ -154,13 +158,15 @@ endif()
 # drivers, one per case and model:
 #   amr_lbm,    amr_lbm_pre2017     rising bubble
 #   amr_lbm_rt, amr_lbm_rt_pre2017  Rayleigh-Taylor instability
+#   amr_lbm_parker                  two species (Parker & Jovanovic 2009): droplets, spinodal decomposition
 # with the models of Fakhari, Geier & Lee (JCP 2016) and Fakhari et al.
 # (PRE 2017, improved locality)
 add_executable(amr_lbm            src/main_jcp2016.f90)
 add_executable(amr_lbm_pre2017    src/main_pre2017.f90)
 add_executable(amr_lbm_rt         src/main_rt_jcp2016.f90)
 add_executable(amr_lbm_rt_pre2017 src/main_rt_pre2017.f90)
-set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017)
+add_executable(amr_lbm_parker     src/main_parker2009.f90)
+set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017 amr_lbm_parker)
 foreach(_exe ${_amr_drivers})
   target_link_libraries(${_exe} PRIVATE amr_core)
   set_target_properties(${_exe} PROPERTIES Fortran_PREPROCESS ON)
@@ -202,6 +208,6 @@ if(AMR_BUILD_OFFLOAD)
   add_subdirectory(offload)
 endif()
 
-message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, "
+message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, periodic y=${AMR_PERIODIC_Y}, "
                "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
                "viewer=${AMR_WITH_VIEWER}, offload=${AMR_BUILD_OFFLOAD}, sycl=${AMR_BUILD_SYCL}, build type=${CMAKE_BUILD_TYPE}")

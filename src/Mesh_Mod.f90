@@ -140,11 +140,12 @@ END
 !== Blk(:)%nbr of every live block from the block positions alone: the block
 !   at the neighbouring position on the same level, else the block one level
 !   coarser that covers it (the 2:1 balance guarantees one of them exists).
-!   Periodic in x; above the top or below the bottom the neighbour is the
-!   boundary code -k. Called after every change of the mesh; the block
-!   positions are the only neighbour information that is stored.
+!   Periodic in x (and in y with periodicY); otherwise above the top or below
+!   the bottom the neighbour is the boundary code -k. Called after every change
+!   of the mesh; the block positions are the only neighbour information that
+!   is stored.
 SUBROUTINE Rebuild_Neighbor_Table
-    USE Config_Mod, ONLY: MaxBlks, nBaseX, nBaseY
+    USE Config_Mod, ONLY: MaxBlks, nBaseX, nBaseY, periodicY
     USE Blocks_Mod, ONLY: di, dj
     IMPLICIT NONE
 
@@ -166,6 +167,7 @@ SUBROUTINE Rebuild_Neighbor_Table
         IF( L < 0 ) CYCLE
         DO k = 1, 8
             J = Blk(n)%J + dj(k)
+            IF( periodicY ) J = MODULO( J, nBaseY*2**L )
             IF( J < 0 .OR. J >= nBaseY*2**L ) THEN
                 Blk(n)%nbr(k) = -k
                 CYCLE
