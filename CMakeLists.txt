@@ -14,6 +14,8 @@ project(AMR_LBM_2D
 #   cmake -B build -DAMR_BLOCK_SIZE=16               # 16x16-cell blocks
 #   cmake -B build -DAMR_WITH_FVTKHDF=ON -DCMAKE_PREFIX_PATH=<fvtkhdf prefix>
 #   cmake -B build -DAMR_BUILD_OFFLOAD=ON            # GPU prototype (ifx only)
+#   cmake -B build -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4
+#                                                    # GPU solver amr_lbm_sycl (SYCL, FP32)
 #   cmake --build build -j
 
 set(AMR_PRECISION 8 CACHE STRING "Working precision wp in bytes: 8 (real64) or 4 (real32)")
@@ -24,6 +26,8 @@ set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of t
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
 option(AMR_NATIVE "Optimize for the build machine (-march=native / -xHost)" ON)
+option(AMR_BUILD_SYCL "Build the SYCL GPU solver amr_lbm_sycl in gpu/ (C++ compiler icpx)" OFF)
+set(AMR_SYCL_TARGETS "" CACHE STRING "Ahead-of-time SYCL targets, e.g. intel_gpu_acm_g10 (empty: JIT)")
 
 if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
@@ -133,6 +137,27 @@ endforeach()
 install(TARGETS amr_lbm amr_lbm_pre2017)
 
 # ---------------------------------------------------------------------------
+# GPU solver (SYCL, single precision): the JCP 2016 model with the mesh on
+# the host and all field work on the device. Building it with
+# AMR_PRECISION=4 gives the matching Fortran programs for comparison.
+
+if(AMR_BUILD_SYCL)
+  enable_language(CXX)
+  add_executable(amr_lbm_sycl gpu/amr_lbm_sycl.cpp)
+  target_compile_definitions(amr_lbm_sycl PRIVATE
+    AMR_BLOCK_SIZE=${AMR_BLOCK_SIZE} AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL})
+  target_compile_features(amr_lbm_sycl PRIVATE cxx_std_17)
+  set(_sycl_flags -fsycl -ffp-model=precise)
+  if(AMR_SYCL_TARGETS)
+    list(APPEND _sycl_flags -fsycl-targets=${AMR_SYCL_TARGETS})
+  endif()
+  target_compile_options(amr_lbm_sycl PRIVATE ${_sycl_flags}
+    $<$<CONFIG:Release,RelWithDebInfo>:-O2>)
+  target_link_options(amr_lbm_sycl PRIVATE ${_sycl_flags})
+  install(TARGETS amr_lbm_sycl)
+endif()
+
+# ---------------------------------------------------------------------------
 # GPU offload prototype
 
 if(AMR_BUILD_OFFLOAD)
@@ -144,4 +169,4 @@ endif()
 
 message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, "
                "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
-               "offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")
+               "offload=${AMR_BUILD_OFFLOAD}, sycl=${AMR_BUILD_SYCL}, build type=${CMAKE_BUILD_TYPE}")

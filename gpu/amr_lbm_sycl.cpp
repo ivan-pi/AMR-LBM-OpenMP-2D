@@ -1,0 +1,704 @@
+//==============================================================================
+//  AMR-LBM rising bubble on a GPU (SYCL): the JCP 2016 model of the Fortran
+//  solver (src/), single precision
+//
+//  The host keeps the quadtree of blocks (metadata only) and runs the mesh
+//  logic of Mesh_Mod / Refine_Mod / Blocks_Mod step for step: the same slot
+//  allocation, Z-order leaf lists, neighbour table and flagging, so a run
+//  can be compared with the Fortran program built with AMR_PRECISION=4.
+//  All field work runs on the device (lbm_kernels.hpp): the time step, the
+//  initial state, prolongation and restriction. Per step the host fetches
+//  the refinement criterion of the leaves; after a mesh change it uploads
+//  the block metadata, at diagnostic steps it fetches C and Uy.
+//
+//  The pieces:
+//      DeviceArray<T>   a USM device allocation (RAII)
+//      DeviceFields     the field pool h, g, C, P, Ux, Uy
+//      DeviceMesh       the block metadata and leaf list on the device
+//      Quadtree         the mesh on the host; adapt() returns a MeshChange,
+//                       the field work it implies
+//      BubbleCase       parameters (namelist), initial state, diagnostics
+//      StageTimers      wall time per stage of the time step
+//      Solver           the time loop
+//
+//  Usage:  amr_lbm_sycl [number_of_time_steps [output_interval_in_steps]]
+//          AMR_CASE=case.nml   namelist &rising_bubble (as the Fortran code)
+//          AMR_GPU_SYNC=1      wait after every stage (stage timings)
+//  The host thread waits for the GPU many times per step: on a loaded
+//  machine pin it to an idle CPU (taskset -c <cpu>), or every wait costs a
+//  scheduler time slice. Writes bubble_rise.dat; no field output yet.
+//==============================================================================
+#include "lbm_kernels.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#if !defined(AMR_L0) || !defined(AMR_MIN_LEVEL)
+#error "AMR_L0 and AMR_MIN_LEVEL must be defined"
+#endif
+
+using namespace amr;
+
+//==============================================================================
+//  Configuration (Config_Mod)
+//==============================================================================
+constexpr int L0 = AMR_L0, minLevels = AMR_MIN_LEVEL;
+constexpr int nBaseX = 1, nBaseY = 3;
+constexpr int ilog2(int v) { return v <= 1 ? 0 : 1 + ilog2(v / 2); }
+constexpr int maxLevels = ilog2(L0 / NX);
+constexpr int MaxBlks = nBaseX * nBaseY * ((1 << (2 * (maxLevels + 1))) - 1) / 3;
+static_assert((NX << maxLevels) == L0, "L0 must be a power-of-two multiple of the block size");
+static_assert(maxLevels < MAXLEV, "too many levels");
+
+inline int dx_level(int L) { return (L0 / NX) >> L; }
+
+//==============================================================================
+//  Device memory
+//==============================================================================
+template <class T>
+class DeviceArray {
+public:
+    DeviceArray(sycl::queue &q, size_t n) : q_(&q), n_(n), p_(sycl::malloc_device<T>(n, q)) {
+        if (!p_) throw std::runtime_error("device allocation of " + std::to_string(n * sizeof(T)) + " bytes failed");
+        q.memset(p_, 0, n * sizeof(T));
+    }
+    ~DeviceArray() { if (p_) sycl::free(p_, *q_); }
+    DeviceArray(const DeviceArray &) = delete;
+    DeviceArray &operator=(const DeviceArray &) = delete;
+    DeviceArray(DeviceArray &&o) noexcept : q_(o.q_), n_(o.n_), p_(std::exchange(o.p_, nullptr)) {}
+
+    T *get() const { return p_; }
+    size_t size() const { return n_; }
+
+    //== host -> device (blocking: the source may be a temporary)
+    template <class V> T *put(const V &v) {
+        static_assert(sizeof(v[0]) % sizeof(T) == 0);
+        const size_t bytes = v.size() * sizeof(v[0]);
+        if (bytes > n_ * sizeof(T)) throw std::runtime_error("DeviceArray::put: too large");
+        q_->memcpy(p_, v.data(), bytes).wait();
+        return p_;
+    }
+    //== device -> host, the first count elements (blocking)
+    void get(T *dst, size_t count) const { q_->memcpy(dst, p_, count * sizeof(T)).wait(); }
+
+private:
+    sycl::queue *q_;
+    size_t n_;
+    T *p_;
+};
+
+//== the field pool, slots 1..cap
+struct DeviceFields {
+    DeviceArray<real> h, g, C, P, Ux, Uy;
+
+    DeviceFields(sycl::queue &q, size_t cap)
+        : h(q, HB * cap), g(q, HB * cap), C(q, CB * cap), P(q, PB * cap), Ux(q, PB * cap), Uy(q, PB * cap) {}
+
+    Fields view() const { return {h.get(), g.get(), C.get(), P.get(), Ux.get(), Uy.get()}; }
+    static double mib_per_block() { return double(2 * HB + CB + 3 * PB) * sizeof(real) / (1 << 20); }
+};
+
+//==============================================================================
+//  The mesh on the host (Blocks_Mod, Mesh_Mod, Refine_Mod)
+//==============================================================================
+struct Block {
+    int level = -1, I = 0, J = 0, parent = -1, child = -1;
+    int nbr[9] = {};                // nbr[k], k = 1..8
+    bool leaf = false, coarser = false, refin = false, deref = false;
+};
+
+// facing(1:2,k): children of a refined neighbour in direction k touching the block
+constexpr int facing[9][2] = {{0, 0}, {1, 3}, {0, 2}, {2, 3}, {0, 1}, {3, 3}, {1, 1}, {2, 2}, {0, 0}};
+
+//== the field work a mesh adaptation implies, in this order: restrictions
+//   (parent, first child), clearing of the new slots, prolongations
+//   (parent, first new child), moments of g of the new blocks
+struct MeshChange {
+    std::vector<int> restrict_pairs, cleared, prolong_pairs;
+    std::vector<BlockRef> new_blocks;
+};
+
+class Quadtree {
+public:
+    Quadtree() : B_(MaxBlks + 1), at_(MaxBlks + 1, 0) {}
+
+    const Block &operator[](int n) const { return B_[n]; }
+    int nblks() const { return nblks_; }
+    int unused() const { return 4 * int(free_first_.size()); }
+    int levelMin() const { return levelMin_; }
+    int levelMax() const { return levelMax_; }
+    const std::vector<int> &leaves() const { return leaves_; }
+    int nLeaf() const { return int(leaves_.size()); }
+
+    std::vector<BlockRef> leaf_refs() const {
+        std::vector<BlockRef> r;
+        r.reserve(leaves_.size());
+        for (int n : leaves_) r.push_back(ref(n));
+        return r;
+    }
+    BlockRef ref(int n) const { return {n, B_[n].level, B_[n].I, B_[n].J}; }
+
+    //== Mesh_Mod: Create_Domain (fresh slots: their fields are zero already)
+    void create_domain() {
+        for (int J = 0; J < nBaseY; ++J)
+            for (int I = 0; I < nBaseX; ++I) {
+                Block &b = B_[++nblks_];
+                b = Block{};
+                b.level = 0; b.I = I; b.J = J; b.leaf = true;
+            }
+        for (int L = 1; L <= minLevels; ++L) {
+            const int nb = nblks_;
+            for (int n = 1; n <= nb; ++n)
+                if (B_[n].level == L - 1) add_children(n, nblks_ + 1);
+        }
+        leaf_lists();
+    }
+
+    //== Refine_Mod: Refine_Derefine_Mesh with the criterion err (per slot);
+    //   returns the field work, empty if nothing changed
+    std::optional<MeshChange> adapt(const std::vector<real> &err, real refine_tol, real deref_tol) {
+        if (!flag(err, refine_tol, deref_tol)) return std::nullopt;
+        MeshChange mc;
+
+        //== Derefine: restrict the flagged groups, queue their slots
+        for (int n = 1; n <= nblks_; ++n) {
+            if (!B_[n].deref) continue;
+            const int c = B_[n].child;
+            mc.restrict_pairs.insert(mc.restrict_pairs.end(), {n, c});
+            std::fill(&B_[c], &B_[c] + 4, Block{});
+            B_[n].child = -1;
+            B_[n].leaf = true;
+            free_first_.push_back(c);
+        }
+        //== Refine: children of the flagged leaves, coarse levels first, in free slots
+        for (int L = levelMin_; L <= levelMax_; ++L) {
+            const int nb = nblks_;
+            for (int n = 1; n <= nb; ++n) {
+                if (B_[n].level != L || !B_[n].refin) continue;
+                int c1 = nblks_ + 1;
+                if (!free_first_.empty()) { c1 = free_first_.front(); free_first_.pop_front(); }
+                add_children(n, c1);
+                mc.prolong_pairs.insert(mc.prolong_pairs.end(), {n, c1});
+                for (int c = c1; c < c1 + 4; ++c) {
+                    mc.cleared.push_back(c);
+                    mc.new_blocks.push_back(ref(c));
+                }
+            }
+        }
+        leaf_lists();
+        return mc;
+    }
+
+private:
+    std::vector<Block> B_;          // slots 1..MaxBlks
+    int nblks_ = 0;
+    std::deque<int> free_first_;    // first slots of free sibling groups (FIFO)
+    std::vector<int> leaves_;       // by level, Z-order within a level
+    int levelMin_ = 0, levelMax_ = 0;
+    std::vector<int> at_;           // block at Slot(L,I,J) while rebuilding the neighbours
+
+    static int slot(int L, int I, int J) {
+        return 1 + nBaseX * nBaseY * ((1 << (2 * L)) - 1) / 3 + I + J * nBaseX * (1 << L);
+    }
+
+    //== Mesh_Mod: Add_Child_Blocks
+    void add_children(int par, int c1) {
+        if (c1 + 3 > MaxBlks) throw std::runtime_error("more blocks than in the fully refined quadtree");
+        B_[par].child = c1;
+        B_[par].leaf = false;
+        for (int q = 0; q < 4; ++q) {
+            Block &b = B_[c1 + q];
+            b = Block{};
+            b.level = B_[par].level + 1;
+            b.I = 2 * B_[par].I + q % 2;
+            b.J = 2 * B_[par].J + q / 2;
+            b.parent = par;
+            b.leaf = true;
+        }
+        nblks_ = std::max(nblks_, c1 + 3);
+    }
+
+    //== Mesh_Mod: Array_of_Leaf_Blocks, then the neighbour table
+    void leaf_lists() {
+        std::vector<int> z;
+        z.reserve(nblks_);
+        auto visit = [&](auto &&self, int b) -> void {        // Z-order: depth first
+            if (B_[b].leaf) { z.push_back(b); return; }
+            for (int c = 0; c < 4; ++c) self(self, B_[b].child + c);
+        };
+        for (int n = 1; n <= nBaseX * nBaseY; ++n) visit(visit, n);
+
+        std::vector<int> start(maxLevels + 2, 0);              // stable counting sort by level
+        for (int b : z) ++start[B_[b].level + 1];
+        for (int L = 0; L <= maxLevels; ++L) start[L + 1] += start[L];
+        levelMin_ = B_[z.front()].level;
+        levelMax_ = B_[z.front()].level;
+        for (int b : z) {
+            levelMin_ = std::min(levelMin_, B_[b].level);
+            levelMax_ = std::max(levelMax_, B_[b].level);
+        }
+        leaves_.assign(z.size(), 0);
+        for (int b : z) leaves_[start[B_[b].level]++] = b;
+        neighbours();
+    }
+
+    //== Mesh_Mod: Rebuild_Neighbor_Table (periodic in x, walls -k at the bottom
+    //   and top): the same level, else the coarser block covering the position
+    void neighbours() {
+        auto live = [&](auto &&f) { for (int n = 1; n <= nblks_; ++n) if (B_[n].level >= 0) f(n, B_[n]); };
+        live([&](int n, Block &b) { at_[slot(b.level, b.I, b.J)] = n; });
+        live([&](int, Block &b) {
+            const int L = b.level, w = nBaseX * (1 << L);
+            b.coarser = false;
+            for (int k = 1; k <= 8; ++k) {
+                const int J = b.J + dj[k];
+                if (J < 0 || J >= nBaseY * (1 << L)) { b.nbr[k] = -k; continue; }
+                const int I = ((b.I + di[k]) % w + w) % w;
+                int nb = at_[slot(L, I, J)];
+                if (nb == 0 && L > 0) nb = at_[slot(L - 1, I / 2, J / 2)];
+                if (nb == 0) throw std::runtime_error("no neighbour (2:1 balance violated?)");
+                b.nbr[k] = nb;
+            }
+        });
+        live([&](int, Block &b) {
+            for (int k = 1; k <= 8; ++k)
+                if (b.nbr[k] > 0 && B_[b.nbr[k]].level < b.level) b.coarser = true;
+        });
+        live([&](int, Block &b) { at_[slot(b.level, b.I, b.J)] = 0; });
+    }
+
+    //== Refine_Mod: Flag_for_refinement, Flag_for_derefinement
+    bool flag(const std::vector<real> &err, real refine_tol, real deref_tol) {
+        for (int n = 1; n <= nblks_; ++n)
+            B_[n].refin = B_[n].leaf && B_[n].level < maxLevels && err[n] > refine_tol;
+        for (int n = 1; n <= nblks_; ++n)
+            if (B_[n].refin) enforce_jump(n);
+
+        for (int n = 1; n <= nblks_; ++n) {
+            Block &b = B_[n];
+            b.deref = false;
+            const int c = b.child;
+            if (c < 0 || b.level < minLevels) continue;
+            const Block *k = &B_[c];
+            if (!std::all_of(k, k + 4, [](const Block &x) { return x.leaf && !x.refin; })) continue;
+            b.deref = std::none_of(&err[c], &err[c] + 4, [&](real e) { return e > deref_tol; });
+        }
+        for (int L = levelMax_ - 1; L >= levelMin_ - 1; --L)       // finest first
+            for (int n = 1; n <= nblks_; ++n)
+                if (B_[n].level == L && B_[n].deref) keep_jump(n);
+
+        return std::any_of(&B_[1], &B_[1] + nblks_, [](const Block &b) { return b.refin || b.deref; });
+    }
+
+    //== a block to be refined takes its coarser neighbours along
+    void enforce_jump(int n) {
+        for (int k = 1; k <= 8; ++k) {
+            const int b = B_[n].nbr[k];
+            if (b > 0 && !B_[b].refin && B_[b].level == B_[n].level - 1) {
+                B_[b].refin = true;
+                enforce_jump(b);
+            }
+        }
+    }
+
+    //== n stays refined if a neighbour's child touching it will be refined or stays refined
+    void keep_jump(int n) {
+        for (int k = 1; k <= 8; ++k) {
+            const int b = B_[n].nbr[k];
+            if (b <= 0 || B_[b].leaf) continue;
+            for (int i = 0; i < 2; ++i) {
+                const Block &c = B_[B_[b].child + facing[k][i]];
+                if (c.refin || (!c.leaf && !c.deref)) { B_[n].deref = false; return; }
+            }
+        }
+    }
+};
+
+//== the block metadata on the device, uploaded after every mesh change
+class DeviceMesh {
+public:
+    DeviceMesh(sycl::queue &q, size_t cap)
+        : level_(q, cap), I_(q, cap), J_(q, cap), child_(q, cap), nbr_(q, 8 * cap),
+          leaf_(q, cap), coarser_(q, cap), leaves_(q, cap) {}
+
+    void upload(const Quadtree &T) {
+        const int nb = T.nblks();
+        std::vector<int> lev(nb), I(nb), J(nb), ch(nb), nbr(8 * size_t(nb)), lf(nb), co(nb);
+        for (int n = 1; n <= nb; ++n) {
+            const Block &b = T[n];
+            lev[n - 1] = b.level; I[n - 1] = b.I; J[n - 1] = b.J; ch[n - 1] = b.child;
+            lf[n - 1] = b.leaf; co[n - 1] = b.coarser;
+            std::copy(b.nbr + 1, b.nbr + 9, &nbr[8 * size_t(n - 1)]);
+        }
+        level_.put(lev); I_.put(I); J_.put(J); child_.put(ch); nbr_.put(nbr);
+        leaf_.put(lf); coarser_.put(co); leaves_.put(T.leaves());
+    }
+
+    Mesh view() const {
+        return {level_.get(), I_.get(), J_.get(), child_.get(), nbr_.get(), leaf_.get(), coarser_.get(), leaves_.get()};
+    }
+
+private:
+    DeviceArray<int> level_, I_, J_, child_, nbr_, leaf_, coarser_, leaves_;
+};
+
+//==============================================================================
+//  Rising bubble case (Rising_Bubble_Mod), in single precision as the
+//  Fortran program built with AMR_PRECISION=4
+//==============================================================================
+class BubbleCase {
+public:
+    real t_end = 8, time_per_step = 0;
+
+    //== Rising_Bubble_Mod: Setup; the physical parameters for the kernels
+    Params setup() {
+        R_ = real(L0) / real(10);
+        D_ = real(2) * R_;
+        read_namelist();
+
+        Params p{};
+        p.Rhoh = 1;
+        p.Rhol = p.Rhoh / rho_ratio_;
+        p.Gy = Gy_lu_;
+        p.W = Cn_ > 0 ? Cn_ * real(L0) : Width_;
+        p.M0 = Pe_ > 0 ? std::sqrt(p.Gy * D_) * p.W / Pe_ : Mobility_;
+        p.wc = real(1) / (real(0.5) + p.M0 * real(3));
+        Sigma_ = p.Gy * (p.Rhoh - p.Rhol) * D_ * D_ / Eo_;
+        mu_h_ = std::sqrt(p.Gy * p.Rhoh * (p.Rhoh - p.Rhol) * D_ * D_ * D_) / Re_;
+        const real mul = mu_h_ / mu_ratio_;
+        p.tauh = real(3) * (mu_h_ / p.Rhoh);
+        p.taul = real(3) * (mul / p.Rhol);
+        p.Beta = real(12) * Sigma_ / p.W;
+        p.kappa = real(1.5) * Sigma_ * p.W;
+        p.maxLevels = maxLevels;
+        for (int L = 0; L <= maxLevels; ++L) p.inv_dx[L] = real(NX) / real(L0) * std::ldexp(real(1), L);
+        time_per_step = std::sqrt(p.Gy / D_);
+        std::printf("\nEo, Re_h, muh, mul, Pe =%12.3f%12.3f%12.3f%12.3f%12.3f\n", Eo_, Re_, mu_h_, mul,
+                    std::sqrt(p.Gy * D_) * p.W / p.M0);
+        params_ = p;
+        return p;
+    }
+
+    real sigma() const { return Sigma_; }
+
+    //== the bubble for the initial-state kernel
+    Bubble bubble() const { return {R_, real(L0 / 2), real(L0 / 2), Sigma_, params_.W, L0}; }
+
+    //== one line of diagnostics (Solver_Mod: Print_Diagnostics) from C and Uy
+    void print_line(real time, const Quadtree &T, const std::vector<real> &C, const std::vector<real> &Uy) const {
+        const Params &p = params_;
+        real rmin = 10, rmax = -10, umax = 0;
+        double mass = 0;
+        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
+            const real rho = p.Rhol + C[cix(i, j, n)] * (p.Rhoh - p.Rhol);
+            rmin = std::min(rmin, rho);
+            rmax = std::max(rmax, rho);
+            mass += double(rho) * dx * dx;
+            umax = std::max(umax, std::fabs(Uy[pix(i, j, n)]));
+        });
+        std::printf("%7.2f%7d%7d%6d%11.5f%11.5f%9.5f%12.1f%4d%4d\n", time, T.nblks(), T.nLeaf(), T.unused(),
+                    rmin, rmax, umax, mass, T.levelMin(), T.levelMax());
+    }
+
+    //== Rising_Bubble_Mod: Bubble_Diagnostics, appended to bubble_rise.dat
+    void rise(real time, const Quadtree &T, const std::vector<real> &C, const std::vector<real> &Uy) {
+        if (!rise_) {
+            rise_.reset(std::fopen("bubble_rise.dat", "w"));
+            std::fprintf(rise_.get(), "#      t*           y_c          u_r          Re_r\n");
+        }
+        double A = 0, Ay = 0, Av = 0;
+        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
+            const real c = C[cix(i, j, n)];
+            if (c >= real(0.9)) return;
+            const double w = double(real(1) - std::max(c, real(0))) * dx * dx;
+            A += w;
+            Ay += w * (double(T[n].J) * dx * NY + dx * (j - 0.5));
+            Av += w * Uy[pix(i, j, n)];
+        });
+        std::fprintf(rise_.get(), "%13.5E%13.5E%13.5E%13.5E\n", double(time), Ay / A, Av / A,
+                     double(params_.Rhoh) * (Av / A) * D_ / mu_h_);
+        std::fflush(rise_.get());
+    }
+
+private:
+    real Eo_ = 40, Re_ = 40, rho_ratio_ = 1000, mu_ratio_ = 100, Gy_lu_ = real(5e-6);
+    real Mobility_ = real(0.03), Pe_ = 0, Width_ = 5, Cn_ = 0;
+    real R_ = 0, D_ = 0, mu_h_ = 0, Sigma_ = 0;
+    Params params_{};
+    std::unique_ptr<FILE, int (*)(FILE *)> rise_{nullptr, &std::fclose};
+
+    template <class F> static void for_leaf_cells(const Quadtree &T, F &&f) {
+        for (int n : T.leaves()) {
+            const int dx = dx_level(T[n].level);
+            for (int j = 1; j <= NY; ++j)
+                for (int i = 1; i <= NX; ++i) f(n, i, j, dx);
+        }
+    }
+
+    //== &rising_bubble ... / from the file named by AMR_CASE: "name = value"
+    //   items, comments (!) and Fortran d exponents allowed
+    void read_namelist() {
+        const char *file = std::getenv("AMR_CASE");
+        if (!file || !*file) return;
+        std::ifstream in(file);
+        if (!in) throw std::runtime_error("AMR_CASE: cannot open the case file");
+        const std::map<std::string, real *> vars = {
+            {"eo", &Eo_}, {"re", &Re_}, {"rho_ratio", &rho_ratio_}, {"mu_ratio", &mu_ratio_},
+            {"gy_lu", &Gy_lu_}, {"mobility", &Mobility_}, {"pe", &Pe_}, {"width", &Width_},
+            {"cn", &Cn_}, {"t_end", &t_end}};
+        auto trim = [](std::string s) {
+            s.erase(0, s.find_first_not_of(" \t\r"));
+            s.erase(s.find_last_not_of(" \t\r") + 1);
+            return s;
+        };
+        std::string body;           // the group, comments removed, lower case, items separated by ','
+        bool inside = false;
+        for (std::string line; std::getline(in, line);) {
+            if (auto p = line.find('!'); p != std::string::npos) line.erase(p);
+            std::transform(line.begin(), line.end(), line.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            if (!inside) {
+                const auto p = line.find("&rising_bubble");
+                if (p == std::string::npos) continue;
+                inside = true;
+                line.erase(0, p + 14);
+            }
+            if (const auto p = line.find('/'); p != std::string::npos) { body += line.substr(0, p); break; }
+            body += line + ",";
+        }
+        std::istringstream items(body);
+        for (std::string item; std::getline(items, item, ',');) {
+            const auto eq = item.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = trim(item.substr(0, eq));
+            std::string val = trim(item.substr(eq + 1));
+            std::replace(val.begin(), val.end(), 'd', 'e');
+            const auto v = vars.find(key);
+            if (v == vars.end()) throw std::runtime_error("AMR_CASE: unknown name " + key);
+            *v->second = real(std::strtod(val.c_str(), nullptr));
+        }
+        std::printf("\nCase file: %s\n", file);
+    }
+};
+
+//==============================================================================
+//  Wall time per stage; with sync the queue is drained before each reading
+//==============================================================================
+class StageTimers {
+public:
+    using clock = std::chrono::steady_clock;
+    StageTimers(sycl::queue &q, bool sync) : q_(q), sync_(sync), last_(clock::now()) {}
+
+    template <class F> void operator()(const std::string &stage, F &&work) {
+        work();
+        if (sync_) q_.wait();
+        const auto now = clock::now();
+        acc_[stage] += std::chrono::duration<double>(now - last_).count();
+        last_ = now;
+    }
+
+    void report() const {
+        std::printf("\n------------------------------\n");
+        for (const auto &[stage, t] : acc_) std::printf(" t_%-15s%12.3f\n", (stage + ":").c_str(), t);
+        if (!sync_) std::printf(" (the stages overlap on the device: set AMR_GPU_SYNC=1 for stage times)\n");
+    }
+
+private:
+    sycl::queue &q_;
+    bool sync_;
+    clock::time_point last_;
+    std::map<std::string, double> acc_;
+};
+
+//==============================================================================
+//  The solver
+//==============================================================================
+class Solver {
+public:
+    Solver()
+        : q_(sycl::gpu_selector_v, sycl::property::queue::in_order{}),
+          fields_(q_, MaxBlks), mesh_(q_, MaxBlks),
+          err_(q_, MaxBlks), list_(q_, 4 * size_t(MaxBlks)), list2_(q_, 4 * size_t(MaxBlks)),
+          err_slot_(MaxBlks + 1, 0) {}
+
+    void run(int argc, char **argv);
+
+private:
+    sycl::queue q_;
+    DeviceFields fields_;
+    DeviceMesh mesh_;
+    DeviceArray<real> err_;
+    DeviceArray<int> list_, list2_;     // block lists for the kernels
+    Quadtree tree_;
+    BubbleCase case_;
+    Params p_{};
+    std::vector<real> err_leaf_, err_slot_, hC_, hUy_;
+
+    static constexpr int ghost_C = 2;   // JCP 2016: mixed differences reach two cells
+    static constexpr real refine_tol = real(0.002), deref_tol = real(0.001);
+
+    Fields F() const { return fields_.view(); }
+    Mesh M() const { return mesh_.view(); }
+    int nLeaf() const { return tree_.nLeaf(); }
+    const BlockRef *put_refs(const std::vector<BlockRef> &r) {
+        return reinterpret_cast<const BlockRef *>(list_.put(r));
+    }
+
+    //== Solver_Mod: Initialize_State
+    void initialize_state() {
+        const auto r = tree_.leaf_refs();
+        initial_state(q_, F(), p_, case_.bubble(), put_refs(r), int(r.size()));
+    }
+
+    void ghost_cells_C() {
+        for (bool second : {false, true}) ghost_C_pass<ghost_C>(q_, F(), M(), nLeaf(), second);
+    }
+
+    void ghost_cells_hg() {
+        for (bool second : {false, true}) ghost_hg_pass(q_, F(), M(), nLeaf(), second);
+    }
+
+    //== criterion on the device, flagging on the host, field work on the device
+    bool adapt_mesh() {
+        criterion(q_, F(), M(), p_, nLeaf(), err_.get());
+        err_leaf_.resize(nLeaf());
+        err_.get(err_leaf_.data(), err_leaf_.size());
+        for (int m = 0; m < nLeaf(); ++m) err_slot_[tree_.leaves()[m]] = err_leaf_[m];
+
+        const auto change = tree_.adapt(err_slot_, refine_tol, deref_tol);
+        if (!change) return false;
+        if (!change->restrict_pairs.empty())
+            restrict_children(q_, F(), list_.put(change->restrict_pairs), int(change->restrict_pairs.size() / 2));
+        if (!change->prolong_pairs.empty()) {
+            clear_slots(q_, F(), list_.put(change->cleared), int(change->cleared.size()));
+            prolong(q_, F(), list2_.put(change->prolong_pairs), int(change->prolong_pairs.size() / 2));
+            moments(q_, F(), p_, put_refs(change->new_blocks), int(change->new_blocks.size()));
+        }
+        mesh_.upload(tree_);
+        return true;
+    }
+
+    void fetch_C_Uy() {
+        hC_.resize(CB * tree_.nblks());
+        hUy_.resize(PB * tree_.nblks());
+        fields_.C.get(hC_.data(), hC_.size());
+        fields_.Uy.get(hUy_.data(), hUy_.size());
+    }
+};
+
+void Solver::run(int argc, char **argv) {
+    using clock = std::chrono::steady_clock;
+    const auto t_start = clock::now();
+    const char *s = std::getenv("AMR_GPU_SYNC");
+    const bool sync = s && *s && *s != '0';
+    std::printf("\nGPU: %s\n", q_.get_device().get_info<sycl::info::device::name>().c_str());
+    std::printf("\nCase: rising bubble (Fakhari, Geier & Lee, JCP 2016, Sec. 5.1)\n");
+    p_ = case_.setup();
+    std::printf("\nBlock pool: %d blocks (%.0f MiB on the device)\n", MaxBlks,
+                MaxBlks * DeviceFields::mib_per_block());
+
+    //== domain, initial state, refinement level by level from the initial state
+    tree_.create_domain();
+    mesh_.upload(tree_);
+    initialize_state();
+    for (int L = minLevels; L < maxLevels; ++L) {
+        adapt_mesh();
+        initialize_state();
+    }
+    q_.wait();
+    const auto t_init = clock::now();
+
+    //== steps and intervals (Solver_Mod: Main_Loop)
+    const int Tf = argc >= 2 ? std::atoi(argv[1]) : int(std::lround(case_.t_end / case_.time_per_step / 20)) * 20;
+    const int nOutStep = argc >= 3 ? std::atoi(argv[2]) : std::max(Tf / 20, 1);
+    if (Tf < 1 || nOutStep < 1) throw std::runtime_error("usage: amr_lbm_sycl [steps [output_interval]]");
+    const int nDiagStep = std::max(Tf / 120, 1), nProgStep = std::max(Tf / 20, 1);
+
+    std::printf("\nModel: mass-conserving phase-field LBM (Fakhari, Geier & Lee, JCP 2016)\n");
+    std::printf("\n    Tf     Sigma    W      M0    tauc   taul   tauh     Ref_Tols\n\n");
+    std::printf("%8d%8.4f%6.2f%7.3f%7.3f%7.3f%7.3f%8.4f%8.4f\n", Tf, case_.sigma(), p_.W, p_.M0, 1 / p_.wc,
+                p_.taul, p_.tauh, refine_tol, deref_tol);
+    std::printf("\n     T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels\n\n");
+
+    StageTimers timed(q_, sync);
+    auto tp_last = clock::now();
+    long long cell_updates = 0;
+
+    //== progress after Tdone steps: MLUPS over the last interval, time left
+    auto progress = [&](int Tdone) {
+        q_.wait();
+        const auto now = clock::now();
+        const double el = std::chrono::duration<double>(now - t_init).count();
+        const double mlups = cell_updates / std::max(std::chrono::duration<double>(now - tp_last).count(), 1e-9) / 1e6;
+        std::printf(" step%9d /%9d (%5.1f%%)  t* =%8.3f  leaf cells%9d  MLUPS%8.2f  elapsed %7.1f s  left ~ %7.1f s\n",
+                    Tdone, Tf, 100.0 * Tdone / Tf, double(Tdone * case_.time_per_step), nLeaf() * NX * NY,
+                    mlups, el, el / Tdone * (Tf - Tdone));
+        std::fflush(stdout);
+        tp_last = now;
+        cell_updates = 0;
+    };
+
+    for (int Tn = 0; Tn <= Tf; ++Tn) {
+        timed("Ghost_C", [&] { ghost_cells_C(); });
+        if (Tn > 0) timed("refine", [&] { if (adapt_mesh()) ghost_cells_C(); });
+
+        bool moments_done = (Tn == 0);
+        const bool is_output = (Tn % nOutStep == 0) || Tn == Tf;
+        if (is_output || Tn % nDiagStep == 0) {
+            timed("Output", [&] {
+                if (!moments_done) {
+                    const auto r = tree_.leaf_refs();
+                    moments(q_, F(), p_, put_refs(r), int(r.size()));
+                    moments_done = true;
+                }
+                fetch_C_Uy();
+                const real time = real(Tn) * case_.time_per_step;
+                if (is_output) case_.print_line(time, tree_, hC_, hUy_);
+                case_.rise(time, tree_, hC_, hUy_);
+            });
+            if (Tn == Tf) break;
+        }
+
+        timed("collision", [&] { collide(q_, F(), M(), p_, nLeaf(), !moments_done); });
+        timed("Ghost_hg", [&] { ghost_cells_hg(); });
+        timed("advection", [&] { stream(q_, F(), M(), p_, nLeaf()); });
+
+        cell_updates += (long long)nLeaf() * NX * NY;
+        if ((Tn + 1) % nProgStep == 0 && Tn + 1 < Tf) progress(Tn + 1);
+    }
+    q_.wait();
+
+    timed.report();
+    std::printf(" t_initialization:%12.3f\n", std::chrono::duration<double>(t_init - t_start).count());
+    std::printf("\n *****************************************\n");
+    std::printf(" Time Elapsed:%12.1f\n", std::chrono::duration<double>(clock::now() - t_start).count());
+    std::printf(" *****************************************\n");
+}
+
+int main(int argc, char **argv) {
+    try {
+        Solver solver;
+        solver.run(argc, argv);
+    } catch (const sycl::exception &e) {
+        std::fprintf(stderr, "SYCL error: %s\n", e.what());
+        return 1;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}

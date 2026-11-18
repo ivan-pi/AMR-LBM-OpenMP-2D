@@ -339,6 +339,25 @@ the rest in loop overhead of the short loops. Most of the remaining ghost
 time is copying the left/right edges, which touches one cache line per value
 in the current layout.
 
+## GPU solver (SYCL)
+
+`gpu/` contains a C++/SYCL version of the solver for the JCP 2016 model and
+the rising bubble, in single precision (Intel Arc A-series GPUs have no FP64
+hardware):
+
+    cmake -B build-gpu -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4
+    cmake --build build-gpu
+    ./build-gpu/amr_lbm_sycl [steps [output_interval]]     # AMR_CASE as above
+
+The host keeps the quadtree and runs the same mesh logic as the Fortran code
+(slot allocation, Z-order, neighbour table, flagging); all field work runs
+on the device (`gpu/lbm_kernels.hpp`, one kernel per Fortran routine). The
+same build directory has the Fortran programs in FP32, for comparison: on
+the default case the diagnostics (block counts, U_max) are identical and
+mass and bubble position agree to about 1e-5. The host thread waits for the
+GPU several times per step; on a loaded machine pin it to an idle CPU.
+`AMR_GPU_SYNC=1` gives per-stage times. No field output yet.
+
 ## GPU offload prototype
 
 `offload/` contains a stand-alone OpenMP target-offload version of the
