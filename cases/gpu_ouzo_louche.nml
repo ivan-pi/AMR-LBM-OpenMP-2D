@@ -1,0 +1,19 @@
+! The louche of ouzo (GPU solver, three-species Parker model): the model ouzo
+! of gpu_ouzo_drop.nml mixed 1:1 with water, x = (0.125, 0.15, 0.725), inside
+! the spinodal. The mixture emulsifies spontaneously into anethole droplets
+! (about 60 in an L0 = 256 box after 30000 steps) with ethanol enriched at their
+! interfaces; then the emulsion coarsens. The low refinement tolerance resolves
+! the initial noise, so the mesh is the finest level throughout.
+!   cmake -B build-ouzo -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4 \
+!         -DAMR_L0=256 -DAMR_DOMAIN_HEIGHT=1 && cmake --build build-ouzo --target amr_lbm_sycl
+!   AMR_CASE=cases/gpu_ouzo_louche.nml AMR_OUTPUT=none \
+!   AMR_RENDER="python3 tools/render_stream.py -o louche.mp4 --clim anethole=0,1 --clim ethanol=0,0.4" \
+!       ./build-ouzo/amr_lbm_sycl 30000 500
+&ouzo
+  kind       = 'mix'
+  x1_stock   = 0.25, x2_stock = 0.30
+  dilution   = 0.5
+  noise      = 0.1
+  refine_tol = 0.002, deref_tol = 0.001
+  n_steps    = 30000
+/

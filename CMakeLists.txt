@@ -175,8 +175,8 @@ endforeach()
 install(TARGETS ${_amr_drivers})
 
 # ---------------------------------------------------------------------------
-# GPU solver (SYCL, single precision): the JCP 2016 model with the mesh on
-# the host and all field work on the device. Building it with
+# GPU solver (SYCL, single precision): the JCP 2016 and Parker models with
+# the mesh on the host and all field work on the device. Building it with
 # AMR_PRECISION=4 gives the matching Fortran programs for comparison.
 
 if(AMR_BUILD_SYCL)
@@ -185,7 +185,7 @@ if(AMR_BUILD_SYCL)
   find_package(Threads REQUIRED)
   target_compile_definitions(amr_lbm_sycl PRIVATE
     AMR_BLOCK_SIZE=${AMR_BLOCK_SIZE} AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
-    AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT})
+    AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT} $<$<BOOL:${AMR_PERIODIC_Y}>:AMR_PERIODIC_Y>)
   target_link_libraries(amr_lbm_sycl PRIVATE Threads::Threads)
   target_compile_features(amr_lbm_sycl PRIVATE cxx_std_17)
   set(_sycl_flags -fsycl -ffp-model=precise)

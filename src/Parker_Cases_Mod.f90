@@ -140,18 +140,20 @@ END SUBROUTINE Adjust_Model
 
 !******************************************************************************
 
-!== coexisting mole fractions: equal activities x_i gamma_i of both species
+!== coexisting mole fractions: equal activities x_i gamma_i of both species.
+!   Newton in double precision whatever wp is: the finite-difference Jacobian
+!   (step 1e-7) is zero in single precision
 SUBROUTINE Coexistence( x_a, x_b )
-    USE Model_Parker2009_Mod, ONLY: Ln_Gamma
+    USE Model_Parker2009_Mod, ONLY: A12, A21
     REAL(wp), INTENT(OUT) :: x_a, x_b
 
-    REAL(wp) :: v(2), F(2), Fp(2), J(2,2), dv(2), h
+    REAL(dp) :: v(2), F(2), Fp(2), J(2,2), dv(2), h
     INTEGER  :: it, k
 
-    v = [ 0.05_wp, 0.95_wp ]
+    v = [ 0.05_dp, 0.95_dp ]
     DO it = 1, 100
         F = Residual( v )
-        h = 1.e-7_wp
+        h = 1.e-7_dp
         DO k = 1, 2
             dv = 0;  dv(k) = h
             Fp = Residual( v + dv )
@@ -159,26 +161,36 @@ SUBROUTINE Coexistence( x_a, x_b )
         END DO
         dv = Solve2( J, -F )
         v  = v + dv
-        IF( MAXVAL(ABS(dv)) < 1.e-13_wp ) EXIT
+        IF( MAXVAL(ABS(dv)) < 1.e-13_dp ) EXIT
     END DO
     IF( v(1) >= v(2) .OR. v(1) <= 0 .OR. v(2) >= 1 ) ERROR STOP 'Coexistence: no two-phase solution (Margules A too small?)'
-    x_a = v(1)
-    x_b = v(2)
+    x_a = REAL( v(1), wp )
+    x_b = REAL( v(2), wp )
 
 CONTAINS
 
+    !== Margules' ln gamma_1, ln gamma_2 (Model_Parker2009_Mod: Ln_Gamma) in double precision
+    PURE SUBROUTINE Ln_Gamma_dp( x1, lg1, lg2 )
+        REAL(dp), INTENT(IN)  :: x1
+        REAL(dp), INTENT(OUT) :: lg1, lg2
+        REAL(dp) :: a12d, a21d
+        a12d = REAL( A12, dp );  a21d = REAL( A21, dp )
+        lg1 = ( a12d + 2*(a21d - a12d)*x1 ) * (1 - x1)**2
+        lg2 = ( a21d + 2*(a12d - a21d)*(1 - x1) ) * x1**2
+    END SUBROUTINE Ln_Gamma_dp
+
     FUNCTION Residual( v ) RESULT( r )
-        REAL(wp), INTENT(IN) :: v(2)
-        REAL(wp) :: r(2), g1a, g2a, g1b, g2b
-        CALL Ln_Gamma( v(1), g1a, g2a )
-        CALL Ln_Gamma( v(2), g1b, g2b )
+        REAL(dp), INTENT(IN) :: v(2)
+        REAL(dp) :: r(2), g1a, g2a, g1b, g2b
+        CALL Ln_Gamma_dp( v(1), g1a, g2a )
+        CALL Ln_Gamma_dp( v(2), g1b, g2b )
         r(1) = LOG(v(1)) + g1a - LOG(v(2)) - g1b
-        r(2) = LOG(1._wp - v(1)) + g2a - LOG(1._wp - v(2)) - g2b
+        r(2) = LOG(1 - v(1)) + g2a - LOG(1 - v(2)) - g2b
     END FUNCTION Residual
 
     FUNCTION Solve2( A, b ) RESULT( x )
-        REAL(wp), INTENT(IN) :: A(2,2), b(2)
-        REAL(wp) :: x(2), det
+        REAL(dp), INTENT(IN) :: A(2,2), b(2)
+        REAL(dp) :: x(2), det
         det  = A(1,1)*A(2,2) - A(1,2)*A(2,1)
         x(1) = (  A(2,2)*b(1) - A(1,2)*b(2) ) / det
         x(2) = ( -A(2,1)*b(1) + A(1,1)*b(2) ) / det

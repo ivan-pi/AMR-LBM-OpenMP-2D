@@ -8,9 +8,10 @@ no field files on disk, drawing overlaps the run):
   AMR_OUTPUT=none AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" \\
       ./build-gpu/amr_lbm_sycl 200000 1000
 
-One column per field (--fields, default rho,speed,level), each painted onto a
-uniform image at the finest cell size; "level" is the refinement level of
-each block. Each frame is written to the movie at once, so memory does not
+One column per field (--fields; default rho,speed,level for the JCP 2016
+cases, the species of the Parker cases' frames, e.g. anethole,ethanol,water,
+then speed and level), each painted onto a uniform image at the finest cell
+size; "level" is the refinement level of each block. Each frame is written to the movie at once, so memory does not
 grow with the run. The frames carry no text but the time.
 
 Frame layout (little endian): "AMRF", int32 version (2), float64 time,
@@ -25,7 +26,8 @@ import sys
 
 import numpy as np
 
-LABELS = {'C': 'C', 'rho': 'density', 'speed': '|u|', 'level': 'level'}
+LABELS = {'C': 'C', 'rho': 'density', 'speed': '|u|', 'level': 'level'}   # else: the name
+                                                                          # (Parker: x of a species)
 CMAPS = {'C': 'RdBu_r', 'rho': 'RdBu_r', 'speed': 'magma', 'level': 'viridis'}
 
 
@@ -80,7 +82,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument('-o', '--output', required=True, help='movie file (.mp4)')
-    ap.add_argument('--fields', default='rho,speed,level', help='comma-separated: C, rho, speed, level')
+    ap.add_argument('--fields', help='comma-separated names of the frame fields, or level '
+                                     '(default: rho,speed,level if the frames have rho, else all fields and level)')
     ap.add_argument('--clim', action='append', default=[], metavar='NAME=LO,HI',
                     help='colour range of a field, e.g. speed=0,0.05 (default: from the first frame; '
                          'speed: 0 to 2 sqrt(g L0) is a good choice)')
@@ -88,7 +91,6 @@ def main():
     ap.add_argument('--height', type=float, default=10.8, help='figure height in inches (default 10.8)')
     ap.add_argument('--dpi', type=int, default=200)
     args = ap.parse_args()
-    names = args.fields.split(',')
     clims = {k: tuple(map(float, v.split(','))) for k, v in (c.split('=') for c in args.clim)}
 
     import matplotlib
@@ -100,6 +102,12 @@ def main():
     fr = read_frame(src)
     if fr is None:
         sys.exit('render_stream: no frames')
+    if args.fields:
+        names = args.fields.split(',')
+    elif 'rho' in fr['fields']:
+        names = ['rho', 'speed', 'level']
+    else:
+        names = list(fr['fields']) + ['level']
     for name in names:
         if name != 'level' and name not in fr['fields']:
             sys.exit(f'render_stream: no field {name!r} (have {sorted(fr["fields"])} and level)')

@@ -519,41 +519,139 @@ in the current layout.
 
 ## GPU solver (SYCL)
 
-`gpu/` contains a C++/SYCL version of the solver for the JCP 2016 model and
-the rising bubble, in single precision (Intel Arc A-series GPUs have no FP64
-hardware):
+`gpu/` contains a C++/SYCL version of the solver in single precision (Intel
+Arc A-series GPUs have no FP64 hardware) with two of the models: the JCP 2016
+model (rising bubble, Rayleigh–Taylor instability) and the multicomponent
+model of Parker & Jovanovic (2009), for two species (the cases of
+`amr_lbm_parker`) and for three (an ouzo-like ternary mixture, below):
 
     cmake -B build-gpu -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4
     cmake --build build-gpu
     ./build-gpu/amr_lbm_sycl [steps [output_interval]]     # AMR_CASE as above
 
 The host keeps the quadtree and runs the same mesh logic as the Fortran code
-(slot allocation, Z-order, neighbour table, flagging); all field work runs
-on the device (`gpu/lbm_kernels.hpp`, one kernel per Fortran routine). The
-same build directory has the Fortran programs in FP32, for comparison: on
+(slot allocation, Z-order, neighbour table, flagging with the refinement of
+coarse islands); all field work runs on the device. `gpu/lbm_kernels.hpp`
+holds the kernels shared by the models (ghost cells, streaming, prolongation,
+restriction) for any number of distributions and ghost-cell scalars,
+`gpu/model_jcp2016.hpp` and `gpu/model_parker.hpp` the models' collision,
+moments, criterion and initial state, one kernel per Fortran routine. The
+solver (`Solver<Model>` in `gpu/amr_lbm_sycl.cpp`) is a template on the model.
+The same build directory has the Fortran programs in FP32, for comparison: on
 the default case the diagnostics (block counts, U_max) are identical and
 mass and bubble position agree to about 1e-5. The host thread waits for the
 GPU several times per step; on a loaded machine pin it to an idle CPU.
 `AMR_GPU_SYNC=1` gives per-stage times. Field output (`AMR_OUTPUT=vtk`, the
 default, or `none`) writes the same VTK series as the Fortran VTK writer.
+Without a GPU the program runs on a CPU device, e.g. the OpenCL CPU runtime
+that comes with the oneAPI compiler (`ONEAPI_DEVICE_SELECTOR` picks the
+device); `-DAMR_PERIODIC_Y=ON` works as for the Fortran code.
 
-The case follows the namelist group in the `AMR_CASE` file: `&rising_bubble`
-(also the default without a file) or `&rayleigh_taylor`, the Rayleigh–Taylor
-instability of Fakhari et al. (PRE 2017, Sec. IV B; bubble front and spike tip
-in `rt_fronts.dat`). `-DAMR_DOMAIN_HEIGHT` sets the domain height in units of
+The case, and with it the model, follows the namelist group in the
+`AMR_CASE` file: `&rising_bubble` (also the default without a file) or
+`&rayleigh_taylor`, the Rayleigh–Taylor instability of Fakhari et al. (PRE
+2017, Sec. IV B; bubble front and spike tip in `rt_fronts.dat`), both with the
+JCP 2016 model; `&parker` (two species) and `&ouzo` (three species) with the
+Parker model. `-DAMR_DOMAIN_HEIGHT` sets the domain height in units of
 L0 (default 3; 4 for the paper's Rayleigh–Taylor case, 8 for
 `cases/gpu_RT_At05_L1024.nml`, which runs to t* = 8 at four times the paper's
 resolution, until well after the spike has reached the bottom).
 
 In-situ rendering: with `AMR_RENDER` set to a command, every output step's
-fields (C, density, speed) are copied to the host and streamed, from a
+cell fields (JCP 2016: C, density, speed; Parker: the mole fraction of each
+species and the speed) are copied to the host and streamed, from a
 background thread, to that command's standard input while the run goes on.
 `tools/render_stream.py` draws the frames into a movie as they arrive, one
 column per field (default: density, speed and the refinement level of each
-block), without field files on disk:
+block; for the Parker cases the species, speed and level), without field
+files on disk:
 
     AMR_OUTPUT=none AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" \
         ./build-gpu/amr_lbm_sycl 320000 1280
+
+### Parker's model on the GPU
+
+The kernels follow `Model_Parker2009_Mod.f90`: species s in distribution s,
+its concentration c_s = Σ f_s a ghost-cell scalar (one layer), ln γ_s staged
+per block in local memory, the drift u′_s = −D∇ln γ_s − Σ_r x_r(−D∇ln γ_r),
+the central Hermite collision about the mixture velocity, the criterion
+max |∇ln γ_s| (0.02 / 0.01) and the refinement of coarse islands (16 blocks).
+`&parker` takes the items of the Fortran case (`kind = 'droplet' | 'box' |
+'spinodal'`, …) and writes `droplet.dat` or `spinodal.dat` in the same
+format. Checked against `amr_lbm_parker` built in FP32 with ifx (L0 = 128,
+oscillating droplet R = 20, ε = 0.08, 4000 steps; spinodal square, 3000
+steps): the same mesh at every diagnostic step, the deformation within 4e−6,
+p_in and p_out within 5e−6; in the spinodal case the leaf counts are equal
+at all 120 diagnostic steps, mass and max |u| agree to 1e−4 relative.
+(The Fortran `Coexistence` solve is now done in double precision: in FP32 its
+finite-difference Jacobian was zero and every `AMR_PRECISION=4` run of
+`amr_lbm_parker` started from NaN.)
+
+For three species the activity coefficients come from the three-suffix
+Margules (Wohl) form of the excess Gibbs energy,
+
+    g^E/RT = Σ_{r<s} x_r x_s (A_sr x_r + A_rs x_s) + C123 x1 x2 x3,
+    ln γ_s = ∂g/∂x_s − 2g        (g a homogeneous cubic),
+
+which is Margules' equation on each binary edge and satisfies Gibbs–Duhem,
+so u′_s = −D∇ln γ_s up to discretization. All species share D, ν and κ.
+
+### Ouzo in water (`&ouzo`)
+
+Ouzo is anethole dissolved in ethanol and water; diluted with water it turns
+milky (the "ouzo effect"): the anethole separates as a fine emulsion. The
+model mixture has species 1 = anethole, 2 = ethanol, 3 = water with
+A_13 = A_31 = 4 (anethole and water nearly immiscible: coexistence
+x = 0.021 / 0.979), A_12 = 0.3 and A_23 = 0.6 (both miscible with ethanol).
+The anethole content is exaggerated (real ouzo has x ≈ 1e−4, which the
+grid-scale interface cannot resolve): the model ouzo is x = (0.25, 0.30,
+0.45), one phase and close to the binodal like a nearly saturated ouzo. Diluted with water
+it is unstable (inside the spinodal) from 14 % to 54 % water, and it is
+also unstable after losing only 0.04 of its ethanol fraction.
+`tools/ternary_phase.py` computes the binodal (tie-line continuation), the
+spinodal, the stability of the stock and the unstable stretch of the dilution
+line, and draws the diagram:
+
+    python3 tools/ternary_phase.py [--A13 4 --A12 0.3 --A23 0.6 --stock 0.25 0.3 0.45] -o phase.png
+
+| variable | default | meaning |
+|---|---|---|
+| `kind` | `'drop'` | `'drop'`: a drop of stock of radius `Radius` (L0/4) in water; `'layer'`: the stock below mid-height under water, its edge perturbed by `amplitude`·L0 cos(2πx/L0); `'mix'`: everything diluted to the stock fraction `dilution` |
+| `x1_stock`, `x2_stock` | 0.25, 0.30 | stock mole fractions of species 1 and 2 (water: the rest) |
+| `A_12`, `A_21`, `A_13`, `A_31`, `A_23`, `A_32`, `C_123` | 0.3, 0.3, 4, 4, 0.6, 0.6, 0 | Margules parameters |
+| `D_lu`, `kappa`, `nu_lu`, `omega_E`, `c_total` | 0.2, 1, 0.02, 1, 1 | as in `&parker` |
+| `Width`, `noise` | 4, 0.02 | initial edge width; relative perturbation of x_1 and x_2 on the finest cells |
+| `species` | `'anethole:ethanol:water'` | names of the output fields |
+| `n_steps`, `refine_tol`, `deref_tol`, `max_island` | 40000, model's | as in `&parker` |
+
+`ouzo.dat` records the masses of the three species, max |u|, and the oil
+droplets: connected regions with x_1 > 1/2 on the finest-level grid (at least
+4 cells), their number, total area, share of the oil and mean equivalent
+radius. Two cases (L0 = 256, `-DAMR_DOMAIN_HEIGHT=1`):
+
+* `cases/gpu_ouzo_drop.nml`: an ouzo drop in water. Ethanol diffuses out and
+  the rim of the drop crosses the spinodal first: concentric oil-rich shells,
+  which break up into lobes and films with capillary flow (|u| ≈ 0.02 around
+  t = 10000), then coalesce into one anethole droplet (x_1 ≈ 0.83) with an
+  ethanol-rich interface. The mesh follows the drop and coarsens elsewhere
+  (169 leaves at t = 30000, 1024 for the uniform finest level); the species
+  masses change by less than 3e−4. With the default noise of 0.02 the
+  break-up has the fourfold symmetry of the lattice; the case uses 0.1.
+* `cases/gpu_ouzo_louche.nml`: ouzo mixed 1:1 with water, x = (0.125, 0.15,
+  0.725). It emulsifies spontaneously: after an incubation of about 12000
+  steps about 60 anethole droplets appear (mean radius 4 cells at t = 30000),
+  each with a shell of enriched ethanol, and the emulsion coarsens. A
+  uniform mixture has no gradients for the criterion, so this case lowers
+  `refine_tol` until the initial noise is resolved: the mesh stays at the
+  finest level.
+
+The layer (`kind = 'layer'`) develops slowly: an oil-rich film forms at the
+contact line while ethanol diffuses into the water. Its oil mass drifts by
++0.8 % in 30000 steps: the ethanol gradient crosses coarse/fine block edges
+inside the stock, where the same-Δt scheme is not conservative (see
+*Conservation across levels*). Its time scales are set by the lattice: D = 0.2 for all
+species (a Schmidt number ν/D of 0.1), and an interface about 3 cells wide
+whose surface tension depends on κD² (docs/parker_model).
 
 ## GPU offload prototype
 

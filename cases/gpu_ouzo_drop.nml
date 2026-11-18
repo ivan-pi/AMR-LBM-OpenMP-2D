@@ -1,0 +1,24 @@
+! Ouzo in water (GPU solver, three-species Parker model): a drop of a model
+! ouzo (anethole : ethanol : water = 0.25 : 0.30 : 0.45 mole fractions, one
+! phase, close to the binodal) of radius L0/4 in water. Ethanol diffuses out,
+! the drop rim crosses the spinodal and the anethole separates: oil-rich
+! shells and lobes with capillary flow, which coalesce into one anethole
+! droplet with an ethanol-rich interface while the mesh coarsens around it.
+! Margules A_13 = A_31 = 4 (anethole-water, coexistence x = 0.021 / 0.979),
+! A_12 = 0.3 (anethole-ethanol), A_23 = 0.6 (ethanol-water); phase diagram:
+!   python3 tools/ternary_phase.py -o ouzo_phase.png
+! L0 x L0 domain (walls at the bottom and top, periodic in x):
+!   cmake -B build-ouzo -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4 \
+!         -DAMR_L0=256 -DAMR_DOMAIN_HEIGHT=1 && cmake --build build-ouzo --target amr_lbm_sycl
+!   AMR_CASE=cases/gpu_ouzo_drop.nml AMR_OUTPUT=none \
+!   AMR_RENDER="python3 tools/render_stream.py -o ouzo_drop.mp4 --clim anethole=0,1 --clim ethanol=0,0.4" \
+!       ./build-ouzo/amr_lbm_sycl 30000 500
+&ouzo
+  kind     = 'drop'
+  x1_stock = 0.25, x2_stock = 0.30
+  Radius   = 64
+  Width    = 4
+  noise    = 0.1
+  D_lu     = 0.2, nu_lu = 0.02, kappa = 1
+  n_steps  = 30000
+/
