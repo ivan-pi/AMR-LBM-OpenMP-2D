@@ -73,7 +73,7 @@ def main():
     ap.add_argument('--clim', type=float, nargs=2, default=(0.0, 1.0))
     ap.add_argument('--cmap', default='RdBu_r')
     ap.add_argument('--label', default='C', help='colour bar label')
-    ap.add_argument('--title', default='', help='text before the time in the title')
+    ap.add_argument('--title', default='', help=r'heading above the plot (\n for a line break)')
     args = ap.parse_args()
 
     import matplotlib
@@ -97,16 +97,18 @@ def main():
     im = ax.imshow(rasterize(fr), origin='lower', extent=ext, cmap=args.cmap,
                    vmin=args.clim[0], vmax=args.clim[1], interpolation='antialiased')
     fig.colorbar(im, ax=ax, label=args.label, shrink=0.5)
+    if args.title:
+        fig.suptitle(args.title.replace('\\n', '\n'), fontsize=9)
     ax.set_xlabel('x / L0')
     ax.set_ylabel('y / L0')
-    title = ax.set_title('')
+    title = ax.set_title('', fontsize=9)
 
     writer = animation.FFMpegWriter(fps=args.fps, bitrate=8000)
     count = 0
     with writer.saving(fig, args.output, args.dpi):
         while fr is not None:
             im.set_data(rasterize(fr))
-            title.set_text(f'{args.title}t* = {fr["time"]:.3f}   ({len(fr["blocks"])} blocks)')
+            title.set_text(f't* = {fr["time"]:.3f}   ({len(fr["blocks"])} blocks)')
             writer.grab_frame()
             count += 1
             print(f'render_stream: frame {count}, t* = {fr["time"]:.3f}', file=sys.stderr, flush=True)
