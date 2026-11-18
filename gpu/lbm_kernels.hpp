@@ -578,9 +578,10 @@ inline void collide(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, bool 
 //------------------------------------------------------------------------------
 //  streaming of h and g, then C = sum(h) (LBM_Common_Mod): exact shift on
 //  the finest level, Lax-Wendroff with CFL number 1/dx on the coarser ones.
-//  From F (h, g) into Out (h, g, rest direction copied); the values beyond
-//  the block come from same-level leaf neighbours directly (pull), else
-//  from the ghost layer
+//  From F (h, g) into Out (h, g, rest direction copied). Each work-group
+//  first stages its block and a border of one cell in shared local memory,
+//  every value loaded once: the border from same-level leaf neighbours
+//  directly (pull), else from the ghost ring
 //------------------------------------------------------------------------------
 //== f at (x,y), a cell of block n or of its ghost layer: a ghost cell towards a
 //   same-level leaf is read from that leaf (Ghost_hg_Mod's copy), any other
@@ -595,39 +596,61 @@ inline real pull(Pool f, const Mesh &M, int n, int x, int y, int q) {
     return at(f, x, y, q, n);
 }
 
+//== the streaming stages its block with a border of one cell in shared local
+//   memory: one (nx+2) x (ny+2) plane per field (h, g) and moving direction
+constexpr int SX = NX + 2, SP = SX * (NY + 2);
+
 inline void stream(sycl::queue &q, Fields F, Fields Out, Mesh M, Params p, int nLeaf) {
     constexpr int WG = NX * NY;
-    q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
-        const int n = M.leaves[it.get_group(0)];
-        const int t = int(it.get_local_id(0)), X = t % NX + 1, Y = t / NX + 1;
-        const int L = M.level[n - 1];
-        const Pool h = F.h, g = F.g;
-        real *ho = Out.h.in, *go = Out.g.in;
-        const real h1 = h.in[iix(X, Y, 1, n)];
-        ho[iix(X, Y, 1, n)] = h1;
-        go[iix(X, Y, 1, n)] = g.in[iix(X, Y, 1, n)];
-        real Cs = h1;
-        if (L == p.maxLevels) {
-            for (int qd = 2; qd <= 9; ++qd) {
-                const real hn = pull(h, M, n, X - ex[qd], Y - ey[qd], qd);
-                ho[iix(X, Y, qd, n)] = hn;
-                go[iix(X, Y, qd, n)] = pull(g, M, n, X - ex[qd], Y - ey[qd], qd);
-                Cs += hn;
+    q.submit([&](sycl::handler &cgh) {
+        sycl::local_accessor<real, 1> sl(sycl::range<1>(2 * 8 * SP), cgh);
+        cgh.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
+            const int n = M.leaves[it.get_group(0)];
+            const int t = int(it.get_local_id(0)), X = t % NX + 1, Y = t / NX + 1;
+            const int L = M.level[n - 1];
+            const Pool f2[2] = {F.h, F.g};
+            auto S = [&](int fi, int qd, int x, int y) -> real & { return sl[(8 * fi + qd - 2) * SP + x + SX * y]; };
+
+            //== stage: the interior (one cell per item, coalesced), then the
+            //   border ring, each value once (pull: a same-level leaf
+            //   neighbour, else the ghost ring)
+            for (int fi = 0; fi < 2; ++fi)
+                for (int qd = 2; qd <= 9; ++qd) S(fi, qd, X, Y) = f2[fi].in[iix(X, Y, qd, n)];
+            for (int w = t; w < 2 * 8 * NR; w += WG) {
+                const int fi = w / (8 * NR), qd = (w / NR) % 8 + 2, r = w % NR;
+                const int x = r < SX ? r : r < 2 * SX ? r - SX : r < 2 * SX + NY ? 0 : NX + 1;
+                const int y = r < SX ? 0 : r < 2 * SX ? NY + 1 : r < 2 * SX + NY ? r - 2 * SX + 1 : r - 2 * SX - NY + 1;
+                S(fi, qd, x, y) = pull(f2[fi], M, n, x, y, qd);
             }
-        } else {
-            const real cfl = p.inv_dx[L];
-            const real cU = real(0.5) * cfl * (real(1) + cfl), c0 = real(1) - cfl * cfl;
-            const real cD = real(0.5) * cfl * (real(1) - cfl);
-            for (int qd = 2; qd <= 9; ++qd) {
-                const real hn = cU * pull(h, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * h.in[iix(X, Y, qd, n)]
-                              - cD * pull(h, M, n, X + ex[qd], Y + ey[qd], qd);
-                ho[iix(X, Y, qd, n)] = hn;
-                go[iix(X, Y, qd, n)] = cU * pull(g, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * g.in[iix(X, Y, qd, n)]
-                                     - cD * pull(g, M, n, X + ex[qd], Y + ey[qd], qd);
-                Cs += hn;
+            sycl::group_barrier(it.get_group());
+
+            real *ho = Out.h.in, *go = Out.g.in;
+            const real h1 = F.h.in[iix(X, Y, 1, n)];
+            ho[iix(X, Y, 1, n)] = h1;
+            go[iix(X, Y, 1, n)] = F.g.in[iix(X, Y, 1, n)];
+            real Cs = h1;
+            if (L == p.maxLevels) {
+                for (int qd = 2; qd <= 9; ++qd) {
+                    const real hn = S(0, qd, X - ex[qd], Y - ey[qd]);
+                    ho[iix(X, Y, qd, n)] = hn;
+                    go[iix(X, Y, qd, n)] = S(1, qd, X - ex[qd], Y - ey[qd]);
+                    Cs += hn;
+                }
+            } else {
+                const real cfl = p.inv_dx[L];
+                const real cU = real(0.5) * cfl * (real(1) + cfl), c0 = real(1) - cfl * cfl;
+                const real cD = real(0.5) * cfl * (real(1) - cfl);
+                for (int qd = 2; qd <= 9; ++qd) {
+                    const real hn = cU * S(0, qd, X - ex[qd], Y - ey[qd]) + c0 * S(0, qd, X, Y)
+                                  - cD * S(0, qd, X + ex[qd], Y + ey[qd]);
+                    ho[iix(X, Y, qd, n)] = hn;
+                    go[iix(X, Y, qd, n)] = cU * S(1, qd, X - ex[qd], Y - ey[qd]) + c0 * S(1, qd, X, Y)
+                                         - cD * S(1, qd, X + ex[qd], Y + ey[qd]);
+                    Cs += hn;
+                }
             }
-        }
-        F.C[cix(X, Y, n)] = Cs;
+            F.C[cix(X, Y, n)] = Cs;
+        });
     });
 }
 
