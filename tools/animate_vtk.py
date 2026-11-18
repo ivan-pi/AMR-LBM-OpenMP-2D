@@ -2,10 +2,9 @@
 """Plot or animate the VTK output of the AMR-LBM rising-bubble solver.
 
 Reads either the VTK XML time series written with AMR_OUTPUT=vtk
-(Rising_Bubble_2D.pvd + AMR_Blocks.pvd, raw-appended .vtu files) or the
-VTKHDF files written with AMR_OUTPUT=vtkhdf (Rising_Bubble_2D.vtkhdf +
-AMR_Blocks.vtkhdf, needs h5py). Only numpy and matplotlib are required;
-VTK/ParaView is not.
+(Rising_Bubble_2D.pvd + AMR_Blocks.pvd) or the VTKHDF files written with
+AMR_OUTPUT=vtkhdf (Rising_Bubble_2D.vtkhdf + AMR_Blocks.vtkhdf), with
+pyvista (pip install pyvista); plots with matplotlib.
 
 The cell field is painted onto a uniform image at the finest cell size, and
 the AMR block outlines (coloured by refinement level) are drawn on top.
@@ -26,97 +25,34 @@ Examples
 """
 import argparse
 import os
-import re
 import sys
-import xml.etree.ElementTree as ET
 
 import numpy as np
-
-VTK_TYPES = {
-    'Float32': np.float32, 'Float64': np.float64,
-    'Int8': np.int8, 'UInt8': np.uint8, 'Int32': np.int32, 'UInt32': np.uint32,
-    'Int64': np.int64, 'UInt64': np.uint64,
-}
 
 FIELDS = ('C', 'P', 'Ux', 'Uy', 'speed', 'Level', 'Block')
 
 
 # ----------------------------------------------------------------------------
-# readers: both return a list of frames, each a dict with
+# reading: a list of frames, each a dict with
 #   time, quads (ncell,4,2) corner coordinates, cell (dict of cell arrays)
 
-def read_vtu(path):
-    """Read an UnstructuredGrid .vtu file with raw appended data."""
-    with open(path, 'rb') as f:
-        raw = f.read()
-    marker = b'<AppendedData encoding="raw">'
-    k = raw.find(marker)
-    if k < 0:
-        raise ValueError(f'{path}: only raw appended .vtu files are supported')
-    start = raw.index(b'_', k + len(marker)) + 1
-    xml = raw[:k].decode() + '</VTKFile>'      # the binary section is cut off
-    root = ET.fromstring(xml)
-    hdr = np.dtype(VTK_TYPES[root.get('header_type', 'UInt32')])
-    endian = '<' if root.get('byte_order', 'LittleEndian') == 'LittleEndian' else '>'
-
-    def array(da):
-        off = start + int(da.get('offset'))
-        nbytes = int(np.frombuffer(raw, hdr.newbyteorder(endian), 1, off)[0])
-        dt = np.dtype(VTK_TYPES[da.get('type')]).newbyteorder(endian)
-        a = np.frombuffer(raw, dt, nbytes // dt.itemsize, off + hdr.itemsize)
-        nc = int(da.get('NumberOfComponents', '1'))
-        return a.reshape(-1, nc) if nc > 1 else a
-
-    piece = root.find('.//Piece')
-    pts = array(piece.find('Points/DataArray'))
-    cells = {da.get('Name'): array(da) for da in piece.findall('Cells/DataArray')}
-    cdata = {da.get('Name'): array(da) for da in piece.findall('CellData/DataArray')}
-    conn = cells['connectivity'].reshape(-1, 4)            # all cells are quads
-    return pts[conn][:, :, :2], cdata
-
-
-def read_pvd(path):
-    tree = ET.parse(path)
-    base = os.path.dirname(path)
-    frames = []
-    for ds in tree.getroot().iter('DataSet'):
-        quads, cdata = read_vtu(os.path.join(base, ds.get('file')))
-        frames.append(dict(time=float(ds.get('timestep')), quads=quads, cell=cdata))
-    return frames
-
-
-def read_vtkhdf(path):
-    import h5py
-    frames = []
-    with h5py.File(path, 'r') as f:
-        r = f['VTKHDF']
-        st = r['Steps']
-        nsteps = int(st.attrs['NSteps'])
-        for k in range(nsteps):
-            po, npt = int(st['PointOffsets'][k]), int(r['NumberOfPoints'][k])
-            co, nc = int(np.ravel(st['CellOffsets'][k])[0]), int(r['NumberOfCells'][k])
-            io = int(np.ravel(st['ConnectivityIdOffsets'][k])[0])
-            nid = int(r['NumberOfConnectivityIds'][k])
-            pts = r['Points'][po:po + npt]
-            conn = r['Connectivity'][io:io + nid].reshape(-1, 4)
-            cdata = {}
-            for name in r['CellData']:
-                o = int(st['CellDataOffsets'][name][k])
-                cdata[name] = r['CellData'][name][o:o + nc]
-            frames.append(dict(time=float(st['Values'][k]),
-                               quads=pts[conn][:, :, :2], cell=cdata))
-    return frames
-
-
 def read_series(path):
-    if path.endswith('.pvd'):
-        return read_pvd(path)
-    if path.endswith('.vtkhdf') or path.endswith('.hdf'):
-        return read_vtkhdf(path)
-    if path.endswith('.vtu'):
-        quads, cdata = read_vtu(path)
-        return [dict(time=0.0, quads=quads, cell=cdata)]
-    raise ValueError(f'unknown file type: {path}')
+    """All time steps of a .pvd or .vtkhdf series, or a single .vtu file."""
+    import pyvista as pv
+    reader = pv.get_reader(path)
+    times = list(getattr(reader, 'time_values', None) or [])
+    frames = []
+    for k in range(max(len(times), 1)):
+        if times:
+            reader.set_active_time_point(k)
+        ds = reader.read()
+        if isinstance(ds, pv.MultiBlock):               # .pvd: one block per part
+            ds = ds[0] if ds.n_blocks == 1 else ds.combine()
+        conn = ds.cells_dict[pv.CellType.QUAD]          # all cells are quads
+        frames.append(dict(time=float(times[k]) if times else 0.0,
+                           quads=np.asarray(ds.points)[conn][:, :, :2],
+                           cell={name: np.asarray(ds.cell_data[name]) for name in ds.cell_data}))
+    return frames
 
 
 def blocks_path(cells_path):

@@ -188,8 +188,9 @@ One output writer is selected at start-up with the environment variable
 
 ## Plotting and animation
 
-`tools/animate_vtk.py` plots or animates the VTK/VTKHDF output with only
-numpy and matplotlib (h5py for `.vtkhdf`):
+`tools/animate_vtk.py` plots or animates the VTK/VTKHDF output (also that of
+the GPU solver); it reads the files with pyvista and draws with matplotlib
+(`pip install pyvista matplotlib`):
 
 ```
 python3 tools/animate_vtk.py Rising_Bubble_2D.pvd -o bubble.mp4          # C + AMR blocks
