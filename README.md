@@ -369,9 +369,11 @@ L0 (default 3; 4 for the paper's Rayleigh–Taylor case, 8 for
 resolution).
 
 In-situ rendering: with `AMR_RENDER` set to a command, every output step's
-phase field is copied to the host and streamed, from a background thread, to
-that command's standard input while the run goes on. `tools/render_stream.py`
-draws the frames into a movie as they arrive, without field files on disk:
+fields (C, density, speed) are copied to the host and streamed, from a
+background thread, to that command's standard input while the run goes on.
+`tools/render_stream.py` draws the frames into a movie as they arrive, one
+column per field (default: density, speed and the refinement level of each
+block), without field files on disk:
 
     AMR_OUTPUT=none AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" \
         ./build-gpu/amr_lbm_sycl 320000 1280

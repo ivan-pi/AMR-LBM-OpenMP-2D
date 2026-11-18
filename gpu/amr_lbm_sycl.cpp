@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <condition_variable>
 #include <filesystem>
@@ -862,14 +863,15 @@ private:
 };
 
 //==============================================================================
-//  In-situ rendering: at each output step a frame (the phase field C of the
-//  leaf cells and the block layout) is handed to a background thread that
-//  writes it to the standard input of a renderer process, so the solver
-//  goes on while the frame is drawn. At most two frames wait; then push()
-//  blocks. Frame (little endian): "AMRF", int32 version 1, float64 time,
-//  int32 L0, nBaseX, nBaseY, block size, number of leaves, per leaf int32
-//  x0, y0, dx (finest-level lattice units), then float32 C per leaf
-//  (nx x ny, x fastest). The renderer sees end of file when the run ends.
+//  In-situ rendering: at each output step a frame (cell fields of the leaves
+//  and the block layout) is handed to a background thread that writes it to
+//  the standard input of a renderer process, so the solver goes on while the
+//  frame is drawn. At most two frames wait; then push() blocks. Frame (little
+//  endian): "AMRF", int32 version 2, float64 time, int32 L0, nBaseX, nBaseY,
+//  block size, number of leaves m, number of fields; per field a name of 16
+//  bytes (blank padded); per leaf int32 x0, y0, dx (finest-level lattice
+//  units); per field m x n x n float32 (x fastest). The fields: C, the
+//  density rho and the speed |u|. The renderer sees end of file at the end.
 //==============================================================================
 class FrameStream {
 public:
@@ -890,16 +892,25 @@ public:
     FrameStream(const FrameStream &) = delete;
     FrameStream &operator=(const FrameStream &) = delete;
 
-    void push(real time, const Quadtree &T, const HostFields &f) {
+    static constexpr const char *names[3] = {"C", "rho", "speed"};
+
+    //== f: C, Ux, Uy of the leaves; rho_l, rho_h: the densities of the fluids
+    void push(real time, const Quadtree &T, const HostFields &f, real rho_l, real rho_h) {
         Frame fr;
         fr.time = time;
+        const size_t ncell = size_t(T.nLeaf()) * NX * NY;
         fr.blocks.reserve(3 * size_t(T.nLeaf()));
-        fr.C.reserve(size_t(T.nLeaf()) * NX * NY);
+        for (auto &v : fr.fields) v.reserve(ncell);
         for (int n : T.leaves()) {
             const int dx = dx_level(T[n].level);
             fr.blocks.insert(fr.blocks.end(), {T[n].I * dx * NX, T[n].J * dx * NY, dx});
             for (int j = 1; j <= NY; ++j)
-                for (int i = 1; i <= NX; ++i) fr.C.push_back(f.C[cix(i, j, n)]);
+                for (int i = 1; i <= NX; ++i) {
+                    const real c = f.C[cix(i, j, n)], u = f.Ux[pix(i, j, n)], v = f.Uy[pix(i, j, n)];
+                    fr.fields[0].push_back(c);
+                    fr.fields[1].push_back(rho_l + c * (rho_h - rho_l));
+                    fr.fields[2].push_back(std::sqrt(u * u + v * v));
+                }
         }
         std::unique_lock<std::mutex> lk(m_);
         cv_.wait(lk, [this] { return queue_.size() < 2; });
@@ -911,7 +922,7 @@ private:
     struct Frame {
         double time = 0;
         std::vector<std::int32_t> blocks;
-        std::vector<float> C;
+        std::vector<float> fields[3];
     };
     FILE *pipe_;
     std::thread worker_;
@@ -936,11 +947,18 @@ private:
     }
 
     void write(const Frame &fr) {
-        const std::int32_t head[6] = {1, L0, nBaseX, nBaseY, NX, std::int32_t(fr.blocks.size() / 3)};
+        const std::int32_t head[7] = {2, L0, nBaseX, nBaseY, NX, std::int32_t(fr.blocks.size() / 3), 3};
         bool ok = std::fwrite("AMRF", 1, 4, pipe_) == 4 && std::fwrite(&head[0], 4, 1, pipe_) == 1 &&
-                  std::fwrite(&fr.time, 8, 1, pipe_) == 1 && std::fwrite(&head[1], 4, 5, pipe_) == 5 &&
-                  std::fwrite(fr.blocks.data(), 4, fr.blocks.size(), pipe_) == fr.blocks.size() &&
-                  std::fwrite(fr.C.data(), 4, fr.C.size(), pipe_) == fr.C.size() && std::fflush(pipe_) == 0;
+                  std::fwrite(&fr.time, 8, 1, pipe_) == 1 && std::fwrite(&head[1], 4, 6, pipe_) == 6;
+        for (const char *name : names) {
+            char padded[16];
+            std::memset(padded, ' ', 16);
+            std::memcpy(padded, name, std::strlen(name));
+            ok = ok && std::fwrite(padded, 1, 16, pipe_) == 16;
+        }
+        ok = ok && std::fwrite(fr.blocks.data(), 4, fr.blocks.size(), pipe_) == fr.blocks.size();
+        for (const auto &v : fr.fields) ok = ok && std::fwrite(v.data(), 4, v.size(), pipe_) == v.size();
+        ok = ok && std::fflush(pipe_) == 0;
         if (!ok) {
             broken_ = true;
             std::fprintf(stderr, "AMR_RENDER: the renderer stopped reading; no more frames\n");
@@ -1135,11 +1153,11 @@ void Solver::run(int argc, char **argv) {
                     moments(q_, F(), p_, put_refs(r), int(r.size()));
                     moments_done = true;
                 }
-                host_.fetch(fields_, tree_.nblks(), is_output && vtk_);
+                host_.fetch(fields_, tree_.nblks(), is_output && (vtk_ || render_));
                 const real time = real(Tn) * case_->time_per_step;
                 if (is_output) {
                     if (vtk_) vtk_->step(time, tree_, host_);
-                    if (render_) render_->push(time, tree_, host_);
+                    if (render_) render_->push(time, tree_, host_, p_.Rhol, p_.Rhoh);
                     case_->print_line(time, tree_, host_);
                 }
                 case_->diagnostics(time, tree_, host_);
