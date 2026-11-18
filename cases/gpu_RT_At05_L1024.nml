@@ -1,12 +1,13 @@
 ! Rayleigh-Taylor instability of Fakhari et al., PRE 96, 053301 (2017), Sec. IV B
 ! (At = 0.5, Re = 3000, mu_h/mu_l = 1, Ca = 0.26, Pe = 1000, W = 5), at four
-! times the paper's resolution: L0 = 1024 in an L0 x 8 L0 domain (room for the
-! spike until t* = 5). Gravity scaled by 256/1024 keeps U0 = sqrt(g L0) (the
-! Mach number) of the paper's L0 = 256; t0 = 64000 steps.
+! times the paper's resolution: L0 = 1024 in an L0 x 8 L0 domain. The spike
+! reaches the bottom wall at t* = 5.3; by t* = 8 the heavy fluid collects
+! there. Gravity scaled by 256/1024 keeps U0 = sqrt(g L0) (the Mach number)
+! of the paper's L0 = 256; t0 = 64000 steps.
 !   cmake -B build-rt -DAMR_BUILD_SYCL=ON -DCMAKE_CXX_COMPILER=icpx -DAMR_PRECISION=4 \
 !         -DAMR_L0=1024 -DAMR_DOMAIN_HEIGHT=8 && cmake --build build-rt --target amr_lbm_sycl
 !   AMR_CASE=cases/gpu_RT_At05_L1024.nml AMR_OUTPUT=none \
-!   AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" ./build-rt/amr_lbm_sycl 320000 1280
+!   AMR_RENDER="python3 tools/render_stream.py -o rt.mp4 --clim speed=0,0.06" ./build-rt/amr_lbm_sycl 512000 1280
 ! (GPU solver only: the Fortran Rayleigh-Taylor case is on branch claude/rayleigh-taylor)
 &rayleigh_taylor
   At        = 0.5
@@ -17,5 +18,5 @@
   Amplitude = 0.1
   Pe        = 1000
   Width     = 5
-  t_end     = 5
+  t_end     = 8
 /

@@ -365,8 +365,8 @@ The case follows the namelist group in the `AMR_CASE` file: `&rising_bubble`
 instability of Fakhari et al. (PRE 2017, Sec. IV B; bubble front and spike tip
 in `rt_fronts.dat`). `-DAMR_DOMAIN_HEIGHT` sets the domain height in units of
 L0 (default 3; 4 for the paper's Rayleigh–Taylor case, 8 for
-`cases/gpu_RT_At05_L1024.nml`, which runs to t* = 5 at four times the paper's
-resolution).
+`cases/gpu_RT_At05_L1024.nml`, which runs to t* = 8 at four times the paper's
+resolution, until well after the spike has reached the bottom).
 
 In-situ rendering: with `AMR_RENDER` set to a command, every output step's
 fields (C, density, speed) are copied to the host and streamed, from a

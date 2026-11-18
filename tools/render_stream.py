@@ -116,9 +116,10 @@ def main():
     for ax, name in zip(axes, names):
         img = rasterize(fr, name)
         kw = dict(cmap=CMAPS.get(name, 'viridis'))
-        if name == 'level':
+        if name == 'level':                                    # from the coarsest level of the first frame
             top = int(np.log2(fr['L0'] // fr['n']))
-            kw['norm'] = colors.BoundaryNorm(np.arange(-0.5, top + 1), plt.get_cmap(kw['cmap']).N)
+            low = int(np.nanmin(img))
+            kw['norm'] = colors.BoundaryNorm(np.arange(low - 0.5, top + 1), plt.get_cmap(kw['cmap']).N)
         else:
             lo, hi = clims.get(name, (float(np.nanmin(img)), float(np.nanmax(img))))
             if hi <= lo:
@@ -127,7 +128,7 @@ def main():
         im = ax.imshow(img, origin='lower', extent=ext, interpolation='antialiased', **kw)
         cb = fig.colorbar(im, ax=ax, location='bottom', shrink=0.9, aspect=12, label=LABELS.get(name, name))
         if name == 'level':
-            cb.set_ticks(range(0, top + 1, max(1, (top + 1) // 4)))
+            cb.set_ticks(range(low, top + 1))
         ax.set_xlabel('x / L0')
         images.append((im, name))
     axes[0].set_ylabel('y / L0')
