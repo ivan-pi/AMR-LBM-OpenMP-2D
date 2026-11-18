@@ -638,7 +638,7 @@ radius. Two cases (L0 = 256, `-DAMR_DOMAIN_HEIGHT=1`):
   masses change by less than 3e−4. With the default noise of 0.02 the
   break-up has the fourfold symmetry of the lattice; the case uses 0.1.
 * `cases/gpu_ouzo_louche.nml`: ouzo mixed 1:1 with water, x = (0.125, 0.15,
-  0.725). It emulsifies spontaneously: after an incubation of about 12000
+  0.725). It emulsifies spontaneously: after an incubation of 12000–15000
   steps about 60 anethole droplets appear (mean radius 4 cells at t = 30000),
   each with a shell of enriched ethanol, and the emulsion coarsens. A
   uniform mixture has no gradients for the criterion, so this case lowers
@@ -649,7 +649,8 @@ The layer (`kind = 'layer'`) develops slowly: an oil-rich film forms at the
 contact line while ethanol diffuses into the water. Its oil mass drifts by
 +0.8 % in 30000 steps: the ethanol gradient crosses coarse/fine block edges
 inside the stock, where the same-Δt scheme is not conservative (see
-*Conservation across levels*). Its time scales are set by the lattice: D = 0.2 for all
+*Conservation across levels*); with `refine_tol = 0.004, deref_tol = 0.002`
+the diffusion zone stays on the finest level and the drift is −0.06 %. Its time scales are set by the lattice: D = 0.2 for all
 species (a Schmidt number ν/D of 0.1), and an interface about 3 cells wide
 whose surface tension depends on κD² (docs/parker_model).
 
