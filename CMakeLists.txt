@@ -15,6 +15,7 @@ project(AMR_LBM_2D
 #   cmake -B build -DAMR_DOMAIN_HEIGHT=4             # L0 x 4*L0 domain (Rayleigh-Taylor)
 #   cmake -B build -DAMR_WITH_FVTKHDF=ON -DCMAKE_PREFIX_PATH=<fvtkhdf prefix>
 #   cmake -B build -DAMR_BUILD_OFFLOAD=ON            # GPU prototype (ifx only)
+#   cmake -B build -DAMR_WITH_VIEWER=ON              # real-time OpenGL view (SDL2)
 #   cmake --build build -j
 
 set(AMR_PRECISION 8 CACHE STRING "Working precision wp in bytes: 8 (real64) or 4 (real32)")
@@ -25,6 +26,7 @@ set(AMR_MIN_LEVEL 1 CACHE STRING "Minimum refinement level (uniform background r
 set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of two dividing AMR_L0)")
 option(AMR_PERIODIC_Y "Periodic in y as well (default: walls at the bottom and top)" OFF)
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
+option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
 option(AMR_NATIVE "Optimize for the build machine (-march=native / -xHost)" ON)
 
@@ -111,6 +113,7 @@ add_library(amr_core OBJECT
   src/TecPlot_Mod.f90
   src/VTK_Output_Mod.f90
   src/Output_Mod.f90
+  src/Viewer_Mod.f90
   src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
   src/Rayleigh_Taylor_Mod.f90
@@ -130,6 +133,22 @@ if(AMR_WITH_FVTKHDF)
   find_package(fVTKHDF REQUIRED)
   target_link_libraries(amr_core PUBLIC fVTKHDF::fvtkhdf)
   target_compile_definitions(amr_core PRIVATE USE_FVTKHDF)
+endif()
+
+# real-time viewer: C library with an SDL2 window and an OpenGL 3.3 context
+# (the GL functions are loaded through SDL, no libGL link); enabled at run
+# time with AMR_VIEW=<update interval in steps>
+if(AMR_WITH_VIEWER)
+  enable_language(C)
+  find_package(SDL2 REQUIRED)
+  find_package(Threads REQUIRED)
+  add_library(amrviz STATIC viewer/amrviz.c viewer/amrviz.f90)   # C library + Fortran module amrviz
+  set_target_properties(amrviz PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  target_include_directories(amrviz PUBLIC viewer)
+  target_link_libraries(amrviz PRIVATE SDL2::SDL2 Threads::Threads m)
+  target_link_libraries(amr_core PUBLIC amrviz)
+  target_compile_definitions(amr_core PRIVATE USE_AMRVIZ)
 endif()
 
 # drivers, one per case and model:
@@ -163,4 +182,4 @@ endif()
 
 message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, periodic y=${AMR_PERIODIC_Y}, "
                "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
-               "offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")
+               "viewer=${AMR_WITH_VIEWER}, offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")

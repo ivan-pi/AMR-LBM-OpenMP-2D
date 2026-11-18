@@ -314,6 +314,68 @@ python3 tools/animate_vtk.py Rising_Bubble_2D.vtkhdf --frame -1 -o last.png
 
 Run `python3 tools/animate_vtk.py -h` for all options.
 
+### Real-time view
+
+With `-DAMR_WITH_VIEWER=ON` (needs SDL2 and OpenGL 3.3) the solver can show the
+leaf blocks and a field in a window while it runs. `AMR_VIEW` turns it on
+and sets the update interval in time steps:
+
+```
+cmake -B build-view -DAMR_WITH_VIEWER=ON && cmake --build build-view -j
+AMR_VIEW=20 AMR_OUTPUT=none ./build-view/amr_lbm
+```
+
+The controls are inspired by [FluidX3D](https://github.com/ProjectPhysX/FluidX3D);
+`H` shows them in the window:
+
+| key | action |
+|---|---|
+| `P`, Space | pause / resume the solver; `N` one more update while paused |
+| `Z` / Shift+`Z`, Tab | field: C, P, Ux, Uy, \|U\|, level |
+| `C` / Shift+`C` | colour map: viridis, magma, coolwarm (range symmetric about zero), gray |
+| `1` `2` `3` `4` | field colouring, block outlines, cell outlines, status panel on/off |
+| `F` | freeze the colour range |
+| `+` `-`, wheel | zoom |
+| `I` `J` `K` `L`, arrows, drag | pan |
+| `R` | reset the view |
+| `G` | print the view settings |
+| Esc | close the viewer |
+
+The status panel shows a colour bar, time, step, blocks, cells, levels, the
+solver speed and the value under the cursor. Closing the window lets the run
+continue without it; at the end of the run the window stays open until it is
+closed. `tools/make_colormap_header.py` and `tools/make_font_header.py`
+generate the colour map and font tables in `viewer/`.
+
+**Fields in GPU memory.** A GPU solver can hand over a whole snapshot at
+once: `amrviz_blocks_buffer(n)` returns the block table to fill (x0, y0, dx,
+level per block) and every field is one packed float array of `n*nx*ny`
+cells, which the solver packs on the device (interior cells only, in
+single precision). The array reaches the viewer either by a device-to-host
+copy straight into `amrviz_field_buffer(field)` (`omp_target_memcpy`,
+`sycl::queue::memcpy`), or through `amrviz_field_packed(field, device_ptr)`
+with a copy function registered with `amrviz_set_copy`. The library never
+touches device memory and links no GPU runtime; the one copy per update is
+small (4 bytes per leaf cell and field). `viewer/examples` has a SYCL and a
+Fortran OpenMP-offload demo (Intel oneAPI, tested on an Arc A770):
+
+```
+source /opt/intel/oneapi/setvars.sh
+cmake -S viewer/examples -B build-viewer-examples -DCMAKE_CXX_COMPILER=icpx -DCMAKE_Fortran_COMPILER=ifx
+cmake --build build-viewer-examples -j
+./build-viewer-examples/sycl_demo        # or ./build-viewer-examples/offload_demo
+```
+
+The Fortran interface of the library is the module `amrviz` (`viewer/amrviz.f90`).
+
+The viewer is a small C library (`viewer/amrviz.h`) that C, C++ and Fortran
+(`Viewer_Mod`, through `ISO_C_BINDING`) can call. It draws on its own thread:
+each update copies the leaf-block fields as float into a buffer that the
+render thread picks up, so the solver waits only while paused. On the GPU
+every block is one instanced quad and the cell values are one texture buffer.
+The render thread needs a CPU core: leave one free, e.g.
+`OMP_NUM_THREADS=3 taskset -c 4-7`.
+
 ## Conservation across levels
 
 The phase field is conserved exactly on a uniform grid, but not across
