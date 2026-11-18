@@ -17,16 +17,21 @@
 //      DeviceMesh       the block metadata and leaf list on the device
 //      Quadtree         the mesh on the host; adapt() returns a MeshChange,
 //                       the field work it implies
-//      BubbleCase       parameters (namelist), initial state, diagnostics
+//      Case             a test case: parameters (namelist), initial state,
+//                       diagnostics; RisingBubble, RayleighTaylor
 //      HostFields       a copy of C, P, Ux, Uy on the host (output steps)
 //      VtkSeries        VTK XML output, the files of the Fortran VTK writer
+//      FrameStream      in-situ rendering: frames to a renderer process
 //      StageTimers      wall time per stage of the time step
 //      Solver           the time loop
 //
 //  Usage:  amr_lbm_sycl [number_of_time_steps [output_interval_in_steps]]
-//          AMR_CASE=case.nml   namelist &rising_bubble (as the Fortran code)
+//          AMR_CASE=case.nml   namelist &rising_bubble or &rayleigh_taylor (as the
+//                              Fortran code); its group selects the case
 //          AMR_GPU_SYNC=1      wait after every stage (stage timings)
 //          AMR_OUTPUT=vtk|none field output (default vtk)
+//          AMR_RENDER="cmd"    stream frames to a renderer at the output steps,
+//                              e.g. "python3 tools/render_stream.py -o run.mp4"
 //  The host thread waits for the GPU many times per step: on a loaded
 //  machine pin it to an idle CPU (taskset -c <cpu>), or every wait costs a
 //  scheduler time slice. Writes bubble_rise.dat and, at the output steps,
@@ -43,15 +48,18 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -65,7 +73,10 @@ using namespace amr;
 //  Configuration (Config_Mod)
 //==============================================================================
 constexpr int L0 = AMR_L0, minLevels = AMR_MIN_LEVEL;
-constexpr int nBaseX = 1, nBaseY = 3;
+#ifndef AMR_DOMAIN_HEIGHT
+#define AMR_DOMAIN_HEIGHT 3
+#endif
+constexpr int nBaseX = 1, nBaseY = AMR_DOMAIN_HEIGHT;     // domain L0 x nBaseY*L0
 constexpr int ilog2(int v) { return v <= 1 ? 0 : 1 + ilog2(v / 2); }
 constexpr int maxLevels = ilog2(L0 / NX);
 constexpr int MaxBlks = nBaseX * nBaseY * ((1 << (2 * (maxLevels + 1))) - 1) / 3;
@@ -407,144 +418,6 @@ private:
 };
 
 //==============================================================================
-//  Rising bubble case (Rising_Bubble_Mod), in single precision as the
-//  Fortran program built with AMR_PRECISION=4
-//==============================================================================
-class BubbleCase {
-public:
-    real t_end = 8, time_per_step = 0;
-
-    //== Rising_Bubble_Mod: Setup; the physical parameters for the kernels
-    Params setup() {
-        R_ = real(L0) / real(10);
-        D_ = real(2) * R_;
-        read_namelist();
-
-        Params p{};
-        p.Rhoh = 1;
-        p.Rhol = p.Rhoh / rho_ratio_;
-        p.Gy = Gy_lu_;
-        p.W = Cn_ > 0 ? Cn_ * real(L0) : Width_;
-        p.M0 = Pe_ > 0 ? std::sqrt(p.Gy * D_) * p.W / Pe_ : Mobility_;
-        p.wc = real(1) / (real(0.5) + p.M0 * real(3));
-        Sigma_ = p.Gy * (p.Rhoh - p.Rhol) * D_ * D_ / Eo_;
-        mu_h_ = std::sqrt(p.Gy * p.Rhoh * (p.Rhoh - p.Rhol) * D_ * D_ * D_) / Re_;
-        const real mul = mu_h_ / mu_ratio_;
-        p.tauh = real(3) * (mu_h_ / p.Rhoh);
-        p.taul = real(3) * (mul / p.Rhol);
-        p.Beta = real(12) * Sigma_ / p.W;
-        p.kappa = real(1.5) * Sigma_ * p.W;
-        p.maxLevels = maxLevels;
-        for (int L = 0; L <= maxLevels; ++L) p.inv_dx[L] = real(NX) / real(L0) * std::ldexp(real(1), L);
-        time_per_step = std::sqrt(p.Gy / D_);
-        std::printf("\nEo, Re_h, muh, mul, Pe =%12.3f%12.3f%12.3f%12.3f%12.3f\n", Eo_, Re_, mu_h_, mul,
-                    std::sqrt(p.Gy * D_) * p.W / p.M0);
-        params_ = p;
-        return p;
-    }
-
-    real sigma() const { return Sigma_; }
-
-    //== the bubble for the initial-state kernel
-    Bubble bubble() const { return {R_, real(L0 / 2), real(L0 / 2), Sigma_, params_.W, L0}; }
-
-    //== one line of diagnostics (Solver_Mod: Print_Diagnostics) from C and Uy
-    void print_line(real time, const Quadtree &T, const std::vector<real> &C, const std::vector<real> &Uy) const {
-        const Params &p = params_;
-        real rmin = 10, rmax = -10, umax = 0;
-        double mass = 0;
-        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
-            const real rho = p.Rhol + C[cix(i, j, n)] * (p.Rhoh - p.Rhol);
-            rmin = std::min(rmin, rho);
-            rmax = std::max(rmax, rho);
-            mass += double(rho) * dx * dx;
-            umax = std::max(umax, std::fabs(Uy[pix(i, j, n)]));
-        });
-        std::printf("%7.2f%7d%7d%6d%11.5f%11.5f%9.5f%12.1f%4d%4d\n", time, T.nblks(), T.nLeaf(), T.unused(),
-                    rmin, rmax, umax, mass, T.levelMin(), T.levelMax());
-    }
-
-    //== Rising_Bubble_Mod: Bubble_Diagnostics, appended to bubble_rise.dat
-    void rise(real time, const Quadtree &T, const std::vector<real> &C, const std::vector<real> &Uy) {
-        if (!rise_) {
-            rise_.reset(std::fopen("bubble_rise.dat", "w"));
-            std::fprintf(rise_.get(), "#      t*           y_c          u_r          Re_r\n");
-        }
-        double A = 0, Ay = 0, Av = 0;
-        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
-            const real c = C[cix(i, j, n)];
-            if (c >= real(0.9)) return;
-            const double w = double(real(1) - std::max(c, real(0))) * dx * dx;
-            A += w;
-            Ay += w * (double(T[n].J) * dx * NY + dx * (j - 0.5));
-            Av += w * Uy[pix(i, j, n)];
-        });
-        std::fprintf(rise_.get(), "%13.5E%13.5E%13.5E%13.5E\n", double(time), Ay / A, Av / A,
-                     double(params_.Rhoh) * (Av / A) * D_ / mu_h_);
-        std::fflush(rise_.get());
-    }
-
-private:
-    real Eo_ = 40, Re_ = 40, rho_ratio_ = 1000, mu_ratio_ = 100, Gy_lu_ = real(5e-6);
-    real Mobility_ = real(0.03), Pe_ = 0, Width_ = 5, Cn_ = 0;
-    real R_ = 0, D_ = 0, mu_h_ = 0, Sigma_ = 0;
-    Params params_{};
-    std::unique_ptr<FILE, int (*)(FILE *)> rise_{nullptr, &std::fclose};
-
-    template <class F> static void for_leaf_cells(const Quadtree &T, F &&f) {
-        for (int n : T.leaves()) {
-            const int dx = dx_level(T[n].level);
-            for (int j = 1; j <= NY; ++j)
-                for (int i = 1; i <= NX; ++i) f(n, i, j, dx);
-        }
-    }
-
-    //== &rising_bubble ... / from the file named by AMR_CASE: "name = value"
-    //   items, comments (!) and Fortran d exponents allowed
-    void read_namelist() {
-        const char *file = std::getenv("AMR_CASE");
-        if (!file || !*file) return;
-        std::ifstream in(file);
-        if (!in) throw std::runtime_error("AMR_CASE: cannot open the case file");
-        const std::map<std::string, real *> vars = {
-            {"eo", &Eo_}, {"re", &Re_}, {"rho_ratio", &rho_ratio_}, {"mu_ratio", &mu_ratio_},
-            {"gy_lu", &Gy_lu_}, {"mobility", &Mobility_}, {"pe", &Pe_}, {"width", &Width_},
-            {"cn", &Cn_}, {"t_end", &t_end}};
-        auto trim = [](std::string s) {
-            s.erase(0, s.find_first_not_of(" \t\r"));
-            s.erase(s.find_last_not_of(" \t\r") + 1);
-            return s;
-        };
-        std::string body;           // the group, comments removed, lower case, items separated by ','
-        bool inside = false;
-        for (std::string line; std::getline(in, line);) {
-            if (auto p = line.find('!'); p != std::string::npos) line.erase(p);
-            std::transform(line.begin(), line.end(), line.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-            if (!inside) {
-                const auto p = line.find("&rising_bubble");
-                if (p == std::string::npos) continue;
-                inside = true;
-                line.erase(0, p + 14);
-            }
-            if (const auto p = line.find('/'); p != std::string::npos) { body += line.substr(0, p); break; }
-            body += line + ",";
-        }
-        std::istringstream items(body);
-        for (std::string item; std::getline(items, item, ',');) {
-            const auto eq = item.find('=');
-            if (eq == std::string::npos) continue;
-            const std::string key = trim(item.substr(0, eq));
-            std::string val = trim(item.substr(eq + 1));
-            std::replace(val.begin(), val.end(), 'd', 'e');
-            const auto v = vars.find(key);
-            if (v == vars.end()) throw std::runtime_error("AMR_CASE: unknown name " + key);
-            *v->second = real(std::strtod(val.c_str(), nullptr));
-        }
-        std::printf("\nCase file: %s\n", file);
-    }
-};
-
-//==============================================================================
 //  Host copy of the fields of blocks 1..nblks needed for output: C and Uy at
 //  every diagnostic step, P and Ux as well at the output steps
 //==============================================================================
@@ -563,6 +436,276 @@ struct HostFields {
         d.Ux.get(Ux.data(), Ux.size());
     }
 };
+
+//==============================================================================
+//  Namelists: the file named by AMR_CASE holds one group &name ... /, with
+//  "name = value" items, comments (!) and Fortran d exponents
+//==============================================================================
+namespace namelist {
+
+inline std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return s;
+}
+
+//== the name of the first group in the AMR_CASE file, "" without a file
+inline std::string group() {
+    const char *file = std::getenv("AMR_CASE");
+    if (!file || !*file) return "";
+    std::ifstream in(file);
+    if (!in) throw std::runtime_error("AMR_CASE: cannot open the case file");
+    for (std::string line; std::getline(in, line);) {
+        if (auto p = line.find('!'); p != std::string::npos) line.erase(p);
+        if (auto p = line.find('&'); p != std::string::npos) {
+            std::string g = lower(line.substr(p + 1));
+            return g.substr(0, g.find_first_of(" \t\r/"));
+        }
+    }
+    return "";
+}
+
+//== the values of group grp into vars (names in lower case)
+inline void read(const std::string &grp, const std::map<std::string, real *> &vars) {
+    const char *file = std::getenv("AMR_CASE");
+    if (!file || !*file) return;
+    std::ifstream in(file);
+    auto trim = [](std::string s) {
+        s.erase(0, s.find_first_not_of(" \t\r"));
+        s.erase(s.find_last_not_of(" \t\r") + 1);
+        return s;
+    };
+    std::string body;               // the group's items, separated by ','
+    bool inside = false;
+    for (std::string line; std::getline(in, line);) {
+        if (auto p = line.find('!'); p != std::string::npos) line.erase(p);
+        line = lower(line);
+        if (!inside) {
+            const auto p = line.find("&" + grp);
+            if (p == std::string::npos) continue;
+            inside = true;
+            line.erase(0, p + 1 + grp.size());
+        }
+        if (const auto p = line.find('/'); p != std::string::npos) { body += line.substr(0, p); break; }
+        body += line + ",";
+    }
+    if (!inside) throw std::runtime_error("AMR_CASE: no namelist &" + grp);
+    std::istringstream items(body);
+    for (std::string item; std::getline(items, item, ',');) {
+        const auto eq = item.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = trim(item.substr(0, eq));
+        std::string val = trim(item.substr(eq + 1));
+        std::replace(val.begin(), val.end(), 'd', 'e');
+        const auto v = vars.find(key);
+        if (v == vars.end()) throw std::runtime_error("AMR_CASE: unknown name " + key + " in &" + grp);
+        *v->second = real(std::strtod(val.c_str(), nullptr));
+    }
+    std::printf("\nCase file: %s\n", file);
+}
+
+} // namespace namelist
+
+//==============================================================================
+//  Test cases (Case_Mod), in single precision as the Fortran programs
+//  built with AMR_PRECISION=4: parameters, initial state, diagnostics
+//==============================================================================
+class Case {
+public:
+    virtual ~Case() = default;
+    virtual std::string name() const = 0;
+    //== the physical parameters for the kernels (reads the case's namelist)
+    virtual Params setup() = 0;
+    //== fluids at rest in the listed blocks, h and g at equilibrium
+    virtual void initial_state(sycl::queue &q, Fields F, const BlockRef *list, int count) const = 0;
+    //== the case's own record of the run, at every diagnostic step
+    virtual void diagnostics(real time, const Quadtree &T, const HostFields &f) = 0;
+
+    real t_end = 0, time_per_step = 0, sigma = 0;
+
+    //== one line of diagnostics (Solver_Mod: Print_Diagnostics) from C and Uy
+    void print_line(real time, const Quadtree &T, const HostFields &f) const {
+        real rmin = 10, rmax = -10, umax = 0;
+        double mass = 0;
+        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
+            const real rho = p_.Rhol + f.C[cix(i, j, n)] * (p_.Rhoh - p_.Rhol);
+            rmin = std::min(rmin, rho);
+            rmax = std::max(rmax, rho);
+            mass += double(rho) * dx * dx;
+            umax = std::max(umax, std::fabs(f.Uy[pix(i, j, n)]));
+        });
+        std::printf("%7.2f%7d%7d%6d%11.5f%11.5f%9.5f%12.1f%4d%4d\n", time, T.nblks(), T.nLeaf(), T.unused(),
+                    rmin, rmax, umax, mass, T.levelMin(), T.levelMax());
+    }
+
+protected:
+    Params p_{};
+
+    //== the model parameters from the fluid properties (common part of the Setups)
+    void fluid_parameters(real W, real M0, real mu_h, real mu_l) {
+        p_.W = W;
+        p_.M0 = M0;
+        p_.wc = real(1) / (real(0.5) + M0 * real(3));
+        p_.tauh = real(3) * (mu_h / p_.Rhoh);
+        p_.taul = real(3) * (mu_l / p_.Rhol);
+        p_.Beta = real(12) * sigma / W;
+        p_.kappa = real(1.5) * sigma * W;
+        p_.maxLevels = maxLevels;
+        for (int L = 0; L <= maxLevels; ++L) p_.inv_dx[L] = real(NX) / real(L0) * std::ldexp(real(1), L);
+    }
+
+    template <class F> static void for_leaf_cells(const Quadtree &T, F &&f) {
+        for (int n : T.leaves()) {
+            const int dx = dx_level(T[n].level);
+            for (int j = 1; j <= NY; ++j)
+                for (int i = 1; i <= NX; ++i) f(n, i, j, dx);
+        }
+    }
+
+    using File = std::unique_ptr<FILE, int (*)(FILE *)>;
+    static File open_record(const char *name, const char *header) {
+        File f(std::fopen(name, "w"), &std::fclose);
+        if (!f) throw std::runtime_error(std::string("cannot write ") + name);
+        std::fprintf(f.get(), "%s\n", header);
+        return f;
+    }
+};
+
+//== rising bubble (Rising_Bubble_Mod): a bubble of diameter D = L0/5 at
+//   (L0/2, L0/2); bubble_rise.dat
+class RisingBubble : public Case {
+public:
+    std::string name() const override { return "rising bubble (Fakhari, Geier & Lee, JCP 2016, Sec. 5.1)"; }
+
+    Params setup() override {
+        R_ = real(L0) / real(10);
+        D_ = real(2) * R_;
+        t_end = 8;
+        namelist::read("rising_bubble", {{"eo", &Eo_}, {"re", &Re_}, {"rho_ratio", &rho_ratio_},
+                                         {"mu_ratio", &mu_ratio_}, {"gy_lu", &Gy_lu_}, {"mobility", &Mobility_},
+                                         {"pe", &Pe_}, {"width", &Width_}, {"cn", &Cn_}, {"t_end", &t_end}});
+        p_.Rhoh = 1;
+        p_.Rhol = p_.Rhoh / rho_ratio_;
+        p_.Gy = Gy_lu_;
+        const real W = Cn_ > 0 ? Cn_ * real(L0) : Width_;
+        const real M0 = Pe_ > 0 ? std::sqrt(p_.Gy * D_) * W / Pe_ : Mobility_;
+        sigma = p_.Gy * (p_.Rhoh - p_.Rhol) * D_ * D_ / Eo_;
+        mu_h_ = std::sqrt(p_.Gy * p_.Rhoh * (p_.Rhoh - p_.Rhol) * D_ * D_ * D_) / Re_;
+        const real mul = mu_h_ / mu_ratio_;
+        fluid_parameters(W, M0, mu_h_, mul);
+        time_per_step = std::sqrt(p_.Gy / D_);
+        std::printf("\nEo, Re_h, muh, mul, Pe =%12.3f%12.3f%12.3f%12.3f%12.3f\n", Eo_, Re_, mu_h_, mul,
+                    std::sqrt(p_.Gy * D_) * W / M0);
+        return p_;
+    }
+
+    void initial_state(sycl::queue &q, Fields F, const BlockRef *list, int count) const override {
+        amr::initial_state(q, F, p_, BubbleInit{R_, real(L0 / 2), real(L0 / 2), sigma, p_.W}, L0, list, count);
+    }
+
+    //== Rising_Bubble_Mod: Bubble_Diagnostics (cells with C >= 0.9 left out)
+    void diagnostics(real time, const Quadtree &T, const HostFields &f) override {
+        if (!rise_) rise_ = open_record("bubble_rise.dat", "#      t*           y_c          u_r          Re_r");
+        double A = 0, Ay = 0, Av = 0;
+        for_leaf_cells(T, [&](int n, int i, int j, int dx) {
+            const real c = f.C[cix(i, j, n)];
+            if (c >= real(0.9)) return;
+            const double w = double(real(1) - std::max(c, real(0))) * dx * dx;
+            A += w;
+            Ay += w * (double(T[n].J) * dx * NY + dx * (j - 0.5));
+            Av += w * f.Uy[pix(i, j, n)];
+        });
+        std::fprintf(rise_.get(), "%13.5E%13.5E%13.5E%13.5E\n", double(time), Ay / A, Av / A,
+                     double(p_.Rhoh) * (Av / A) * D_ / mu_h_);
+        std::fflush(rise_.get());
+    }
+
+private:
+    real Eo_ = 40, Re_ = 40, rho_ratio_ = 1000, mu_ratio_ = 100, Gy_lu_ = real(5e-6);
+    real Mobility_ = real(0.03), Pe_ = 0, Width_ = 5, Cn_ = 0;
+    real R_ = 0, D_ = 0, mu_h_ = 0;
+    File rise_{nullptr, &std::fclose};
+};
+
+//== Rayleigh-Taylor instability (Rayleigh_Taylor_Mod; Fakhari et al., PRE
+//   2017, Sec. IV B): heavy fluid over light, the interface at mid-height
+//   perturbed by A L0 cos(2 pi x / L0). U0 = sqrt(g L0), t0 = sqrt(L0/(g At)):
+//   At, Re = rho_h U0 L0/mu_h, Ca = mu_h U0/sigma, Pe = U0 L0/M, t* = t/t0.
+//   rt_fronts.dat: bubble front (x = 0) and spike tip (x = L0/2) relative to
+//   the unperturbed interface, in units of L0
+class RayleighTaylor : public Case {
+public:
+    std::string name() const override { return "Rayleigh-Taylor instability (Fakhari et al., PRE 2017, Sec. IV B)"; }
+
+    Params setup() override {
+        t_end = real(2.5);
+        namelist::read("rayleigh_taylor", {{"at", &At_}, {"re", &Re_}, {"mu_ratio", &mu_ratio_}, {"ca", &Ca_},
+                                           {"gy_lu", &Gy_lu_}, {"amplitude", &Amplitude_}, {"mobility", &Mobility_},
+                                           {"pe", &Pe_}, {"width", &Width_}, {"cn", &Cn_}, {"t_end", &t_end}});
+        if (At_ <= 0 || At_ >= 1) throw std::runtime_error("Rayleigh-Taylor: At must lie in (0,1)");
+        const real D = real(L0);
+        Y0_ = real(0.5) * real(nBaseY * L0);
+        p_.Rhoh = 1;
+        p_.Rhol = p_.Rhoh * (1 - At_) / (1 + At_);
+        p_.Gy = Gy_lu_;
+        const real U0 = std::sqrt(p_.Gy * D);
+        const real W = Cn_ > 0 ? Cn_ * real(L0) : Width_;
+        const real M0 = Pe_ > 0 ? U0 * D / Pe_ : Mobility_;
+        const real mu_h = p_.Rhoh * U0 * D / Re_, mu_l = mu_h / mu_ratio_;
+        sigma = mu_h * U0 / Ca_;
+        fluid_parameters(W, M0, mu_h, mu_l);
+        std::printf("\nAt, Re, Ca, Pe =%7.4f%9.1f%7.3f%9.1f   tau_h, tau_l =%9.5f%9.5f   t0 =%9.1f\n", At_, Re_, Ca_,
+                    U0 * D / M0, p_.tauh + real(0.5), p_.taul + real(0.5), std::sqrt(D / (p_.Gy * At_)));
+        time_per_step = std::sqrt(p_.Gy * At_ / D);
+        column_.assign(size_t(nBaseY) * L0, 0);
+        return p_;
+    }
+
+    void initial_state(sycl::queue &q, Fields F, const BlockRef *list, int count) const override {
+        const RTInit init{Y0_, Amplitude_ * real(L0), real(L0), p_.W, (p_.Rhoh - p_.Rhol) * p_.Gy};
+        amr::initial_state(q, F, p_, init, L0, list, count);
+    }
+
+    void diagnostics(real time, const Quadtree &T, const HostFields &f) override {
+        if (!fronts_) fronts_ = open_record("rt_fronts.dat", "#      t*       bubble/L0     spike/L0");
+        std::fprintf(fronts_.get(), "%13.5E%13.5E%13.5E\n", double(time), double((lowest_crossing(T, f, 0) - Y0_) / real(L0)),
+                     double((lowest_crossing(T, f, L0 / 2) - Y0_) / real(L0)));
+        std::fflush(fronts_.get());
+    }
+
+private:
+    real At_ = real(0.5), Re_ = 3000, mu_ratio_ = 1, Ca_ = real(0.26), Gy_lu_ = real(2e-6);
+    real Amplitude_ = real(0.1), Mobility_ = real(0.03), Pe_ = 1000, Width_ = 5, Cn_ = 0;
+    real Y0_ = 0;
+    std::vector<real> column_;          // C along a vertical line, finest-level resolution
+    File fronts_{nullptr, &std::fclose};
+
+    //== the lowest height at which C crosses 1/2 on the vertical line through
+    //   the cells containing the finest-level position x (Lowest_Crossing):
+    //   the leaf cells on the line spread to finest-level resolution, the
+    //   crossing interpolated linearly between cell centres
+    real lowest_crossing(const Quadtree &T, const HostFields &f, int x) {
+        for (int n : T.leaves()) {
+            const int dx = dx_level(T[n].level), xb = T[n].I * dx * NX;
+            if (x < xb || x >= xb + dx * NX) continue;
+            const int i = (x - xb) / dx + 1, yb = T[n].J * dx * NY;
+            for (int j = 1; j <= NY; ++j)
+                std::fill_n(&column_[size_t(yb + (j - 1) * dx)], dx, f.C[cix(i, j, n)]);
+        }
+        for (size_t k = 0; k < column_.size(); ++k)
+            if (column_[k] >= real(0.5))
+                return k == 0 ? real(0.5)
+                              : real(k) - real(0.5) + (real(0.5) - column_[k - 1]) / (column_[k] - column_[k - 1]);
+        return real(column_.size()) - real(0.5);       // no heavy fluid on the line
+    }
+};
+
+//== the case of the namelist group in the AMR_CASE file (default: rising bubble)
+inline std::unique_ptr<Case> make_case() {
+    const std::string g = namelist::group();
+    if (g.empty() || g == "rising_bubble") return std::make_unique<RisingBubble>();
+    if (g == "rayleigh_taylor") return std::make_unique<RayleighTaylor>();
+    throw std::runtime_error("AMR_CASE: unknown case &" + g + " (rising_bubble, rayleigh_taylor)");
+}
 
 //==============================================================================
 //  VTK XML output (VTK_Output_Mod: Write_VTU_Step): per output step the leaf
@@ -719,6 +862,93 @@ private:
 };
 
 //==============================================================================
+//  In-situ rendering: at each output step a frame (the phase field C of the
+//  leaf cells and the block layout) is handed to a background thread that
+//  writes it to the standard input of a renderer process, so the solver
+//  goes on while the frame is drawn. At most two frames wait; then push()
+//  blocks. Frame (little endian): "AMRF", int32 version 1, float64 time,
+//  int32 L0, nBaseX, nBaseY, block size, number of leaves, per leaf int32
+//  x0, y0, dx (finest-level lattice units), then float32 C per leaf
+//  (nx x ny, x fastest). The renderer sees end of file when the run ends.
+//==============================================================================
+class FrameStream {
+public:
+    explicit FrameStream(const std::string &command) : pipe_(popen(command.c_str(), "w")) {
+        if (!pipe_) throw std::runtime_error("AMR_RENDER: cannot start " + command);
+        worker_ = std::thread([this] { run(); });
+        std::printf("\nRenderer: %s\n", command.c_str());
+    }
+    ~FrameStream() {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        worker_.join();
+        if (const int rc = pclose(pipe_); rc != 0) std::fprintf(stderr, "AMR_RENDER: renderer exit status %d\n", rc);
+    }
+    FrameStream(const FrameStream &) = delete;
+    FrameStream &operator=(const FrameStream &) = delete;
+
+    void push(real time, const Quadtree &T, const HostFields &f) {
+        Frame fr;
+        fr.time = time;
+        fr.blocks.reserve(3 * size_t(T.nLeaf()));
+        fr.C.reserve(size_t(T.nLeaf()) * NX * NY);
+        for (int n : T.leaves()) {
+            const int dx = dx_level(T[n].level);
+            fr.blocks.insert(fr.blocks.end(), {T[n].I * dx * NX, T[n].J * dx * NY, dx});
+            for (int j = 1; j <= NY; ++j)
+                for (int i = 1; i <= NX; ++i) fr.C.push_back(f.C[cix(i, j, n)]);
+        }
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [this] { return queue_.size() < 2; });
+        queue_.push_back(std::move(fr));
+        cv_.notify_all();
+    }
+
+private:
+    struct Frame {
+        double time = 0;
+        std::vector<std::int32_t> blocks;
+        std::vector<float> C;
+    };
+    FILE *pipe_;
+    std::thread worker_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<Frame> queue_;
+    bool done_ = false, broken_ = false;
+
+    void run() {
+        for (;;) {
+            Frame fr;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                cv_.wait(lk, [this] { return done_ || !queue_.empty(); });
+                if (queue_.empty()) return;             // done and drained
+                fr = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            cv_.notify_all();
+            if (!broken_) write(fr);
+        }
+    }
+
+    void write(const Frame &fr) {
+        const std::int32_t head[6] = {1, L0, nBaseX, nBaseY, NX, std::int32_t(fr.blocks.size() / 3)};
+        bool ok = std::fwrite("AMRF", 1, 4, pipe_) == 4 && std::fwrite(&head[0], 4, 1, pipe_) == 1 &&
+                  std::fwrite(&fr.time, 8, 1, pipe_) == 1 && std::fwrite(&head[1], 4, 5, pipe_) == 5 &&
+                  std::fwrite(fr.blocks.data(), 4, fr.blocks.size(), pipe_) == fr.blocks.size() &&
+                  std::fwrite(fr.C.data(), 4, fr.C.size(), pipe_) == fr.C.size() && std::fflush(pipe_) == 0;
+        if (!ok) {
+            broken_ = true;
+            std::fprintf(stderr, "AMR_RENDER: the renderer stopped reading; no more frames\n");
+        }
+    }
+};
+
+//==============================================================================
 //  Wall time per stage; with sync the queue is drained before each reading
 //==============================================================================
 class StageTimers {
@@ -771,11 +1001,12 @@ private:
     bool reflag_ = true;                // the bits are stale: flag on the host anyway
     DeviceArray<int> list_, list2_;     // block lists for the kernels
     Quadtree tree_;
-    BubbleCase case_;
+    std::unique_ptr<Case> case_ = make_case();
     Params p_{};
     std::vector<real> err_leaf_, err_slot_;
     HostFields host_;
     std::optional<VtkSeries> vtk_;     // empty: AMR_OUTPUT=none
+    std::unique_ptr<FrameStream> render_;   // AMR_RENDER
 
     static constexpr int ghost_C = 2;   // JCP 2016: mixed differences reach two cells
     static constexpr real refine_tol = real(0.002), deref_tol = real(0.001);
@@ -790,7 +1021,7 @@ private:
     //== Solver_Mod: Initialize_State
     void initialize_state() {
         const auto r = tree_.leaf_refs();
-        initial_state(q_, F(), p_, case_.bubble(), put_refs(r), int(r.size()));
+        case_->initial_state(q_, F(), put_refs(r), int(r.size()));
     }
 
     void ghost_cells_C() {
@@ -839,13 +1070,14 @@ void Solver::run(int argc, char **argv) {
     const char *s = std::getenv("AMR_GPU_SYNC");
     const bool sync = s && *s && *s != '0';
     std::printf("\nGPU: %s\n", q_.get_device().get_info<sycl::info::device::name>().c_str());
-    std::printf("\nCase: rising bubble (Fakhari, Geier & Lee, JCP 2016, Sec. 5.1)\n");
-    p_ = case_.setup();
+    std::printf("\nCase: %s\n", case_->name().c_str());
+    p_ = case_->setup();
     const char *o = std::getenv("AMR_OUTPUT");
     const std::string writer = o && *o ? o : "vtk";
     if (writer == "vtk") vtk_.emplace();
     else if (writer != "none") throw std::runtime_error("AMR_OUTPUT: unknown writer " + writer + " (vtk, none)");
     std::printf("\nOutput writer: %s\n", writer.c_str());
+    if (const char *r = std::getenv("AMR_RENDER"); r && *r) render_ = std::make_unique<FrameStream>(r);
     std::printf("\nBlock pool: %d blocks (%.0f MiB on the device)\n", MaxBlks,
                 MaxBlks * DeviceFields::mib_per_block());
 
@@ -861,14 +1093,14 @@ void Solver::run(int argc, char **argv) {
     const auto t_init = clock::now();
 
     //== steps and intervals (Solver_Mod: Main_Loop)
-    const int Tf = argc >= 2 ? std::atoi(argv[1]) : int(std::lround(case_.t_end / case_.time_per_step / 20)) * 20;
+    const int Tf = argc >= 2 ? std::atoi(argv[1]) : int(std::lround(case_->t_end / case_->time_per_step / 20)) * 20;
     const int nOutStep = argc >= 3 ? std::atoi(argv[2]) : std::max(Tf / 20, 1);
     if (Tf < 1 || nOutStep < 1) throw std::runtime_error("usage: amr_lbm_sycl [steps [output_interval]]");
     const int nDiagStep = std::max(Tf / 120, 1), nProgStep = std::max(Tf / 20, 1);
 
     std::printf("\nModel: mass-conserving phase-field LBM (Fakhari, Geier & Lee, JCP 2016)\n");
     std::printf("\n    Tf     Sigma    W      M0    tauc   taul   tauh     Ref_Tols\n\n");
-    std::printf("%8d%8.4f%6.2f%7.3f%7.3f%7.3f%7.3f%8.4f%8.4f\n", Tf, case_.sigma(), p_.W, p_.M0, 1 / p_.wc,
+    std::printf("%8d%8.4f%6.2f%7.3f%7.3f%7.3f%7.3f%8.4f%8.4f\n", Tf, case_->sigma, p_.W, p_.M0, 1 / p_.wc,
                 p_.taul, p_.tauh, refine_tol, deref_tol);
     std::printf("\n     T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels\n\n");
 
@@ -883,7 +1115,7 @@ void Solver::run(int argc, char **argv) {
         const double el = std::chrono::duration<double>(now - t_init).count();
         const double mlups = cell_updates / std::max(std::chrono::duration<double>(now - tp_last).count(), 1e-9) / 1e6;
         std::printf(" step%9d /%9d (%5.1f%%)  t* =%8.3f  leaf cells%9d  MLUPS%8.2f  elapsed %7.1f s  left ~ %7.1f s\n",
-                    Tdone, Tf, 100.0 * Tdone / Tf, double(Tdone * case_.time_per_step), nLeaf() * NX * NY,
+                    Tdone, Tf, 100.0 * Tdone / Tf, double(Tdone * case_->time_per_step), nLeaf() * NX * NY,
                     mlups, el, el / Tdone * (Tf - Tdone));
         std::fflush(stdout);
         tp_last = now;
@@ -904,12 +1136,13 @@ void Solver::run(int argc, char **argv) {
                     moments_done = true;
                 }
                 host_.fetch(fields_, tree_.nblks(), is_output && vtk_);
-                const real time = real(Tn) * case_.time_per_step;
+                const real time = real(Tn) * case_->time_per_step;
                 if (is_output) {
                     if (vtk_) vtk_->step(time, tree_, host_);
-                    case_.print_line(time, tree_, host_.C, host_.Uy);
+                    if (render_) render_->push(time, tree_, host_);
+                    case_->print_line(time, tree_, host_);
                 }
-                case_.rise(time, tree_, host_.C, host_.Uy);
+                case_->diagnostics(time, tree_, host_);
             });
             if (Tn == Tf) break;
         }

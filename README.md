@@ -360,6 +360,22 @@ GPU several times per step; on a loaded machine pin it to an idle CPU.
 `AMR_GPU_SYNC=1` gives per-stage times. Field output (`AMR_OUTPUT=vtk`, the
 default, or `none`) writes the same VTK series as the Fortran VTK writer.
 
+The case follows the namelist group in the `AMR_CASE` file: `&rising_bubble`
+(also the default without a file) or `&rayleigh_taylor`, the Rayleigh–Taylor
+instability of Fakhari et al. (PRE 2017, Sec. IV B; bubble front and spike tip
+in `rt_fronts.dat`). `-DAMR_DOMAIN_HEIGHT` sets the domain height in units of
+L0 (default 3; 4 for the paper's Rayleigh–Taylor case, 8 for
+`cases/gpu_RT_At05_L1024.nml`, which runs to t* = 5 at four times the paper's
+resolution).
+
+In-situ rendering: with `AMR_RENDER` set to a command, every output step's
+phase field is copied to the host and streamed, from a background thread, to
+that command's standard input while the run goes on. `tools/render_stream.py`
+draws the frames into a movie as they arrive, without field files on disk:
+
+    AMR_OUTPUT=none AMR_RENDER="python3 tools/render_stream.py -o rt.mp4" \
+        ./build-gpu/amr_lbm_sycl 320000 1280
+
 ## GPU offload prototype
 
 `offload/` contains a stand-alone OpenMP target-offload version of the

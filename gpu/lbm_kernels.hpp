@@ -321,8 +321,33 @@ struct Fields { Pool h, g; real *C, *P, *Ux, *Uy; };
 // yet, in the uploaded leaf list)
 struct BlockRef { int n, L, I, J; };
 
-// physical parameters of the rising bubble (Rising_Bubble_Mod: Setup)
-struct Bubble { real R, X0, Y0, Sigma, W; int L0; };
+//== initial states of the cases at rest, for initial_state(): the phase
+//   field C(x, y) and the pressure P(x, y, C) at a point (finest-level
+//   lattice units)
+
+// a bubble of radius R at (X0, Y0) with the Laplace pressure jump
+// (Rising_Bubble_Mod: Initial_State)
+struct BubbleInit {
+    real R, X0, Y0, Sigma, W;
+    real C(real x, real y) const {
+        const real Ri = sycl::sqrt((x - X0) * (x - X0) + (y - Y0) * (y - Y0));
+        return real(0.5) + real(0.5) * sycl::tanh(real(2) * (Ri - R) / W);
+    }
+    real P(real, real, real c) const { return -Sigma / R * c; }
+};
+
+// heavy over light fluid, interface y = Y0 + A cos(2 pi x / L0), hydrostatic
+// pressure of the buoyancy (rho_h - rho) g, zero in the heavy fluid
+// (Rayleigh_Taylor_Mod: Initial_State; ln(1+exp(s)) without overflow)
+struct RTInit {
+    real Y0, A, L0, W, dRhoG;
+    real yi(real x) const { return Y0 + A * sycl::cos(real(2) * real(3.14159265358979) * x / L0); }
+    real C(real x, real y) const { return real(0.5) + real(0.5) * sycl::tanh(real(2) * (y - yi(x)) / W); }
+    real P(real x, real y, real) const {
+        const real s = real(-4) * (y - yi(x)) / W;
+        return -dRhoG * real(0.25) * W * (sycl::max(s, real(0)) + sycl::log(real(1) + sycl::exp(-sycl::fabs(s))));
+    }
+};
 
 constexpr real c13 = real(1) / 3, c112 = real(1) / 12, c23 = real(2) / 3, c16 = real(1) / 6;
 constexpr real w0 = real(4) / 9, ws = real(1) / 9, wd = real(1) / 36;
@@ -672,22 +697,23 @@ inline void moments(sycl::queue &q, Fields F, Params p, const BlockRef *list, in
 }
 
 //------------------------------------------------------------------------------
-//  initial state of the listed blocks: the bubble at rest
-//  (Rising_Bubble_Mod: Initial_State), then h and g at equilibrium
-//  (Model_JCP2016_Mod: Initialize_Block)
+//  initial state of the listed blocks: the case's fluids at rest (C with
+//  its ghost layers, P; Init: BubbleInit, RTInit), then h and g at
+//  equilibrium (Model_JCP2016_Mod: Initialize_Block). L0 / NX >> L: the cell
+//  size of level L
 //------------------------------------------------------------------------------
-inline void initial_state(sycl::queue &q, Fields F, Params p, Bubble bb, const BlockRef *list, int count) {
+template <class Init>
+void initial_state(sycl::queue &q, Fields F, Params p, Init init, int L0, const BlockRef *list, int count) {
     constexpr int WG = NX * NY;
     q.parallel_for(sycl::nd_range<1>(size_t(count) * WG, WG), [=](sycl::nd_item<1> it) {
         const BlockRef b = list[it.get_group(0)];
         const int t = int(it.get_local_id(0));
-        const int dx = (bb.L0 / NX) >> b.L;
+        const int dx = (L0 / NX) >> b.L;
+        auto xc = [&](int i) { return real(b.I * dx * NX) + real(dx) * (real(i) - real(0.5)); };
+        auto yc = [&](int j) { return real(b.J * dx * NY) + real(dx) * (real(j) - real(0.5)); };
         for (int c = t; c < CX * CY; c += WG) {             // C with its ghost layers
             const int i = c % CX - 1, j = c / CX - 1;
-            const real Xc = real(b.I * dx * NX) + real(dx) * (real(i) - real(0.5));
-            const real Yc = real(b.J * dx * NY) + real(dx) * (real(j) - real(0.5));
-            const real Ri = sycl::sqrt((Xc - bb.X0) * (Xc - bb.X0) + (Yc - bb.Y0) * (Yc - bb.Y0));
-            F.C[cix(i, j, b.n)] = real(0.5) + real(0.5) * sycl::tanh(real(2) * (Ri - bb.R) / bb.W);
+            F.C[cix(i, j, b.n)] = init.C(xc(i), yc(j));
         }
         sycl::group_barrier(it.get_group());
         const int i = t % NX + 1, j = t / NX + 1;
@@ -695,7 +721,7 @@ inline void initial_state(sycl::queue &q, Fields F, Params p, Bubble bb, const B
         const real C0 = F.C[cix(i, j, b.n)];
         F.Ux[pc] = 0;
         F.Uy[pc] = 0;
-        F.P[pc]  = -bb.Sigma / bb.R * C0;
+        F.P[pc]  = init.P(xc(i), yc(j), C0);
 
         const real inv_dx = p.inv_dx[b.L];
         const real mu = chem_pot(F.C, b.n, i, j, inv_dx, p);
