@@ -12,13 +12,15 @@ project(AMR_LBM_2D
 #   cmake -B build -DAMR_PRECISION=4                 # single precision
 #   cmake -B build -DAMR_L0=1024 -DAMR_MIN_LEVEL=5   # bigger case
 #   cmake -B build -DAMR_BLOCK_SIZE=16               # 16x16-cell blocks
+#   cmake -B build -DAMR_DOMAIN_HEIGHT=4             # L0 x 4*L0 domain (Rayleigh-Taylor)
 #   cmake -B build -DAMR_WITH_FVTKHDF=ON -DCMAKE_PREFIX_PATH=<fvtkhdf prefix>
 #   cmake -B build -DAMR_BUILD_OFFLOAD=ON            # GPU prototype (ifx only)
 #   cmake --build build -j
 
 set(AMR_PRECISION 8 CACHE STRING "Working precision wp in bytes: 8 (real64) or 4 (real32)")
 set_property(CACHE AMR_PRECISION PROPERTY STRINGS 8 4)
-set(AMR_L0 256 CACHE STRING "Domain width in finest-level lattice units (domain is L0 x 3*L0)")
+set(AMR_L0 256 CACHE STRING "Domain width in finest-level lattice units (domain is L0 x AMR_DOMAIN_HEIGHT*L0)")
+set(AMR_DOMAIN_HEIGHT 3 CACHE STRING "Domain height in base blocks of L0 x L0 (rising bubble: 3, Rayleigh-Taylor: 4)")
 set(AMR_MIN_LEVEL 1 CACHE STRING "Minimum refinement level (uniform background refinement)")
 set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of two dividing AMR_L0)")
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
@@ -42,6 +44,9 @@ foreach(_lv RANGE 30)
 endforeach()
 if(AMR_BLOCK_SIZE LESS 4 OR NOT DEFINED _amr_max_level)
   message(FATAL_ERROR "AMR_L0/AMR_BLOCK_SIZE must be a power of two (block size >= 4)")
+endif()
+if(NOT AMR_DOMAIN_HEIGHT MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "AMR_DOMAIN_HEIGHT must be a positive integer")
 endif()
 if(AMR_MIN_LEVEL LESS 1 OR AMR_MIN_LEVEL GREATER _amr_max_level)
   message(FATAL_ERROR "AMR_MIN_LEVEL must be between 1 and ${_amr_max_level} for this L0/AMR_BLOCK_SIZE")
@@ -106,8 +111,10 @@ add_library(amr_core OBJECT
   src/Output_Mod.f90
   src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
+  src/Rayleigh_Taylor_Mod.f90
 )
-target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL})
+target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
+                                            AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT})
 target_link_libraries(amr_core PUBLIC amr_options OpenMP::OpenMP_Fortran)
 set_target_properties(amr_core PROPERTIES
   Fortran_PREPROCESS ON
@@ -121,16 +128,22 @@ if(AMR_WITH_FVTKHDF)
   target_compile_definitions(amr_core PRIVATE USE_FVTKHDF)
 endif()
 
-# drivers: amr_lbm (Fakhari, Geier & Lee, JCP 2016) and
-#          amr_lbm_pre2017 (Fakhari et al., PRE 2017, improved locality)
-add_executable(amr_lbm         src/main_jcp2016.f90)
-add_executable(amr_lbm_pre2017 src/main_pre2017.f90)
-foreach(_exe amr_lbm amr_lbm_pre2017)
+# drivers, one per case and model:
+#   amr_lbm,    amr_lbm_pre2017     rising bubble
+#   amr_lbm_rt, amr_lbm_rt_pre2017  Rayleigh-Taylor instability
+# with the models of Fakhari, Geier & Lee (JCP 2016) and Fakhari et al.
+# (PRE 2017, improved locality)
+add_executable(amr_lbm            src/main_jcp2016.f90)
+add_executable(amr_lbm_pre2017    src/main_pre2017.f90)
+add_executable(amr_lbm_rt         src/main_rt_jcp2016.f90)
+add_executable(amr_lbm_rt_pre2017 src/main_rt_pre2017.f90)
+set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017)
+foreach(_exe ${_amr_drivers})
   target_link_libraries(${_exe} PRIVATE amr_core)
   set_target_properties(${_exe} PROPERTIES Fortran_PREPROCESS ON)
 endforeach()
 
-install(TARGETS amr_lbm amr_lbm_pre2017)
+install(TARGETS ${_amr_drivers})
 
 # ---------------------------------------------------------------------------
 # GPU offload prototype
@@ -142,6 +155,6 @@ if(AMR_BUILD_OFFLOAD)
   add_subdirectory(offload)
 endif()
 
-message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, "
+message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, "
                "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
                "offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")

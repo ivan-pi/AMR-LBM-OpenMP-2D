@@ -1,15 +1,15 @@
 !================================================
 !   Finite differences of the phase field C on one block (isotropic
-!   stencils, C with ghost layers): chemical potential, gradient, and the
-!   largest gradient used by the refinement criteria
+!   stencils, C with ghost layers): chemical potential, gradient, the
+!   largest gradient, and the interface refinement criterion built on it
 !================================================
 MODULE Phase_Field_Mod
     USE Kinds_Mod, ONLY: wp
     USE Physics_Mod, ONLY: Beta, kappa
-    USE Config_Mod, ONLY: nx, ny     ! the fixed block size
+    USE Config_Mod, ONLY: nx, ny, inv_dx_level     ! the fixed block size, 1/dx per level
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
+    PUBLIC :: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, Interface_Error, grad2_min
 
     !== |grad C|**2 at or below which a cell is treated as away from any interface:
     !   the interface normal is zero there (|grad C| <= 1e-16, i.e. round-off)
@@ -96,5 +96,18 @@ FUNCTION Max_Gradient( inv_dx, C ) RESULT( err )
     err = SQRT(err)*(0.5_wp*inv_dx)
 
 END FUNCTION Max_Gradient
+
+!**********************************************************************
+
+!== refinement criterion (Block_Error): the interface, i.e. the largest
+!   |grad C| of block b
+FUNCTION Interface_Error( b ) RESULT( err )
+    USE Blocks_Mod, ONLY: Blk, Blk_C
+    INTEGER, INTENT(IN) :: b
+    REAL(wp) :: err
+
+    err = Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) )
+
+END FUNCTION Interface_Error
 
 END MODULE Phase_Field_Mod

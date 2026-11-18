@@ -1,0 +1,23 @@
+! Rayleigh-Taylor instability of Fakhari, Mitchell, Leonardi & Bolster,
+! Phys. Rev. E 96, 053301 (2017), Sec. IV B, Figs. 5-6: At = 0.5 (rho_h/rho_l = 3),
+! Re = 3000, mu_h/mu_l = 1, Ca = 0.26, Pe = 1000, W = 5, L = 256, t0 = 16000 steps,
+! domain L x 4L, interface y = 0.1 L cos(2 pi x/L) at mid-height:
+!   cmake -B build-rt -DAMR_L0=256 -DAMR_DOMAIN_HEIGHT=4 && cmake --build build-rt -j
+!   AMR_CASE=cases/paper2017_RT_At05.nml ./build-rt/amr_lbm_rt_pre2017
+! Bubble front and spike tip (rt_fronts.dat) read off Fig. 6 of the paper
+! (its "current" curve, about +-0.01):
+!   t*        0     1      1.5    2      2.5    3
+!   bubble/L  0.10  0.29   0.425  0.555  0.685  0.835
+!   spike/L  -0.10 -0.36  -0.61  -0.86  -1.11  -1.43
+&rayleigh_taylor
+  At        = 0.5
+  Re        = 3000
+  mu_ratio  = 1
+  Ca        = 0.26
+  Gy_lu     = 2.e-6
+  Amplitude = 0.1
+  Pe        = 1000
+  Width     = 5
+  t_end     = 3.2
+  refine_light_phase = .false.   ! PRE 2017 model: interface-only refinement suffices at At = 0.5
+/

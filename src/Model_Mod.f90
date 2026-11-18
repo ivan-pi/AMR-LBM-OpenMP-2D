@@ -28,7 +28,7 @@ MODULE Model_Mod
     END INTERFACE
 
     TYPE :: LBM_Model
-        CHARACTER(len=80) :: name = ''
+        CHARACTER(len=120) :: name = ''
         !== ghost layers of C read by Collide (filled before the collision)
         INTEGER :: ghost_C = 1
         !== h and g from C (with ghost layers), P, Ux, Uy (initial state)
