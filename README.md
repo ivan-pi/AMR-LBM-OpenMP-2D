@@ -120,7 +120,7 @@ python3 tools/plot_rt.py rt_fronts.dat:JCP2016 --paper -o rt.png
 
 The namelist `&rayleigh_taylor` sets `At` (Atwood number), `Re` = ρh U0 L0/μh,
 `mu_ratio`, `Ca` = μh U0/σ, `Pe` = U0 L0/M (or `Mobility`), `Cn` / `Width`,
-`Gy_lu`, `Amplitude` (/L0) and `t_end`, with U0 = √(g L0) and the time
+`Gy_lu`, `Amplitude` (/L0), `t_end` and `refine_light_phase`, with U0 = √(g L0) and the time
 t* = t/t0, t0 = √(L0/(g At)). The defaults are the paper's At = 0.5 case
 (Re = 3000, μh/μl = 1, Ca = 0.26, Pe = 1000, W = 5, t0 = 16000 steps at
 L0 = 256) but end at t* = 2.5, when the spike nears the bottom wall of the
@@ -149,6 +149,15 @@ the references in Fig. 6. With the JCP 2016 model, a uniform finest-level run
 the AMR run trails the uniform one by up to 0.02 L0, and min level 3 is
 the same as min level 1 to 0.001 L0. The total mass changes by −0.015 % (AMR)
 and 0 (uniform) by t* = 3.2.
+
+`refine_light_phase` (default `.false.`) selects the refinement criterion of
+the PRE 2017 model in `amr_lbm_rt_pre2017`. The rising bubble needs the light
+phase on the finest level (see *Models*), but at At = 0.5 the interface alone
+suffices: the fronts agree with the light-phase criterion to within
+0.004 L0 (bubble) and 0.001 L0 (spike), at about half the run time (196 vs 413 s
+side by side, 3 threads each; 280 instead of 2188 leaf blocks at t* = 0). The
+PRE 2017 row of the table above is from the light-phase criterion. Set it to
+`.true.` for high density ratios (e.g. the paper's At = 0.998 case).
 
 ## Source layout
 
@@ -201,7 +210,7 @@ on the same AMR mesh, ghost-cell, streaming and output machinery.
 | g | physical pressure | normalised by the density (sum g = 3p/ρ) |
 | collision of g | reduced MRT: stress moments relax with 1/τ(C), all others with 1 | the same MRT as in the paper, Eqs. (27)–(29) (the reference code uses BGK); viscous force from the stress relaxed with the same rates, Eq. (31) |
 | relaxation time τ(C) | 1/τ interpolated linearly in C (harmonic) | dynamic viscosity interpolated linearly in C, τ = μ/(ρc²ₛ), Eqs. (24)–(25) |
-| refinement criterion (in the model module) | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block) |
+| refinement criterion (chosen by the model) | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block); `PRE2017_Model(refine_light_phase=.false.)` gives `Interface_Error` |
 
 The PRE 2017 model needs the bubble interior on the finest level: its g
 carries 3p/ρ, a thousand times the physical pressure in the light phase, and

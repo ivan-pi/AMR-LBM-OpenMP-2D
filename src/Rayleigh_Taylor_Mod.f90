@@ -14,7 +14,9 @@
 !   and the time is t* = t / t0. They are read from the namelist
 !   &rayleigh_taylor in the file named by the environment variable AMR_CASE
 !   (see cases/); without it the defaults below (the paper's At = 0.5 case
-!   at L0 = 256) are used.
+!   at L0 = 256) are used. The namelist also holds refine_light_phase, the
+!   refinement criterion option of the PRE 2017 model, which the drivers
+!   read with Light_Phase_Refinement() before they create the model.
 !
 !   The models apply gravity as the buoyancy (rho_h - rho) g relative to the
 !   heavy fluid, so the heavy fluid stays at rest under P = 0 and the light
@@ -29,7 +31,7 @@ MODULE Rayleigh_Taylor_Mod
     USE Case_Mod, ONLY: AMR_Case
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Rayleigh_Taylor_Case
+    PUBLIC :: Rayleigh_Taylor_Case, Light_Phase_Refinement
 
     !== case parameters (namelist &rayleigh_taylor), defaults: PRE 2017, Fig. 5-6
     REAL(wp) :: At        = 0.5_wp      ! Atwood number
@@ -43,6 +45,14 @@ MODULE Rayleigh_Taylor_Mod
     REAL(wp) :: Width     = 5           ! interface width W, used if Cn <= 0
     REAL(wp) :: Cn        = 0           ! Cahn number W / L0, if > 0
     REAL(wp) :: t_end     = 2.5_wp      ! end time t* = t / t0 (3.2 in the paper, needs height 4)
+    !== PRE 2017 model only: keep the light phase on the finest level as for the
+    !   rising bubble; not needed at At = 0.5 (same fronts at half the cost),
+    !   set it for high density ratios
+    LOGICAL  :: refine_light_phase = .FALSE.
+
+    NAMELIST /rayleigh_taylor/ At, Re, mu_ratio, Ca, Gy_lu, Amplitude, Mobility, Pe, Width, Cn, &
+                               t_end, refine_light_phase
+    LOGICAL :: namelist_read = .FALSE.
 
     REAL(wp) :: Y0                          ! unperturbed interface height (H/2)
 
@@ -70,18 +80,24 @@ END FUNCTION Rayleigh_Taylor_Case
 
 !******************************************************************************
 
-SUBROUTINE Setup( t_end_out, time_per_step )
-    USE Config_Mod, ONLY: L0, nBaseY
-    USE Physics_Mod, ONLY: W, Sigma, Beta, kappa, taul, tauh, Rhol, Rhoh, Gy, D, M0, wc
-    IMPLICIT NONE
-    REAL(wp), INTENT(OUT) :: t_end_out      ! end time t*
-    REAL(wp), INTENT(OUT) :: time_per_step  ! t* of one lattice time step: 1/t0 = sqrt(g At / L0)
+!== refine_light_phase from the case file, for the PRE 2017 model's criterion
+FUNCTION Light_Phase_Refinement() RESULT( light )
+    LOGICAL :: light
 
-    NAMELIST /rayleigh_taylor/ At, Re, mu_ratio, Ca, Gy_lu, Amplitude, Mobility, Pe, Width, Cn, t_end
+    CALL Read_Parameters
+    light = refine_light_phase
 
+END FUNCTION Light_Phase_Refinement
+
+!******************************************************************************
+
+!== the namelist &rayleigh_taylor from the file named by AMR_CASE (once)
+SUBROUTINE Read_Parameters
     CHARACTER(len=256) :: file
-    INTEGER  :: length, stat, unit
-    REAL(wp) :: U0, mu_h, mu_l
+    INTEGER :: length, stat, unit
+
+    IF( namelist_read ) RETURN
+    namelist_read = .TRUE.
 
     CALL GET_ENVIRONMENT_VARIABLE( 'AMR_CASE', file, length, stat )
     IF( stat == 0 .AND. length > 0 ) THEN
@@ -92,6 +108,21 @@ SUBROUTINE Setup( t_end_out, time_per_step )
         CLOSE( unit )
         PRINT '(/2A)', 'Case file: ', TRIM(file)
     END IF
+
+END SUBROUTINE Read_Parameters
+
+!******************************************************************************
+
+SUBROUTINE Setup( t_end_out, time_per_step )
+    USE Config_Mod, ONLY: L0, nBaseY
+    USE Physics_Mod, ONLY: W, Sigma, Beta, kappa, taul, tauh, Rhol, Rhoh, Gy, D, M0, wc
+    IMPLICIT NONE
+    REAL(wp), INTENT(OUT) :: t_end_out      ! end time t*
+    REAL(wp), INTENT(OUT) :: time_per_step  ! t* of one lattice time step: 1/t0 = sqrt(g At / L0)
+
+    REAL(wp) :: U0, mu_h, mu_l
+
+    CALL Read_Parameters
     IF( At <= 0 .OR. At >= 1 ) ERROR STOP 'Rayleigh-Taylor: At must lie in (0,1)'
 
     D  = L0                         ! reference length

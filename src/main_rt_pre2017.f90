@@ -6,7 +6,7 @@
 PROGRAM Rayleigh_Taylor_AMR_2D_PRE2017
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS, OMP_GET_NUM_PROCS
     USE Solver_Mod, ONLY: Run_AMR_LBM
-    USE Rayleigh_Taylor_Mod, ONLY: Rayleigh_Taylor_Case
+    USE Rayleigh_Taylor_Mod, ONLY: Rayleigh_Taylor_Case, Light_Phase_Refinement
     USE Model_PRE2017_Mod, ONLY: PRE2017_Model
     IMPLICIT NONE
 
@@ -19,7 +19,9 @@ PROGRAM Rayleigh_Taylor_AMR_2D_PRE2017
 
     CALL SYSTEM_CLOCK( t1, Rate )
 
-    CALL Run_AMR_LBM( PRE2017_Model(), Rayleigh_Taylor_Case() )
+    ! the refinement criterion (interface only, or also the light phase)
+    ! is chosen by refine_light_phase in the case file
+    CALL Run_AMR_LBM( PRE2017_Model( Light_Phase_Refinement() ), Rayleigh_Taylor_Case() )
 
     CALL SYSTEM_CLOCK( t2 )
     PRINT '(/A)',' *****************************************'

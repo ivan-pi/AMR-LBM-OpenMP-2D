@@ -30,7 +30,7 @@ MODULE Model_PRE2017_Mod
     USE D2Q9_Mod, ONLY: Wa, exr, eyr, w0, ws, wd
     USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, Interface_Error, grad2_min
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: PRE2017_Model
@@ -39,8 +39,19 @@ MODULE Model_PRE2017_Mod
 
 CONTAINS
 
-FUNCTION PRE2017_Model() RESULT( model )
+!== the model. refine_light_phase (default .TRUE.) selects the refinement
+!   criterion: the interface and the light phase (Interface_Light_Phase_Error),
+!   or the interface only (Interface_Error). The light phase is needed on the
+!   finest level at high density ratios (rising bubble, rho_h/rho_l = 1000),
+!   not at low ones (Rayleigh-Taylor at At = 0.5: same fronts, half the cost).
+FUNCTION PRE2017_Model( refine_light_phase ) RESULT( model )
+    LOGICAL, INTENT(IN), OPTIONAL :: refine_light_phase
     TYPE(LBM_Model) :: model
+
+    LOGICAL :: light
+
+    light = .TRUE.
+    IF( PRESENT(refine_light_phase) ) light = refine_light_phase
 
     model%name       =  'improved-locality phase-field LBM (Fakhari et al., PRE 2017)'
     model%ghost_C    =  1       ! isotropic differences only
@@ -48,7 +59,12 @@ FUNCTION PRE2017_Model() RESULT( model )
     model%Collide    => Collide_Block
     model%Moments_g  => Moments_g_Block
     model%Moments_and_Collide => Moments_and_Collide_Block
-    model%Refinement_Error    => Interface_Light_Phase_Error
+    IF( light ) THEN
+        model%Refinement_Error => Interface_Light_Phase_Error
+    ELSE
+        model%name             =  TRIM(model%name) // ', interface-only refinement'
+        model%Refinement_Error => Interface_Error
+    END IF
 
 END FUNCTION PRE2017_Model
 

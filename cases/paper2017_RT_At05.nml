@@ -19,4 +19,5 @@
   Pe        = 1000
   Width     = 5
   t_end     = 3.2
+  refine_light_phase = .false.   ! PRE 2017 model: interface-only refinement suffices at At = 0.5
 /

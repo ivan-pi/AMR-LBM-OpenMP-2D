@@ -16,7 +16,7 @@ MODULE Model_JCP2016_Mod
     USE D2Q9_Mod, ONLY: Wa, ex, ey, exr, eyr, w0, ws, wd
     USE Physics_Mod, ONLY: W, M0, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
-    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
+    USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Interface_Error, grad2_min
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: JCP2016_Model
@@ -37,18 +37,6 @@ FUNCTION JCP2016_Model() RESULT( model )
     model%Refinement_Error    => Interface_Error
 
 END FUNCTION JCP2016_Model
-
-!**********************************************************************
-
-!== refinement criterion: the interface, i.e. the largest |grad C| of block b
-FUNCTION Interface_Error( b ) RESULT( err )
-    USE Blocks_Mod, ONLY: Blk, Blk_C
-    INTEGER, INTENT(IN) :: b
-    REAL(wp) :: err
-
-    err = Max_Gradient( inv_dx_level(Blk(b)%Level), Blk_C(:,:,b) )
-
-END FUNCTION Interface_Error
 
 !**********************************************************************
 
