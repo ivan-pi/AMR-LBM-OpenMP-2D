@@ -27,7 +27,7 @@
 MODULE Model_PRE2017_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny, inv_dx_level     ! the fixed block size, 1/dx per level
-    USE D2Q9_Mod, ONLY: Wa, exr, eyr
+    USE D2Q9_Mod, ONLY: Wa, exr, eyr, w0, ws, wd
     USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh
     USE Model_Mod, ONLY: LBM_Model
     USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, grad2_min
@@ -165,93 +165,159 @@ END SUBROUTINE Initialize_Block
 
 !**********************************************************************
 
-!== collision of h and g for one block:
-!   1) block buffers: gradient, chemical potential, normal, rho, tau
-!   2) direction loop: h relaxation with the sharpening source, g equilibria,
-!      and the stress of the non-equilibrium part g - geq (viscous force)
-!   3) forces, then direction loops for the reduced-MRT relaxation of g
-!      with the forcing term
+!== collision of h and g for one block, cell by cell in a single pass. The
+!   directions come in opposite pairs (2,4), (3,5), (6,8), (7,9), e_k' = -e_k,
+!   sharing e.u, e.n and e.F (the odd parts change sign). Per cell:
+!   1) equilibria, h relaxation with the sharpening source, g - geq
+!   2) the stress of g - geq and the total force (as Total_Force)
+!   3) reduced MRT of g with the forcing term gS = 3 w e.F/rho: the stress
+!      moments m8 = Pxx-Pyy, m9 = Pxy relax with s = 1/tau, all others with 1.
+!      gS is odd within a pair and m8, m9 are even, so the shift of geq by
+!      -gS/2 cancels in m8, m9 and they come from g - geq directly.
 SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     REAL(wp), INTENT(IN)    :: C(-1:nx+2,-1:ny+2)
     REAL(wp), INTENT(IN), DIMENSION(nx,ny) :: mu, DcDx, DcDy    ! chemical potential, grad C
     REAL(wp), INTENT(IN)    :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
     REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
 
-    INTEGER :: i, j, k
-    REAL(wp) :: tmp, eU, eN, Gam, hS, dg, g2, c4W
-    !== signs of g_k - geq_k in the stress moments m8 = Pxx-Pyy and m9 = Pxy
-    REAL(wp), PARAMETER :: w8(9) = [0, 1,-1, 1,-1, 0, 0, 0, 0]
-    REAL(wp), PARAMETER :: w9(9) = [0, 0, 0, 0, 0, 1,-1, 1,-1]
-    REAL(wp), DIMENSION(nx,ny,9) :: geq, gS
-    REAL(wp), DIMENSION(nx,ny) :: ni, nj, Rho, r3Rho, Pn, tau, U2, aC, &
-                                  sxx, sxy, syy, Fx, Fy, m8, m9, sm
+    INTEGER :: i, j
+    !== per block
+    REAL(wp) :: c4W, dRho, dRho3, RT0, dRT, omwc, cHs
+    !== per cell
+    REAL(wp) :: C0, mu0, dcx, dcy, g2, rn, ni, nj, vx, vy, base0, Rho, r3, pw, wcC, aCc
+    REAL(wp) :: Cc, tau, s, sm, sxx, syy, sxy, txx, tyy, txy, vis, prs, Fx, Fy, m8, m9
+    REAL(wp) :: v, q, base, Gp, Gm, hS, gS2, gS3, gS6, gS7
+    REAL(wp) :: ge2, ge3, ge4, ge5, ge6, ge7, ge8, ge9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9
 
-    c4W = 4._wp/W
+    c4W   = 4._wp/W                     ! sharpening: 4 C (1-C)/W
+    dRho  = Rhoh - Rhol
+    dRho3 = dRho*c13
+    RT0   = Rhol*taul                   ! tau: mu = rho tau/3 linear in C
+    dRT   = Rhoh*tauh - Rhol*taul
+    omwc  = 1._wp - wc
+    cHs   = 1._wp - 0.5_wp*wc           ! the source enters h with (1 - wc/2)
 
     DO j = 1, ny
+!$OMP SIMD PRIVATE( C0, mu0, dcx, dcy, g2, rn, ni, nj, vx, vy, base0, Rho, r3, pw, wcC, aCc, &
+!$OMP   Cc, tau, s, sm, sxx, syy, sxy, txx, tyy, txy, vis, prs, Fx, Fy, m8, m9, &
+!$OMP   v, q, base, Gp, Gm, hS, gS2, gS3, gS6, gS7, &
+!$OMP   ge2, ge3, ge4, ge5, ge6, ge7, ge8, ge9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9 )
     DO i = 1, nx
+        C0  = C(i,j)
+        mu0 = mu(i,j)
+        dcx = DcDx(i,j)
+        dcy = DcDy(i,j)
+
         !== unit normal; zero away from the interface (|grad C|**2 <= grad2_min),
         !   branch-free (a mask over a clamped root) so that the loop vectorizes
-        g2 = DcDx(i,j)**2 + DcDy(i,j)**2
-        tmp = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
-        ni (i,j) = DcDx(i,j) * tmp
-        nj (i,j) = DcDy(i,j) * tmp
-        Rho(i,j) = Rhol + C(i,j) * (Rhoh - Rhol)
-        r3Rho(i,j) = 3._wp/Rho(i,j)
-        Pn (i,j) = P(i,j) * r3Rho(i,j)
-        tau(i,j) = Relaxation_Time( C(i,j) )
-        U2 (i,j) = Ux(i,j)*Ux(i,j) + Uy(i,j)*Uy(i,j)
-        aC (i,j) = c4W*C(i,j)*(1._wp - C(i,j))
+        g2 = dcx*dcx + dcy*dcy
+        rn = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
+        ni = dcx*rn
+        nj = dcy*rn
+
+        !== per-cell quantities; relaxation time (with the 1/2) from the dynamic
+        !   viscosity interpolated linearly in C (as Relaxation_Time)
+        vx    = Ux(i,j)
+        vy    = Uy(i,j)
+        base0 = 1._wp - 1.5_wp*( vx*vx + vy*vy )
+        Rho   = Rhol + C0*dRho
+        r3    = 3._wp/Rho
+        pw    = P(i,j)*r3 - 1._wp           ! geq_k = w_k (Pn - 1) + Gamma_k
+        wcC   = wc*C0
+        aCc   = c4W*C0*(1._wp - C0)
+        Cc    = MIN( MAX( C0, 0._wp ), 1._wp )
+        tau   = ( RT0 + Cc*dRT ) / ( Rhol + Cc*dRho ) + 0.5_wp
+        s     = 1._wp/tau
+
+        !== rest direction: no source, no stress, no forcing
+        Gp = w0*base0
+        h(i,j,1) = omwc*h(i,j,1) + wcC*Gp
+        g(i,j,1) = w0*pw + Gp
+
+        !== pair (2,4): e = (+-1, 0)
+        v = vx;  q = ni
+        base = base0 + 4.5_wp*v*v
+        Gp = ws*( base + 3._wp*v )
+        Gm = ws*( base - 3._wp*v )
+        hS = ws*aCc*q*cHs
+        h(i,j,2) = omwc*h(i,j,2) + wcC*Gp + hS
+        h(i,j,4) = omwc*h(i,j,4) + wcC*Gm - hS
+        ge2 = ws*pw + Gp
+        ge4 = ws*pw + Gm
+        dg2 = g(i,j,2) - ge2
+        dg4 = g(i,j,4) - ge4
+
+        !== pair (3,5): e = (0, +-1)
+        v = vy;  q = nj
+        base = base0 + 4.5_wp*v*v
+        Gp = ws*( base + 3._wp*v )
+        Gm = ws*( base - 3._wp*v )
+        hS = ws*aCc*q*cHs
+        h(i,j,3) = omwc*h(i,j,3) + wcC*Gp + hS
+        h(i,j,5) = omwc*h(i,j,5) + wcC*Gm - hS
+        ge3 = ws*pw + Gp
+        ge5 = ws*pw + Gm
+        dg3 = g(i,j,3) - ge3
+        dg5 = g(i,j,5) - ge5
+
+        !== pair (6,8): e = +-(1, 1)
+        v = vx + vy;  q = ni + nj
+        base = base0 + 4.5_wp*v*v
+        Gp = wd*( base + 3._wp*v )
+        Gm = wd*( base - 3._wp*v )
+        hS = wd*aCc*q*cHs
+        h(i,j,6) = omwc*h(i,j,6) + wcC*Gp + hS
+        h(i,j,8) = omwc*h(i,j,8) + wcC*Gm - hS
+        ge6 = wd*pw + Gp
+        ge8 = wd*pw + Gm
+        dg6 = g(i,j,6) - ge6
+        dg8 = g(i,j,8) - ge8
+
+        !== pair (7,9): e = +-(-1, 1)
+        v = vy - vx;  q = nj - ni
+        base = base0 + 4.5_wp*v*v
+        Gp = wd*( base + 3._wp*v )
+        Gm = wd*( base - 3._wp*v )
+        hS = wd*aCc*q*cHs
+        h(i,j,7) = omwc*h(i,j,7) + wcC*Gp + hS
+        h(i,j,9) = omwc*h(i,j,9) + wcC*Gm - hS
+        ge7 = wd*pw + Gp
+        ge9 = wd*pw + Gm
+        dg7 = g(i,j,7) - ge7
+        dg9 = g(i,j,9) - ge9
+
+        !== stress of g - geq; viscous force with the MRT-relaxed stress
+        !   (deviatoric part with s, trace with 1), pressure, surface tension, buoyancy
+        sxx = ( dg2 + dg4 ) + ( (dg6 + dg8) + (dg7 + dg9) )
+        syy = ( dg3 + dg5 ) + ( (dg6 + dg8) + (dg7 + dg9) )
+        sxy = ( dg6 + dg8 ) - ( dg7 + dg9 )
+        txx = 0.5_wp*( sxx + syy + s*(sxx - syy) )
+        tyy = 0.5_wp*( sxx + syy - s*(sxx - syy) )
+        txy = s*sxy
+        vis = (tau - 0.5_wp)*dRho
+        prs = mu0 - (pw + 1._wp)*dRho3
+        Fx  = prs*dcx - vis*( txx*dcx + txy*dcy )
+        Fy  = prs*dcy - vis*( txy*dcx + tyy*dcy ) + (Rhoh - Rho)*Gy
+
+        !== forcing term gS = 3 w (e.F)/rho, entering as geq - gS/2 + gS
+        gS2 = 0.5_wp*ws*r3*Fx
+        gS3 = 0.5_wp*ws*r3*Fy
+        gS6 = 0.5_wp*wd*r3*( Fx + Fy )
+        gS7 = 0.5_wp*wd*r3*( Fy - Fx )
+
+        !== reduced MRT: the stress moments relax with s, all others with 1
+        sm = 0.25_wp*( 1._wp - s )
+        m8 = ( (dg2 + dg4) - (dg3 + dg5) )*sm
+        m9 = ( (dg6 + dg8) - (dg7 + dg9) )*sm
+        g(i,j,2) = ge2 + gS2 + m8
+        g(i,j,4) = ge4 - gS2 + m8
+        g(i,j,3) = ge3 + gS3 - m8
+        g(i,j,5) = ge5 - gS3 - m8
+        g(i,j,6) = ge6 + gS6 + m9
+        g(i,j,8) = ge8 - gS6 + m9
+        g(i,j,7) = ge7 + gS7 - m9
+        g(i,j,9) = ge9 - gS7 - m9
     END DO
-    END DO
-
-    sxx = 0._wp
-    sxy = 0._wp
-    syy = 0._wp
-    DO k = 1, 9
-        DO j = 1, ny
-        DO i = 1, nx
-            eU  = exr(k) * Ux(i,j) + eyr(k) * Uy(i,j)
-            eN  = exr(k) * ni(i,j) + eyr(k) * nj(i,j)
-            Gam = Wa(k) * ( 1._wp + eU*(3._wp + 4.5_wp*eU) - 1.5_wp*U2(i,j) )
-
-            !== h: equilibrium C*Gamma, sharpening source hS (half in the equilibrium)
-            hS = Wa(k) * aC(i,j) * eN
-            h(i,j,k) = h(i,j,k)*(1._wp-wc) + ( C(i,j)*Gam - 0.5_wp*hS )*wc + hS
-
-            !== g: equilibrium and the stress of the non-equilibrium part
-            geq(i,j,k) = Pn(i,j)*Wa(k) + (Gam - Wa(k))
-            dg = g(i,j,k) - geq(i,j,k)
-            sxx(i,j) = sxx(i,j) + dg*exr(k)*exr(k)
-            sxy(i,j) = sxy(i,j) + dg*exr(k)*eyr(k)
-            syy(i,j) = syy(i,j) + dg*eyr(k)*eyr(k)
-        END DO
-        END DO
-    END DO
-
-    CALL Total_Force( DcDx, DcDy, mu, Rho, Pn, tau, sxx, sxy, syy, Fx, Fy )
-
-    !== forcing term gS, the equilibrium shifted by -gS/2, and the stress
-    !   moments of g - geq (g holds the shifted equilibrium afterwards)
-    m8 = 0._wp
-    m9 = 0._wp
-    DO k = 1, 9
-        DO j = 1, ny
-        DO i = 1, nx
-            gS (i,j,k) = Wa(k) * ( exr(k)*Fx(i,j) + eyr(k)*Fy(i,j) ) * r3Rho(i,j)
-            geq(i,j,k) = geq(i,j,k) - 0.5_wp*gS(i,j,k)
-            m8(i,j) = m8(i,j) + w8(k)*( g(i,j,k) - geq(i,j,k) )
-            m9(i,j) = m9(i,j) + w9(k)*( g(i,j,k) - geq(i,j,k) )
-        END DO
-        END DO
-    END DO
-
-    !== reduced MRT: the stress moments relax with s = 1/tau, all others with 1
-    sm = 0.25_wp*( 1._wp - 1._wp/tau )        ! one division per cell for both moments
-    m8 = m8 * sm
-    m9 = m9 * sm
-    DO k = 1, 9
-        g(1:nx,1:ny,k) = geq(:,:,k) + w8(k)*m8 + w9(k)*m9 + gS(:,:,k)
     END DO
 
 END SUBROUTINE Collision_h_g
