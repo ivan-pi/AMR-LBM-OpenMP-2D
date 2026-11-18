@@ -62,8 +62,11 @@ struct Params {
 
 // block metadata (index n-1 for block n)
 struct Mesh {
-    int *level, *bI, *bJ, *child, *nbr, *leaf, *coarser;   // nbr: 8 per block
-    int *leaves;                                            // leaf blocks, nLeaf
+    int *level, *bI, *bJ, *child, *nbr, *leaf;             // nbr: 8 per block
+    int *coarser;       // a neighbour is coarser: ghost cells interpolated from it
+    int *finer;         // a same-level neighbour is refined: its children read our ghost cells
+    int *pullnb;        // 8 per block: the same-level leaf neighbour in direction k, else 0
+    int *leaves;        // leaf blocks, nLeaf
 };
 
 inline int nbr_of(const Mesh &m, int n, int k) { return m.nbr[8 * (n - 1) + (k - 1)]; }
@@ -347,11 +350,11 @@ inline void moments_cell(const real *C, const real *g, int n, int i, int j, real
 //  then the wall rows (BC_Mod: Symmetric_C_3/4) after a group barrier
 //------------------------------------------------------------------------------
 template <int NG>
-void ghost_C_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool second) {
+void ghost_C_pass(sycl::queue &q, Fields F, Mesh M, const int *list, int count, bool second) {
     constexpr int WG = 16;
     real *C = F.C;
-    q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
-        const int n = M.leaves[it.get_group(0)];
+    q.parallel_for(sycl::nd_range<1>(size_t(count) * WG, WG), [=](sycl::nd_item<1> it) {
+        const int n = list[it.get_group(0)];
         const int t = int(it.get_local_id(0));
         if (second && !M.coarser[n - 1]) return;            // uniform over the group
         if (t < 8) fill_C<NG>(C, M, n, t + 1, second);
@@ -376,26 +379,29 @@ void ghost_C_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool second) {
 }
 
 //------------------------------------------------------------------------------
-//  Ghost cells of h and g (Ghost_hg_Mod: Fill_Ghost_Cells_hg), one pass:
-//  work-group of 4*8*NX per leaf, one item per side cell and direction
-//  (position fastest: contiguous along the bottom and top sides), the
-//  first 32 also one corner and direction each; then the bounce-back rows
-//  (BC_Mod: Bounce_Back_3/4, first pass only) after a group barrier
+//  Ghost cells of h and g (Ghost_hg_Mod: Fill_Ghost_Cells_hg), one pass over
+//  the listed leaves: work-group of 4*8*NX per leaf, one item per side cell
+//  and direction (position fastest: contiguous along the bottom and top
+//  sides), the first 32 also one corner and direction each; then the
+//  bounce-back rows (BC_Mod: Bounce_Back_3/4, first pass) after a group
+//  barrier. The streaming reads same-level leaf neighbours directly
+//  (pull()), so the first pass copies only for blocks whose ghost cells
+//  finer blocks interpolate from (Mesh::finer); the list holds those and
+//  the wall blocks. The second pass lists the blocks with a coarser neighbour.
 //------------------------------------------------------------------------------
-inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, int nLeaf, bool second) {
+inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, const int *list, int count, bool second) {
     constexpr int WG = 4 * 8 * NX;
     static_assert(NX == NY && WG >= 32);
     real *h = F.h, *g = F.g;
-    q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
-        const int n = M.leaves[it.get_group(0)];
+    q.parallel_for(sycl::nd_range<1>(size_t(count) * WG, WG), [=](sycl::nd_item<1> it) {
+        const int n = list[it.get_group(0)];
         const int t = int(it.get_local_id(0));
-        if (second && !M.coarser[n - 1]) return;          // uniform over the group
-        {
+        if (second || M.finer[n - 1]) {                   // uniform over the group
             const int pos = t % NX + 1, qd = (t / NX) % 8 + 2, k = t / (8 * NX) + 1;
             fill_f_cell(h, M, n, k, pos, qd, second);
             fill_f_cell(g, M, n, k, pos, qd, second);
         }
-        if (t < 32) {
+        if (t < 32 && (second || M.finer[n - 1])) {
             const int qd = t % 8 + 2, k = t / 8 + 5;
             fill_f_cell(h, M, n, k, 0, qd, second);
             fill_f_cell(g, M, n, k, 0, qd, second);
@@ -556,38 +562,54 @@ inline void collide(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, bool 
 //------------------------------------------------------------------------------
 //  streaming of h and g, then C = sum(h) (LBM_Common_Mod): exact shift on
 //  the finest level, Lax-Wendroff with CFL number 1/dx on the coarser ones.
-//  In place: each work-item reads its upwind values, then a group barrier
+//  From F (h, g) into Out (h, g, rest direction copied); the values beyond
+//  the block come from same-level leaf neighbours directly (pull), else
+//  from the ghost layer
 //------------------------------------------------------------------------------
-inline void stream(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf) {
+//== f at (x,y), a cell of block n or of its ghost layer: a ghost cell towards a
+//   same-level leaf is read from that leaf (Ghost_hg_Mod's copy), any other
+//   from the ghost layer (interpolated, restricted or a wall value)
+inline real pull(const real *f, const Mesh &M, int n, int x, int y, int q) {
+    const int sx = x < 1 ? -1 : (x > NX ? 1 : 0), sy = y < 1 ? -1 : (y > NY ? 1 : 0);
+    if (sx != 0 || sy != 0) {
+        constexpr int k_of[3][3] = {{5, 1, 6}, {3, 0, 4}, {7, 2, 8}};
+        const int nb = M.pullnb[8 * (n - 1) + k_of[sx + 1][sy + 1] - 1];
+        if (nb > 0) return f[hix(x - sx * NX, y - sy * NY, q, nb)];
+    }
+    return f[hix(x, y, q, n)];
+}
+
+inline void stream(sycl::queue &q, Fields F, Fields Out, Mesh M, Params p, int nLeaf) {
     constexpr int WG = NX * NY;
     q.parallel_for(sycl::nd_range<1>(size_t(nLeaf) * WG, WG), [=](sycl::nd_item<1> it) {
         const int n = M.leaves[it.get_group(0)];
         const int t = int(it.get_local_id(0)), X = t % NX + 1, Y = t / NX + 1;
         const int L = M.level[n - 1];
-        real *h = F.h, *g = F.g;
-        real hn[10], gn[10];
+        const real *h = F.h, *g = F.g;
+        real *ho = Out.h, *go = Out.g;
+        const real h1 = h[hix(X, Y, 1, n)];
+        ho[hix(X, Y, 1, n)] = h1;
+        go[hix(X, Y, 1, n)] = g[hix(X, Y, 1, n)];
+        real Cs = h1;
         if (L == p.maxLevels) {
             for (int qd = 2; qd <= 9; ++qd) {
-                hn[qd] = h[hix(X - ex[qd], Y - ey[qd], qd, n)];
-                gn[qd] = g[hix(X - ex[qd], Y - ey[qd], qd, n)];
+                const real hn = pull(h, M, n, X - ex[qd], Y - ey[qd], qd);
+                ho[hix(X, Y, qd, n)] = hn;
+                go[hix(X, Y, qd, n)] = pull(g, M, n, X - ex[qd], Y - ey[qd], qd);
+                Cs += hn;
             }
         } else {
             const real cfl = p.inv_dx[L];
             const real cU = real(0.5) * cfl * (real(1) + cfl), c0 = real(1) - cfl * cfl;
             const real cD = real(0.5) * cfl * (real(1) - cfl);
             for (int qd = 2; qd <= 9; ++qd) {
-                hn[qd] = cU * h[hix(X - ex[qd], Y - ey[qd], qd, n)] + c0 * h[hix(X, Y, qd, n)]
-                       - cD * h[hix(X + ex[qd], Y + ey[qd], qd, n)];
-                gn[qd] = cU * g[hix(X - ex[qd], Y - ey[qd], qd, n)] + c0 * g[hix(X, Y, qd, n)]
-                       - cD * g[hix(X + ex[qd], Y + ey[qd], qd, n)];
+                const real hn = cU * pull(h, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * h[hix(X, Y, qd, n)]
+                              - cD * pull(h, M, n, X + ex[qd], Y + ey[qd], qd);
+                ho[hix(X, Y, qd, n)] = hn;
+                go[hix(X, Y, qd, n)] = cU * pull(g, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * g[hix(X, Y, qd, n)]
+                                     - cD * pull(g, M, n, X + ex[qd], Y + ey[qd], qd);
+                Cs += hn;
             }
-        }
-        sycl::group_barrier(it.get_group());
-        real Cs = h[hix(X, Y, 1, n)];
-        for (int qd = 2; qd <= 9; ++qd) {
-            h[hix(X, Y, qd, n)] = hn[qd];
-            g[hix(X, Y, qd, n)] = gn[qd];
-            Cs += hn[qd];
         }
         F.C[cix(X, Y, n)] = Cs;
     });

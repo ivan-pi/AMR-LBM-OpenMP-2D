@@ -109,15 +109,25 @@ private:
     T *p_;
 };
 
-//== the field pool, slots 1..cap
+//== the field pool, slots 1..cap. h and g are double-buffered: the
+//   streaming reads neighbouring blocks directly, so it writes the other
+//   buffer (next()) and the two are swapped afterwards
 struct DeviceFields {
-    DeviceArray<real> h, g, C, P, Ux, Uy;
+    DeviceArray<real> h0, g0, h1, g1, C, P, Ux, Uy;
+    int cur = 0;
 
     DeviceFields(sycl::queue &q, size_t cap)
-        : h(q, HB * cap), g(q, HB * cap), C(q, CB * cap), P(q, PB * cap), Ux(q, PB * cap), Uy(q, PB * cap) {}
+        : h0(q, HB * cap), g0(q, HB * cap), h1(q, HB * cap), g1(q, HB * cap),
+          C(q, CB * cap), P(q, PB * cap), Ux(q, PB * cap), Uy(q, PB * cap) {}
 
-    Fields view() const { return {h.get(), g.get(), C.get(), P.get(), Ux.get(), Uy.get()}; }
-    static double mib_per_block() { return double(2 * HB + CB + 3 * PB) * sizeof(real) / (1 << 20); }
+    Fields view() const {
+        return {cur ? h1.get() : h0.get(), cur ? g1.get() : g0.get(), C.get(), P.get(), Ux.get(), Uy.get()};
+    }
+    Fields next() const {
+        return {cur ? h0.get() : h1.get(), cur ? g0.get() : g1.get(), C.get(), P.get(), Ux.get(), Uy.get()};
+    }
+    void swap() { cur = 1 - cur; }
+    static double mib_per_block() { return double(4 * HB + CB + 3 * PB) * sizeof(real) / (1 << 20); }
 };
 
 //==============================================================================
@@ -126,7 +136,7 @@ struct DeviceFields {
 struct Block {
     int level = -1, I = 0, J = 0, parent = -1, child = -1;
     int nbr[9] = {};                // nbr[k], k = 1..8
-    bool leaf = false, coarser = false, refin = false, deref = false;
+    bool leaf = false, coarser = false, finer = false, refin = false, deref = false;
 };
 
 // facing(1:2,k): children of a refined neighbour in direction k touching the block
@@ -272,6 +282,7 @@ private:
         live([&](int, Block &b) {
             const int L = b.level, w = nBaseX * (1 << L);
             b.coarser = false;
+            b.finer = false;
             for (int k = 1; k <= 8; ++k) {
                 const int J = b.J + dj[k];
                 if (J < 0 || J >= nBaseY * (1 << L)) { b.nbr[k] = -k; continue; }
@@ -283,8 +294,12 @@ private:
             }
         });
         live([&](int, Block &b) {
-            for (int k = 1; k <= 8; ++k)
-                if (b.nbr[k] > 0 && B_[b.nbr[k]].level < b.level) b.coarser = true;
+            for (int k = 1; k <= 8; ++k) {
+                if (b.nbr[k] <= 0) continue;
+                const Block &nb = B_[b.nbr[k]];
+                if (nb.level < b.level) b.coarser = true;
+                if (nb.level == b.level && !nb.leaf) b.finer = true;
+            }
         });
         live([&](int, Block &b) { at_[slot(b.level, b.I, b.J)] = 0; });
     }
@@ -336,32 +351,56 @@ private:
     }
 };
 
-//== the block metadata on the device, uploaded after every mesh change
+//== the block metadata on the device, uploaded after every mesh change, and
+//   the leaf lists of the ghost passes: hg1 the leaves whose h, g ghost cells
+//   are copied (finer neighbour) or set by the walls, coarse those with a
+//   coarser neighbour (the interpolating second passes)
 class DeviceMesh {
 public:
     DeviceMesh(sycl::queue &q, size_t cap)
-        : level_(q, cap), I_(q, cap), J_(q, cap), child_(q, cap), nbr_(q, 8 * cap),
-          leaf_(q, cap), coarser_(q, cap), leaves_(q, cap) {}
+        : level_(q, cap), I_(q, cap), J_(q, cap), child_(q, cap), nbr_(q, 8 * cap), leaf_(q, cap),
+          coarser_(q, cap), finer_(q, cap), pullnb_(q, 8 * cap), leaves_(q, cap), hg1_(q, cap), coarse_(q, cap) {}
 
     void upload(const Quadtree &T) {
         const int nb = T.nblks();
-        std::vector<int> lev(nb), I(nb), J(nb), ch(nb), nbr(8 * size_t(nb)), lf(nb), co(nb);
+        std::vector<int> lev(nb), I(nb), J(nb), ch(nb), nbr(8 * size_t(nb)), lf(nb), co(nb), fi(nb);
+        std::vector<int> pull(8 * size_t(nb), 0);
         for (int n = 1; n <= nb; ++n) {
             const Block &b = T[n];
             lev[n - 1] = b.level; I[n - 1] = b.I; J[n - 1] = b.J; ch[n - 1] = b.child;
-            lf[n - 1] = b.leaf; co[n - 1] = b.coarser;
+            lf[n - 1] = b.leaf; co[n - 1] = b.coarser; fi[n - 1] = b.finer;
             std::copy(b.nbr + 1, b.nbr + 9, &nbr[8 * size_t(n - 1)]);
+            for (int k = 1; k <= 8; ++k) {
+                const int x = b.nbr[k];
+                if (x > 0 && T[x].leaf && T[x].level == b.level) pull[8 * size_t(n - 1) + k - 1] = x;
+            }
+        }
+        std::vector<int> hg1, coarse;
+        for (int n : T.leaves()) {
+            const Block &b = T[n];
+            if (b.finer || b.nbr[3] < 0 || b.nbr[4] < 0) hg1.push_back(n);
+            if (b.coarser) coarse.push_back(n);
         }
         level_.put(lev); I_.put(I); J_.put(J); child_.put(ch); nbr_.put(nbr);
-        leaf_.put(lf); coarser_.put(co); leaves_.put(T.leaves());
+        leaf_.put(lf); coarser_.put(co); finer_.put(fi); pullnb_.put(pull); leaves_.put(T.leaves());
+        hg1_.put(hg1); coarse_.put(coarse);
+        n_hg1_ = int(hg1.size());
+        n_coarse_ = int(coarse.size());
     }
 
     Mesh view() const {
-        return {level_.get(), I_.get(), J_.get(), child_.get(), nbr_.get(), leaf_.get(), coarser_.get(), leaves_.get()};
+        return {level_.get(), I_.get(), J_.get(), child_.get(), nbr_.get(), leaf_.get(),
+                coarser_.get(), finer_.get(), pullnb_.get(), leaves_.get()};
     }
+    const int *leaves() const { return leaves_.get(); }
+    const int *hg1() const { return hg1_.get(); }
+    const int *coarse() const { return coarse_.get(); }
+    int n_hg1() const { return n_hg1_; }
+    int n_coarse() const { return n_coarse_; }
 
 private:
-    DeviceArray<int> level_, I_, J_, child_, nbr_, leaf_, coarser_, leaves_;
+    DeviceArray<int> level_, I_, J_, child_, nbr_, leaf_, coarser_, finer_, pullnb_, leaves_, hg1_, coarse_;
+    int n_hg1_ = 0, n_coarse_ = 0;
 };
 
 //==============================================================================
@@ -752,11 +791,13 @@ private:
     }
 
     void ghost_cells_C() {
-        for (bool second : {false, true}) ghost_C_pass<ghost_C>(q_, F(), M(), nLeaf(), second);
+        ghost_C_pass<ghost_C>(q_, F(), M(), mesh_.leaves(), nLeaf(), false);
+        if (mesh_.n_coarse() > 0) ghost_C_pass<ghost_C>(q_, F(), M(), mesh_.coarse(), mesh_.n_coarse(), true);
     }
 
     void ghost_cells_hg() {
-        for (bool second : {false, true}) ghost_hg_pass(q_, F(), M(), nLeaf(), second);
+        if (mesh_.n_hg1() > 0) ghost_hg_pass(q_, F(), M(), mesh_.hg1(), mesh_.n_hg1(), false);
+        if (mesh_.n_coarse() > 0) ghost_hg_pass(q_, F(), M(), mesh_.coarse(), mesh_.n_coarse(), true);
     }
 
     //== criterion on the device, flagging on the host, field work on the device.
@@ -872,7 +913,10 @@ void Solver::run(int argc, char **argv) {
 
         timed("collision", [&] { collide(q_, F(), M(), p_, nLeaf(), !moments_done); });
         timed("Ghost_hg", [&] { ghost_cells_hg(); });
-        timed("advection", [&] { stream(q_, F(), M(), p_, nLeaf()); });
+        timed("advection", [&] {
+            stream(q_, F(), fields_.next(), M(), p_, nLeaf());
+            fields_.swap();
+        });
 
         cell_updates += (long long)nLeaf() * NX * NY;
         if ((Tn + 1) % nProgStep == 0 && Tn + 1 < Tf) progress(Tn + 1);
