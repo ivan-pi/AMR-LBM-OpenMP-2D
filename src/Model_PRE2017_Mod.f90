@@ -20,7 +20,7 @@
 !       force uses the stress relaxed with the same rates (Eq. 31)
 !     - relaxation time from the linearly interpolated dynamic viscosity,
 !       tau = mu/(rho cs^2) (Eqs. 24-25)
-!   Blk(n)%P holds the physical pressure p, as in the other model.
+!   Blk_P(:,:,n) holds the physical pressure p, as in the other model.
 !   In the AMR setting derivatives are scaled with the block spacing dx
 !   (finest-level lattice units).
 !================================================

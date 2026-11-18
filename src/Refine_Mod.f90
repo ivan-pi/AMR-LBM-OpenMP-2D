@@ -3,9 +3,10 @@
 !================================================
 MODULE Refine_Mod
     USE Kinds_Mod, ONLY: wp
+    USE Blocks_Mod, ONLY: Block_t, Blk, Nblks, LevelMin, LevelMax, facing
     USE Mesh_Mod, ONLY: Add_Child_Blocks, Array_of_Leaf_Blocks
     USE Prolong_Restrict_Mod, ONLY: Prolong_Bilinear, Restrict_Bilinear
-    USE Model_Mod, ONLY: Block_Kernel, Block_Error
+    USE Model_Mod, ONLY: LBM_Model, Block_Error
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Refine_Derefine_Mesh
@@ -13,28 +14,25 @@ MODULE Refine_Mod
 CONTAINS
 
 
-!== adapt the mesh: criterion decides where to refine / derefine; Moments_g
-!   (the model's kernel) completes the pressure and velocity of new blocks;
-!   changed tells whether any block was refined or derefined
-SUBROUTINE Refine_Derefine_Mesh( criterion, Moments_g, refinTol, derefTol, changed )
-    USE Blocks_Mod, ONLY: Blk, Nblks
+!== adapt the mesh with the model's refinement criterion and tolerances; its
+!   Moments_g completes the pressure and velocity of new blocks. changed
+!   tells whether any block was refined or derefined.
+SUBROUTINE Refine_Derefine_Mesh( model, changed )
     IMPLICIT NONE
-    PROCEDURE(Block_Error)  :: criterion
-    PROCEDURE(Block_Kernel) :: Moments_g
-    REAL(wp), INTENT(IN) :: refinTol, derefTol
+    TYPE(LBM_Model), INTENT(IN) :: model
     LOGICAL, INTENT(OUT), OPTIONAL :: changed
 
     LOGICAL :: mesh_changed
 
-    CALL Flag_for_refinement  ( criterion, refinTol )
-    CALL Flag_for_derefinement( criterion, derefTol )
+    CALL Flag_for_refinement  ( model%Refinement_Error, model%refine_tol )
+    CALL Flag_for_derefinement( model%Refinement_Error, model%deref_tol )
 
     mesh_changed = ANY( Blk(1:Nblks)%Refin ) .OR. ANY( Blk(1:Nblks)%Deref )
     IF( PRESENT(changed) ) changed = mesh_changed
     IF( .NOT. mesh_changed ) RETURN
 
     CALL Derefine
-    CALL Refine( Moments_g )
+    CALL Refine( model )
 
     !== leaf lists and neighbour table of the new mesh
     CALL Array_of_Leaf_Blocks
@@ -43,9 +41,10 @@ END SUBROUTINE Refine_Derefine_Mesh
 
 !******************************************************************************
 
+!== leaves below the finest level whose error exceeds refinTol, plus the
+!   coarser neighbours needed to keep the 2:1 balance
 SUBROUTINE Flag_for_refinement( criterion, refinTol )
-    USE Config_Mod, ONLY: minLevels, maxLevels
-    USE Blocks_Mod, ONLY: Blk, Nblks
+    USE Config_Mod, ONLY: maxLevels
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: refinTol
@@ -54,242 +53,143 @@ SUBROUTINE Flag_for_refinement( criterion, refinTol )
 
 !$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Nblks, refinTol )
     DO n = 1, Nblks
-        Blk(n)%Refin = .False.
-
-        IF( Blk(n)%IsLeaf ) THEN
-            IF( Blk(n)%Level < minLevels ) THEN
-                Blk(n)%Refin = .True.
-                CYCLE
-            ELSEIF( Blk(n)%Level < maxLevels ) THEN
-
-                IF( criterion(n) > refinTol ) THEN
-                    Blk(n)%Refin = .True.
-                    CYCLE
-                END IF
-
-            END IF
-        END IF
-
+        Blk(n)%Refin = Blk(n)%IsLeaf .AND. Blk(n)%Level < maxLevels
+        IF( Blk(n)%Refin ) Blk(n)%Refin = criterion(n) > refinTol
     END DO
 !$OMP END PARALLEL DO
 
     DO n = 1, Nblks
-        IF( Blk(n)%Refin ) THEN
-            CALL Enforce_1_Level_Jump( n )
-        END IF
+        IF( Blk(n)%Refin ) CALL Enforce_1_Level_Jump( n )
     END DO
 
 END SUBROUTINE Flag_for_refinement
 
 !******************************************************************************
 
+!== block n will be refined: so must every coarser neighbour (a coarser
+!   neighbour is a leaf, else its child at n's level would be the neighbour)
 RECURSIVE SUBROUTINE Enforce_1_Level_Jump( n )
-
     IMPLICIT NONE
-
     INTEGER, INTENT(IN) :: n
 
-    INTEGER :: I
+    INTEGER :: k, b
 
-    DO I = 1, 8
-        CALL Check_Level_Jump( n, I )
+    DO k = 1, 8
+        b = Blk(n)%nbr(k)
+        IF( b <= 0 ) CYCLE
+        IF( .NOT. Blk(b)%Refin .AND. Blk(b)%Level == Blk(n)%Level-1 ) THEN
+            Blk(b)%Refin = .TRUE.
+            CALL Enforce_1_Level_Jump( b )
+        END IF
     END DO
 
-END
+END SUBROUTINE Enforce_1_Level_Jump
 
 !******************************************************************************
 
-RECURSIVE SUBROUTINE Check_Level_Jump( n, I )
-    USE Blocks_Mod, ONLY: Blk
-    IMPLICIT NONE
-
-    INTEGER, INTENT(IN) :: n, I
-
-    INTEGER :: b
-
-    b = Blk(n)%nbr(I)
-
-    IF( b > 0 ) THEN
-        IF( .NOT. Blk(b)%Refin .AND. Blk(b)%Level == Blk(n)%Level-1 ) THEN
-            IF( Blk(b)%IsLeaf ) THEN
-                Blk(b)%Refin = .True.
-                CALL Enforce_1_Level_Jump( b )
-            END IF
-        END IF
-    END IF
-
-END SUBROUTINE Check_Level_Jump
-
-!******************************************************************************
-
+!== parents of four leaves, none flagged for refinement, all below derefTol;
+!   kept where removing the children would break the 2:1 balance
 SUBROUTINE Flag_for_derefinement( criterion, derefTol )
     USE Config_Mod, ONLY: minLevels
-    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: derefTol
 
-    INTEGER :: n, L, c1, c4, c
+    INTEGER :: n, L, c, q
 
 !$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Nblks, derefTol )
     DO n = 1, Nblks
-        Blk(n)%Deref = .False.
+        Blk(n)%Deref = .FALSE.
+        c = Blk(n)%child
+        IF( c < 0 .OR. Blk(n)%Level < minLevels ) CYCLE      ! a leaf, or an unused slot
+        IF( .NOT. ALL(Blk(c:c+3)%IsLeaf) .OR. ANY(Blk(c:c+3)%Refin) ) CYCLE
 
-        IF( Blk(n)%hasLeaf ) THEN
-
-            IF( Blk(n)%Level < minLevels ) CYCLE
-
-            c1 = Blk(n)%child(1)
-            c4 = c1 + 3
-
-            IF( ANY(Blk(c1:c4)%Refin) ) CYCLE
-
-        !== derefinement based on the children
-            Blk(n)%Deref = .True.
-
-            DO c = c1, c4
-                IF( criterion(c) > derefTol ) THEN
-                    Blk(n)%Deref = .False.
-                    EXIT
-                END IF
-            END DO
-        !== derefinement based on the children
-
-        END IF
-
-    END DO
-!$OMP END PARALLEL DO
-
-    DO L = LevelMax-1, LevelMin-1, -1
-        DO n = 1, Nblks
-            IF( Blk(n)%Level == L ) THEN
-                IF( Blk(n)%Deref ) THEN
-                    CALL enforce_1_Level_jump_deref_2D( n )
-                END IF
+        Blk(n)%Deref = .TRUE.
+        DO q = c, c+3
+            IF( criterion(q) > derefTol ) THEN
+                Blk(n)%Deref = .FALSE.
+                EXIT
             END IF
         END DO
     END DO
+!$OMP END PARALLEL DO
+
+    !== finest first: a block kept refined may keep its coarser neighbours refined
+    DO L = LevelMax-1, LevelMin-1, -1
+        DO n = 1, Nblks
+            IF( Blk(n)%Level == L .AND. Blk(n)%Deref ) CALL Keep_Level_Jump( n )
+        END DO
+    END DO
+
+CONTAINS
+
+    !== n stays refined if a neighbour's child touching it will be refined
+    !   or stays refined
+    SUBROUTINE Keep_Level_Jump( n )
+        INTEGER, INTENT(IN) :: n
+
+        INTEGER :: k, b, i, c
+
+        DO k = 1, 8
+            b = Blk(n)%nbr(k)
+            IF( b <= 0 ) CYCLE
+            IF( Blk(b)%IsLeaf ) CYCLE
+            DO i = 1, 2
+                c = Blk(b)%child + facing(i,k)
+                IF( Blk(c)%Refin .OR. (.NOT.Blk(c)%IsLeaf .AND. .NOT.Blk(c)%Deref) ) THEN
+                    Blk(n)%Deref = .FALSE.
+                    RETURN
+                END IF
+            END DO
+        END DO
+
+    END SUBROUTINE Keep_Level_Jump
 
 END SUBROUTINE Flag_for_derefinement
 
 !******************************************************************************
 
-SUBROUTINE enforce_1_Level_jump_deref_2D( n )
-
-    IMPLICIT NONE
-
-    INTEGER, INTENT(IN) :: n
-
-    CALL Check_Level_Jump_Deref_2D( n,1, 2, 4 ) ! Left
-    CALL Check_Level_Jump_Deref_2D( n,2, 1, 3 ) ! Right
-    CALL Check_Level_Jump_Deref_2D( n,3, 3, 4 ) ! Bottom
-    CALL Check_Level_Jump_Deref_2D( n,4, 1, 2 ) ! Top
-
-    CALL Check_Level_Jump_Deref_2D( n,5, 4, 4 ) ! SW (Left -Bottom)
-    CALL Check_Level_Jump_Deref_2D( n,6, 2, 2 ) ! NW (Left -Top)
-    CALL Check_Level_Jump_Deref_2D( n,7, 3, 3 ) ! SE (Right-Bottom)
-    CALL Check_Level_Jump_Deref_2D( n,8, 1, 1 ) ! NE (Right-Top)
-
-CONTAINS
-
-    SUBROUTINE Check_Level_Jump_Deref_2D( n, Neighbor, c1, c2 )
-        USE Blocks_Mod, ONLY: Blk
-        INTEGER, INTENT(IN) :: n, Neighbor, c1, c2
-
-        INTEGER :: b, c, I
-
-        IF( .NOT. Blk(n)%Deref ) RETURN
-
-        b = Blk(n)%nbr(Neighbor)
-
-        IF( b > 0 ) THEN
-            IF( .NOT. Blk(b)%IsLeaf ) THEN
-                c = Blk(b)%child(c1)
-                DO I = 1, 2
-                    IF( Blk(c)%Refin .OR. (.Not.Blk(c)%IsLeaf .AND. .Not.Blk(c)%Deref) ) THEN
-                        Blk(n)%Deref = .False.
-                        RETURN
-                    END IF
-                    c = Blk(b)%child(c2)
-                END DO
-            END IF
-        END IF
-
-    END SUBROUTINE Check_Level_Jump_Deref_2D
-
-END SUBROUTINE enforce_1_Level_jump_deref_2D
-
-
-!******************************************************************************
-
+!== restrict the flagged groups of siblings to their parent and queue their slots
 SUBROUTINE Derefine
-    USE Blocks_Mod, ONLY: Blk, Nblks
+    USE Blocks_Mod, ONLY: Release_Siblings
     IMPLICIT NONE
 
-    INTEGER :: n
+    INTEGER :: n, c
 
     DO n = 1, Nblks
-        IF( Blk(n)%Deref ) THEN
-            CALL Restrict_Bilinear( n )
-            CALL Remove_Children( n )
-        END IF
+        IF( .NOT. Blk(n)%Deref ) CYCLE
+        CALL Restrict_Bilinear( n )
+        c = Blk(n)%child
+        Blk(c:c+3)    = Block_t()       ! unused slots
+        Blk(n)%child  = -1
+        Blk(n)%IsLeaf = .TRUE.
+        CALL Release_Siblings( c )
     END DO
-
-CONTAINS
-
-    SUBROUTINE Remove_Children( par )
-        USE Blocks_Mod, ONLY: Blk, Release_Siblings
-        INTEGER, INTENT(IN) :: par
-
-        INTEGER :: c1, c4, grandpa, s1, s4
-
-        c1 = Blk(par)%child(1)
-        c4 = c1 + 3
-        Blk(c1:c4)%Level  = -1
-        Blk(c1:c4)%IsLeaf = .False.
-
-        Blk(par)%child(:)= -1
-        Blk(par)%IsLeaf  = .True.
-        Blk(par)%hasLeaf = .False.
-
-        grandpa = Blk(par)%Parent
-        IF( grandpa > 0 ) THEN
-            s1 = Blk(grandpa)%child(1)  ! first sibling
-            s4 = Blk(grandpa)%child(4)  ! last  sibling
-            IF( ALL(Blk(s1:s4)%IsLeaf) ) THEN
-                Blk(grandpa)%hasLeaf = .True.
-            END IF
-        END IF
-
-        CALL Release_Siblings( c1 )
-
-    END SUBROUTINE Remove_Children
 
 END SUBROUTINE Derefine
 
-
 !******************************************************************************
 
-SUBROUTINE Refine( Moments_g )
-    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, Take_Free_Siblings
+!== children of the flagged leaves, coarse levels first, in free slots
+SUBROUTINE Refine( model )
+    USE Blocks_Mod, ONLY: Take_Free_Siblings
     IMPLICIT NONE
-    PROCEDURE(Block_Kernel) :: Moments_g
+    TYPE(LBM_Model), INTENT(IN) :: model
 
-    INTEGER :: n, L, c1
+    INTEGER :: n, L, c1, c
 
     DO L = LevelMin, LevelMax
         DO n = 1, Nblks
-            IF( Blk(n)%Level == L )THEN
-                IF( Blk(n)%Refin ) THEN
+            IF( Blk(n)%Level /= L .OR. .NOT. Blk(n)%Refin ) CYCLE
 
-                    CALL Take_Free_Siblings( c1 )
-                    IF( c1 < 0 ) c1 = Nblks+1
-                    CALL Add_Child_Blocks( n, c1 )
+            CALL Take_Free_Siblings( c1 )
+            IF( c1 < 0 ) c1 = Nblks+1
+            CALL Add_Child_Blocks( n, c1 )
 
-                    CALL Prolong_Bilinear( n, c1, Moments_g )
-
-                END IF
-            END IF
+            CALL Prolong_Bilinear( n, c1 )
+            DO c = c1, c1+3
+                CALL model%Moments_g( c )
+            END DO
         END DO
     END DO
 

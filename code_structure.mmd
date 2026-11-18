@@ -9,7 +9,7 @@ flowchart TD
     end
 
     subgraph CASE["Test cases"]
-        CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics)"]
+        CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics, Finish)"]
         RB["Rising_Bubble_Mod<br/>parameters (namelist), bubble,<br/>bubble_rise.dat"]
     end
 
@@ -75,7 +75,6 @@ flowchart TD
     REF --> MESH
     REF --> PR
     REF --> MM
-    PR --> MM
     PR --> INT
 
     GC --> INT

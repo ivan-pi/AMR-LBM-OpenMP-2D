@@ -1,7 +1,7 @@
 !================================================
 !   Biquadratic/bilinear interpolation between coarse and fine levels:
 !   strips for the ghost cells (Biquadratic_*), whole blocks for the
-!   refinement and derefinement (Bilinear_*)
+!   refinement (Bilinear_from_Coarse*)
 !================================================
 MODULE Interpolations_Mod
     USE Kinds_Mod, ONLY: wp
@@ -9,7 +9,7 @@ MODULE Interpolations_Mod
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Biquadratic_from_Fine, Biquadratic_from_Coarse, &
-              Bilinear_from_Fine, Bilinear_from_Fine_f, Bilinear_from_Coarse, Bilinear_from_Coarse_f
+              Bilinear_from_Coarse, Bilinear_from_Coarse_f
 
 CONTAINS
 
@@ -34,11 +34,6 @@ END
 #define FINE_SIZES   INTEGER, INTENT(IN) :: i2, j2, x2, y2, nk
 #define COARSE_SIZES INTEGER, INTENT(IN) :: i2, j2, x2, y2, nk
 #include "Biquadratic.inc"
-#undef FINE_NAME
-#undef COARSE_NAME
-#undef SIZE_ARGS
-#undef FINE_SIZES
-#undef COARSE_SIZES
 
 !******************************************************************************
 
@@ -50,50 +45,6 @@ SUBROUTINE Biquadratic_from_Coarse( I2, J2, x2, y2, Cin_C, Cout_F )
     REAL(wp), INTENT(OUT) :: Cout_F(x2,y2)
 
     CALL Biquadratic_from_Coarse_f( I2, J2, x2, y2, 1, Cin_C, Cout_F )
-
-END
-
-!******************************************************************************
-
-!******************************************************************************
-
-SUBROUTINE Bilinear_from_Fine( i2, j2, X2, Y2, Cin_F, Cout_C )
-    !== single field: the multi-component version with one component
-    IMPLICIT NONE
-    INTEGER, INTENT(IN)  :: i2, j2, X2, Y2
-    REAL(wp), INTENT(IN ) :: Cin_F(i2,j2)
-    REAL(wp), INTENT(OUT) :: Cout_C(X2,Y2)
-
-    CALL Bilinear_from_Fine_f( i2, j2, X2, Y2, Cin_F, Cout_C, 1 )
-
-END
-
-!******************************************************************************
-
-SUBROUTINE Bilinear_from_Fine_f( i2, j2, X2, Y2, hin_F, hout_C, nk )
-    !== nk components (directions) stored last
-
-    IMPLICIT NONE
-
-    INTEGER, INTENT(IN)  :: i2, j2, X2, Y2, nk
-    REAL(wp), INTENT(IN ) :: hin_F (i2,j2,nk)
-    REAL(wp), INTENT(OUT) :: hout_C(X2,Y2,nk)
-
-    INTEGER :: X, i
-    REAL(wp) :: tmp(i2,Y2,nk)
-
-    DO X = 1, Y2
-        i = 2*X-1
-
-        tmp(:,X,:) = 0.5_wp * ( hin_F(:,i,:) + hin_F(:,i+1,:) )
-
-    END DO
-    DO X = 1, X2
-        i = 2*X-1
-
-        hout_C(X,:,:) = 0.5_wp * ( tmp(i,:,:) + tmp(i+1,:,:) )
-
-    END DO
 
 END
 

@@ -49,6 +49,10 @@ MODULE Rising_Bubble_Mod
     REAL(wp) :: R                           ! bubble radius
     INTEGER  :: X0, Y0                      ! bubble centre
 
+    !== bubble_rise.dat
+    INTEGER :: u
+    LOGICAL :: IsOpen = .FALSE.
+
 CONTAINS
 
 FUNCTION Rising_Bubble_Case() RESULT( problem )
@@ -58,16 +62,18 @@ FUNCTION Rising_Bubble_Case() RESULT( problem )
     problem%Setup         => Setup
     problem%Initial_State => Initial_State
     problem%Diagnostics   => Bubble_Diagnostics
+    problem%Finish        => Close_Diagnostics
 
 END FUNCTION Rising_Bubble_Case
 
 !******************************************************************************
 
-SUBROUTINE Setup( t_end_out )
+SUBROUTINE Setup( t_end_out, time_per_step )
     USE Config_Mod, ONLY: L0
-    USE Physics_Mod, ONLY: W, Sigma, Beta, kappa, taul, tauh, Rhol, Rhoh, Gy, Bo, Ar, D, M0, wc
+    USE Physics_Mod, ONLY: W, Sigma, Beta, kappa, taul, tauh, Rhol, Rhoh, Gy, D, M0, wc
     IMPLICIT NONE
     REAL(wp), INTENT(OUT) :: t_end_out      ! end time t*
+    REAL(wp), INTENT(OUT) :: time_per_step  ! t* of one lattice time step: sqrt(Gy/D)
 
     NAMELIST /rising_bubble/ Eo, Re, rho_ratio, mu_ratio, Gy_lu, Mobility, Pe, Width, Cn, t_end
 
@@ -94,9 +100,6 @@ SUBROUTINE Setup( t_end_out )
     Rhoh = 1
     Rhol = Rhoh / rho_ratio
 
-    Bo = Eo
-    Ar = Re
-
     Gy = Gy_lu
 
     IF( Cn > 0 ) THEN
@@ -111,8 +114,8 @@ SUBROUTINE Setup( t_end_out )
     END IF
     wc = 1._wp/(0.5_wp + M0*3._wp)
 
-    Sigma = Gy * (Rhoh-Rhol) * D**2 / Bo
-    mu_h  = SQRT(Gy*Rhoh*(Rhoh-Rhol)*D**3) / Ar
+    Sigma = Gy * (Rhoh-Rhol) * D**2 / Eo
+    mu_h  = SQRT(Gy*Rhoh*(Rhoh-Rhol)*D**3) / Re
 
     mul   = mu_h/mu_ratio
 
@@ -122,9 +125,10 @@ SUBROUTINE Setup( t_end_out )
     Beta  = 12.0_wp * Sigma/W
     kappa =  1.5_wp * Sigma*W
 
-    PRINT '(/A,4F12.3)', 'muh, mul, Re_h, Pe =', mu_h, mul, Ar, SQRT(Gy*D)*W/M0
+    PRINT '(/A,5F12.3)', 'Eo, Re_h, muh, mul, Pe =', Eo, Re, mu_h, mul, SQRT(Gy*D)*W/M0
 
-    t_end_out = t_end
+    t_end_out     = t_end
+    time_per_step = SQRT(Gy/D)
 
 END SUBROUTINE Setup
 
@@ -132,7 +136,7 @@ END SUBROUTINE Setup
 
 !== bubble at rest in leaf block n: C (with ghost layers), P, Ux, Uy
 SUBROUTINE Initial_State( n )
-    USE Config_Mod, ONLY: nx, ny
+    USE Config_Mod, ONLY: nx, ny, dx_level
     USE Blocks_Mod, ONLY: Blk, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Physics_Mod, ONLY: W, Sigma
     IMPLICIT NONE
@@ -141,9 +145,9 @@ SUBROUTINE Initial_State( n )
     INTEGER  :: dx, i, j
     REAL(wp) :: Ri, Xc, Yc
 
-    dx = Blk(n)%dx
+    dx = dx_level( Blk(n)%Level )
 
-        !== phase field, including the ghost layers
+    !== phase field, including the ghost layers
     DO j = -1, ny+2
     DO i = -1, nx+2
 
@@ -174,28 +178,21 @@ END SUBROUTINE Initial_State
 
 !== rise of the bubble: centroid y_c and rise velocity u_r of the light phase
 !   (weight 1-C), and the rise Reynolds number Re_r = rho_h u_r D / mu_h,
-!   appended to bubble_rise.dat; Time < 0 closes the file.
+!   appended to bubble_rise.dat.
 !   Cells with C >= 0.9 are left out: faint tails of C slightly below 1 in
 !   coarse cells far from the bubble (wake, coarse-fine edges) carry a large
 !   area and change whenever blocks are refined or derefined, which makes
 !   y_c jump.
 SUBROUTINE Bubble_Diagnostics( Time )
-    USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_Uy
+    USE Config_Mod, ONLY: nx, ny, dx_level
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafByLevel, Blk_C, Blk_Uy
     USE Physics_Mod, ONLY: Rhoh, D
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time
 
-    INTEGER, SAVE :: u
-    LOGICAL, SAVE :: IsOpen = .False.
     INTEGER  :: m, n, i, j, dx
     REAL(dp) :: A, Ay, Av, wgt
 
-    IF( Time < 0 ) THEN
-        IF( IsOpen ) CLOSE( u )
-        IsOpen = .False.
-        RETURN
-    END IF
     IF( .NOT. IsOpen ) THEN
         OPEN( NEWUNIT=u, FILE='bubble_rise.dat', STATUS='REPLACE', ACTION='WRITE' )
         IsOpen = .True.
@@ -205,10 +202,10 @@ SUBROUTINE Bubble_Diagnostics( Time )
     A  = 0
     Ay = 0
     Av = 0
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafBlks, nLeaf ) REDUCTION(+:A,Ay,Av)
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafByLevel, nLeaf ) REDUCTION(+:A,Ay,Av)
     DO m = 1, nLeaf
-        n  = LeafBlks(m)
-        dx = Blk(n)%dx
+        n  = LeafByLevel(m)
+        dx = dx_level( Blk(n)%Level )
         DO j = 1, ny
         DO i = 1, nx
             IF( Blk_C(i,j, n) >= 0.9_wp ) CYCLE
@@ -225,5 +222,12 @@ SUBROUTINE Bubble_Diagnostics( Time )
     FLUSH( u )
 
 END SUBROUTINE Bubble_Diagnostics
+
+!******************************************************************************
+
+SUBROUTINE Close_Diagnostics
+    IF( IsOpen ) CLOSE( u )
+    IsOpen = .False.
+END SUBROUTINE Close_Diagnostics
 
 END MODULE Rising_Bubble_Mod

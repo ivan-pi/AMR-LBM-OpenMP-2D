@@ -11,8 +11,8 @@ CONTAINS
 
 
 SUBROUTINE TecPlot_CellCenter( Time )
-    USE Config_Mod, ONLY: nx, ny, L0
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_P, Blk_Ux, Blk_Uy
+    USE Config_Mod, ONLY: nx, ny, L0, dx_level
+    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafByLevel, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Physics_Mod, ONLY: Sigma, D
     IMPLICIT NONE
     REAL(wp), INTENT(IN) :: Time    ! physical time written into the zone header
@@ -54,9 +54,9 @@ SUBROUTINE TecPlot_CellCenter( Time )
     N = 1
     E = 1
     DO m = 1, nLeaf
-        b = LeafBlks(m)
+        b = LeafByLevel(m)
 
-        dx = Blk(b)%dx
+        dx = dx_level( Blk(b)%Level )
 
         DO J = 1, ny+1
         DO I = 1, nx+1

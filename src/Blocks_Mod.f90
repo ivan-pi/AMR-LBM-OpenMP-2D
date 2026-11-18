@@ -18,8 +18,16 @@
 !
 !   Slots of derefined blocks are kept in a FIFO queue of sibling groups
 !   (four consecutive slots, nUnused slots in total) and reused by the
-!   next refinement. The leaves are listed in LeafBlks and, sorted by
-!   level, in LeafByLevel.
+!   next refinement. The leaves are listed in LeafByLevel, sorted by level
+!   and in Z-order within a level.
+!
+!   The 8 neighbour directions k are numbered as below. di(k), dj(k) are
+!   the offsets of the neighbouring block position; facing(:,k) are the
+!   children (offsets 0..3 from the first child) of a refined neighbour in
+!   direction k that touch the block: two along a side, one at a corner.
+!       6   4   8
+!       1       2
+!       5   3   7
 !================================================
 MODULE Blocks_Mod
     USE Kinds_Mod, ONLY: wp
@@ -27,30 +35,31 @@ MODULE Blocks_Mod
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Block_t, Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, &
-              Nblks, nLeaf, LeafBlks, LeafByLevel, LevelStart, LevelMin, LevelMax, &
-              nUnused, &
-              Init_Block_Pool, Reserve_Blocks, Release_Siblings, Take_Free_Siblings
+              Nblks, nLeaf, LeafByLevel, LevelStart, LevelMin, LevelMax, &
+              di, dj, facing, &
+              Init_Block_Pool, Reserve_Blocks, Clear_Slot, Release_Siblings, Take_Free_Siblings, &
+              nUnused
 
-    !== metadata of a block
-    !   nbr(k) is the neighbour in direction k (numbering below): the block
-    !   at the neighbouring position on the same level, else the coarser
-    !   block covering it, or the boundary code -k beyond the bottom and top
-    !   walls. It is rebuilt from the block positions (Level, I, J) after
-    !   every mesh change (Rebuild_Neighbor_Table in Mesh_Mod).
-    !       6   4   8
-    !       1       2
-    !       5   3   7
+    !== the neighbour directions (numbering in the header)
+    INTEGER, PARAMETER :: di(8) = [ -1, 1,  0, 0, -1, -1,  1, 1 ]
+    INTEGER, PARAMETER :: dj(8) = [  0, 0, -1, 1, -1,  1, -1, 1 ]
+    INTEGER, PARAMETER :: facing(2,8) = RESHAPE( [ 1,3, 0,2, 2,3, 0,1, 3,3, 1,1, 2,2, 0,0 ], [2,8] )
+
+    !== metadata of a block (the defaults describe an unused slot)
+    !   nbr(k) is the neighbour in direction k: the block at the neighbouring
+    !   position on the same level, else the coarser block covering it, or
+    !   the boundary code -k beyond the bottom and top walls. It is rebuilt
+    !   from the block positions (Level, I, J) after every mesh change
+    !   (Rebuild_Neighbor_Table in Mesh_Mod).
     TYPE :: Block_t
-        INTEGER :: Level  = -1
-        INTEGER :: dx     =  0      ! cell size in finest-level lattice units
-        INTEGER :: I = 0, J = 0     ! block position on its level
+        INTEGER :: Level  = -1          ! -1: unused slot
+        INTEGER :: I = 0, J = 0         ! block position on its level
         INTEGER :: Parent = -1
-        INTEGER :: child(4)     = -1    ! first child: child(1), siblings follow; -1 for a leaf
-        INTEGER :: nbr(8)       =  0
-        LOGICAL :: IsLeaf  = .FALSE.
-        LOGICAL :: hasLeaf = .FALSE.
-        LOGICAL :: Refin   = .FALSE.
-        LOGICAL :: Deref   = .FALSE.
+        INTEGER :: child  = -1          ! first of the four children child:child+3; -1 for a leaf
+        INTEGER :: nbr(8) =  0
+        LOGICAL :: IsLeaf = .FALSE.
+        LOGICAL :: Refin  = .FALSE.
+        LOGICAL :: Deref  = .FALSE.
     END TYPE Block_t
 
     TYPE(Block_t), ALLOCATABLE :: Blk(:)
@@ -65,8 +74,6 @@ MODULE Blocks_Mod
     !== coarsest and finest level that currently has leaves
     INTEGER :: LevelMin, LevelMax
 
-    INTEGER, ALLOCATABLE :: LeafBlks(:)
-
     !== leaf blocks sorted by refinement level, in Z-order within a level
     !   (rebuilt in Array_of_Leaf_Blocks): the leaves on level L are
     !   LeafByLevel( LevelStart(L) : LevelStart(L+1)-1 )
@@ -76,7 +83,6 @@ MODULE Blocks_Mod
     !== FIFO ring of the first slots of free sibling groups
     INTEGER :: free_first((MaxBlks+1)/4)
     INTEGER :: free_head = 1, free_len = 0
-    INTEGER :: nUnused = 0
 
 CONTAINS
 
@@ -101,7 +107,6 @@ SUBROUTINE Init_Block_Pool
     Nblks     = 0
     free_head = 1
     free_len  = 0
-    nUnused   = 0
 
     PRINT '(/A,I0,A,I0,A,I0,A)', 'Block pool: ', capacity, ' of at most ', MaxBlks, &
         ' blocks (', CEILING( capacity * Slot_Bytes() / 2._wp**20 ), ' MiB reserved)'
@@ -184,6 +189,29 @@ END FUNCTION Slot_Bytes
 
 !******************************************************************************
 
+!== zero the fields of slot n (a new block must not inherit a removed one's data)
+SUBROUTINE Clear_Slot( n )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n
+
+    Blk_h(:,:,:,n) = 0
+    Blk_g(:,:,:,n) = 0
+    Blk_C(:,:,n)   = 0
+    Blk_P(:,:,n)   = 0
+    Blk_Ux(:,:,n)  = 0
+    Blk_Uy(:,:,n)  = 0
+
+END SUBROUTINE Clear_Slot
+
+!******************************************************************************
+
+!== number of unused slots below Nblks, waiting in the free queue
+PURE INTEGER FUNCTION nUnused()
+    nUnused = 4*free_len
+END FUNCTION nUnused
+
+!******************************************************************************
+
 !== queue the slots c1:c1+3 of removed siblings for reuse
 SUBROUTINE Release_Siblings( c1 )
     IMPLICIT NONE
@@ -192,7 +220,6 @@ SUBROUTINE Release_Siblings( c1 )
     IF( free_len == SIZE(free_first) ) ERROR STOP 'free-slot queue overflow'
     free_first( 1 + MOD( free_head-1 + free_len, SIZE(free_first) ) ) = c1
     free_len = free_len + 1
-    nUnused  = nUnused + 4
 
 END SUBROUTINE Release_Siblings
 
@@ -209,7 +236,6 @@ SUBROUTINE Take_Free_Siblings( c1 )
     c1 = free_first( free_head )
     free_head = 1 + MOD( free_head, SIZE(free_first) )
     free_len  = free_len - 1
-    nUnused   = nUnused - 4
 
 END SUBROUTINE Take_Free_Siblings
 

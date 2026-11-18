@@ -84,7 +84,7 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 | `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx` |
 | `CMAKE_BUILD_TYPE` | `Release` | `Debug` adds bounds checking and warnings |
 | `AMR_PRECISION` | `8` | working precision `wp`: `8` (real64) or `4` (real32) |
-| `AMR_L0` | `256` | domain width in finest lattice units (domain `L0 x 3*L0`) |
+| `AMR_L0` | `256` | base block width in finest lattice units (domain `L0 x 3*L0`) |
 | `AMR_MIN_LEVEL` | `1` | minimum (uniform background) refinement level |
 | `AMR_BLOCK_SIZE` | `8` | cells per block in each direction (`16` is faster for larger cases) |
 | `AMR_WITH_FVTKHDF` | `OFF` | VTKHDF output; set `CMAKE_PREFIX_PATH` to the fVTKHDF install |
@@ -107,7 +107,7 @@ always accumulated in double precision.
 |---|---|
 | `main_jcp2016.f90`, `main_pre2017.f90` | driver programs: select the model and the case |
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
-| `Case_Mod.f90`, `Rising_Bubble_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics); the rising bubble |
+| `Case_Mod.f90`, `Rising_Bubble_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
 | `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90` | the two models' kernels and criteria |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
@@ -129,9 +129,11 @@ of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`): a new case is a new
 module with a constructor like `Rising_Bubble_Case()`, a new model one like
 `JCP2016_Model()`. Each model brings its refinement criterion (`Block_Error`
 interface) and tolerances, since the blocks it needs on the finest level depend
-on the model; mesh adaptation receives them, and the model's moments kernel, as
-procedure arguments (`Refine_Derefine_Mesh(criterion, Moments_g, refine_tol,
-deref_tol)`).
+on the model; mesh adaptation takes the model (`Refine_Derefine_Mesh(model)`)
+and also uses its moments kernel for new blocks. A case returns its end time
+and its time unit per lattice time step from `Setup`; the solver passes times in
+that unit to the output and to the case's diagnostics. The domain shape
+(`nBaseX` x `nBaseY` base blocks of `L0` x `L0`) is set in `Config_Mod`.
 All sources go through the preprocessor
 (CMake `Fortran_PREPROCESS`); the case size, precision and optional fVTKHDF
 support are set with the CMake options above.
@@ -161,7 +163,7 @@ maximum velocity up to t = 2. The kernels were checked term by term against
 Eqs. (5)–(35) of the paper. The two models give visibly different bubbles at
 t = 8 (the PRE 2017 bubble rises less and sheds no satellite droplets).
 
-`Blk%P` holds the physical pressure for both models, so the output, restriction
+`Blk_P` holds the physical pressure for both models, so the output, restriction
 and prolongation are the same.
 
 ## Output
@@ -285,7 +287,11 @@ neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is
 written once, as a template (`src/Biquadratic.inc`), and instantiated with
 the strip shape fixed at compile time for the three shapes used by
 `Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and with
-run-time sizes for the ghost cells of C. The final division by 64 or 1024 is
+run-time sizes for the ghost cells of C. Both ghost modules have one routine
+per strip shape for the restriction and interpolation, with the side as a
+sign (the strips across an edge run outwards from a fixed start with that
+stride); the same-level copies of h and g, the hot path, are written out per
+direction with constant sections. The final division by 64 or 1024 is
 folded into the weights (powers of two, so the results are unchanged). This
 made the ghost cells of h and g about 27 % faster with both compilers (10 %
 of the whole step on one thread); a gprofng line profile showed the generic

@@ -4,7 +4,7 @@
 MODULE BC_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny     ! the fixed block size
-    USE D2Q9_Mod, ONLY: ex, ey
+    USE D2Q9_Mod, ONLY: ex, ey, opp
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Bounce_Back_3, Bounce_Back_4, Symmetric_C_3, Symmetric_C_4
@@ -16,15 +16,14 @@ SUBROUTINE Bounce_Back_3( f )
     IMPLICIT NONE
     REAL(wp), INTENT(INOUT) :: f(0:nx+1,0:ny+1,9)
 
-    INTEGER :: X, Y, i, J, Xn
+    INTEGER :: X, Y, i, Xn
 
     Y = 0
     DO X = 0, nx+1
         f(X,Y,1) = f(X,Y+1,1)
         DO i = 2, 9
             Xn = MIN( MAX(0,X+ex(i)*ey(i)), nx+1 )
-            J = (i-2) + 4*MOD(i/2,2)
-            f(X,Y,i) = f(Xn,Y+1,J)
+            f(X,Y,i) = f(Xn,Y+1,opp(i))
         END DO
     END DO
 
@@ -36,15 +35,14 @@ SUBROUTINE Bounce_Back_4( f )
     IMPLICIT NONE
     REAL(wp), INTENT(INOUT) :: f(0:nx+1,0:ny+1,9)
 
-    INTEGER :: X, Y, i, J, Xn
+    INTEGER :: X, Y, i, Xn
 
     Y = ny+1
     DO X = 0, nx+1
         f(X,Y,1) = f(X,Y-1,1)
         DO i = 2, 9
             Xn = MIN( MAX(0,X-ex(i)*ey(i)), nx+1 )
-            J = (i-2) + 4*MOD(i/2,2)
-            f(X,Y,i) = f(Xn,Y-1,J)
+            f(X,Y,i) = f(Xn,Y-1,opp(i))
         END DO
     END DO
 

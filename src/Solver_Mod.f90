@@ -1,12 +1,12 @@
 !================================================
 !   The AMR-LBM solver: initialization and time loop for a given LBM model
 !   (Model_Mod) and test case (Case_Mod); the drivers main_*.f90 select both.
-!   The domain is L0 x 3*L0 (Config_Mod), periodic sides, walls at the
-!   bottom and top.
+!   The domain is set in Config_Mod: periodic sides, walls at the bottom
+!   and top.
 !================================================
 MODULE Solver_Mod
     USE Kinds_Mod, ONLY: wp, dp
-    USE Mesh_Mod, ONLY: Create_Domain, Determine_Min_Max_Levels
+    USE Mesh_Mod, ONLY: Create_Domain
     USE Refine_Mod, ONLY: Refine_Derefine_Mesh
     USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR
     USE Model_Mod, ONLY: LBM_Model
@@ -23,34 +23,38 @@ CONTAINS
 !== run a test case with an LBM model
 SUBROUTINE Run_AMR_LBM( model, problem )
     USE Config_Mod, ONLY: minLevels, maxLevels
-    USE Blocks_Mod, ONLY: LevelMax
     IMPLICIT NONE
     TYPE(LBM_Model), INTENT(IN) :: model
     TYPE(AMR_Case),  INTENT(IN) :: problem
 
     INTEGER    :: L
     INTEGER(8) :: t1, t2, Rate
-    REAL(wp)   :: t_end
+    REAL(wp)   :: t_end, time_per_step
+
+    IF( .NOT. ( ASSOCIATED(model%Initialize) .AND. ASSOCIATED(model%Collide) .AND. &
+                ASSOCIATED(model%Moments_g)  .AND. ASSOCIATED(model%Moments_and_Collide) .AND. &
+                ASSOCIATED(model%Refinement_Error) ) ) ERROR STOP 'Run_AMR_LBM: incomplete model'
+    IF( .NOT. ( ASSOCIATED(problem%Setup) .AND. ASSOCIATED(problem%Initial_State) .AND. &
+                ASSOCIATED(problem%Diagnostics) ) ) ERROR STOP 'Run_AMR_LBM: incomplete case'
 
     CALL SYSTEM_CLOCK( t1, Rate )
 
     PRINT '(/2A)', 'Case: ', TRIM(problem%name)
-    CALL problem%Setup( t_end )
+    CALL problem%Setup( t_end, time_per_step )
 
     CALL Create_Domain
 
     CALL Initialize_State( model, problem )
 
-    !== refine level by level; LevelMax tells the refinement routines the current depth
+    !== refine level by level, from the initial state at each level
     DO L = minLevels, maxLevels-1
-        LevelMax = L
-        CALL Refine_Derefine_Mesh( model%Refinement_Error, model%Moments_g, model%refine_tol, model%deref_tol )
+        CALL Refine_Derefine_Mesh( model )
         CALL Initialize_State( model, problem )
     END DO
 
     CALL SYSTEM_CLOCK( t2 )
 
-    CALL Main_Loop( model, problem, t_end )
+    CALL Main_Loop( model, problem, t_end, time_per_step )
 
     PRINT '(A,F12.3)', ' t_initialization:', DBLE(t2-t1)/Rate
 
@@ -60,16 +64,16 @@ END SUBROUTINE Run_AMR_LBM
 
 !== initial state of all leaf blocks: C, P, U from the case, h and g from the model
 SUBROUTINE Initialize_State( model, problem )
-    USE Blocks_Mod, ONLY: nLeaf, LeafBlks
+    USE Blocks_Mod, ONLY: nLeaf, LeafByLevel
     IMPLICIT NONE
     TYPE(LBM_Model), INTENT(IN) :: model
     TYPE(AMR_Case),  INTENT(IN) :: problem
 
     INTEGER :: m, n
 
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( LeafBlks, nLeaf, model, problem )
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( LeafByLevel, nLeaf, model, problem )
     DO m = 1, nLeaf
-        n = LeafBlks(m)
+        n = LeafByLevel(m)
         CALL problem%Initial_State( n )
         CALL model%Initialize( n )
     END DO
@@ -79,17 +83,18 @@ END SUBROUTINE Initialize_State
 
 !******************************************************************************
 
-SUBROUTINE Main_Loop( model, problem, t_end )
-    USE Config_Mod, ONLY: nx, ny, inv_dx_level
-    USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
-    USE Physics_Mod, ONLY: W, M0, Bo, Ar, taul, tauh, wc, Sigma, Gy, D
+SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
+    USE Config_Mod, ONLY: nx, ny, maxLevels, inv_dx_level
+    USE Blocks_Mod, ONLY: nLeaf, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
+    USE Physics_Mod, ONLY: W, M0, taul, tauh, wc, Sigma
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
     USE Mesh_Mod, ONLY: t_nbr_table, n_nbr_rebuilds
     IMPLICIT NONE
     TYPE(LBM_Model), INTENT(IN) :: model
     TYPE(AMR_Case),  INTENT(IN) :: problem
-    REAL(wp),        INTENT(IN) :: t_end        ! end time t*
+    REAL(wp),        INTENT(IN) :: t_end            ! end time, in the case's time unit
+    REAL(wp),        INTENT(IN) :: time_per_step    ! the case's time unit per time step
 
     INTEGER :: T, n, m, L, Tf, nOutStep, nargs, ios
     CHARACTER(len=32) :: arg
@@ -102,7 +107,7 @@ SUBROUTINE Main_Loop( model, problem, t_end )
     INTEGER(8) :: tp0, tpLast, cellUpdates
 
     !==================================
-    Tf   = NINT(t_end * SQRT(D/Gy) /20)*20
+    Tf   = NINT(t_end / time_per_step /20)*20
     !== optional command-line override of the number of time steps
     nargs = COMMAND_ARGUMENT_COUNT()
     IF( nargs >= 1 ) THEN
@@ -134,8 +139,8 @@ SUBROUTINE Main_Loop( model, problem, t_end )
 
     !==========================================================
     PRINT '(/2A)', 'Model: ', TRIM(model%name)
-    PRINT '(/A/)', '    Tf     Sigma    W      Eo    Re_h    M0    tauc   taul   tauh     Ref_Tols'
-    PRINT '(I8,F8.4,F6.2,F7.1,F7.1,4F7.3,2F8.4)', Tf, Sigma, W, Bo, Ar, M0, 1/wc, taul, tauh, &
+    PRINT '(/A/)', '    Tf     Sigma    W      M0    tauc   taul   tauh     Ref_Tols'
+    PRINT '(I8,F8.4,F6.2,4F7.3,2F8.4)', Tf, Sigma, W, M0, 1/wc, taul, tauh, &
         model%refine_tol, model%deref_tol
     PRINT '(/A/)','     T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels'
     !==========================================================
@@ -162,16 +167,13 @@ SUBROUTINE Main_Loop( model, problem, t_end )
     !   initial P, U are used) nor twice on output steps.
     DO T = 0, Tf
 
-        CALL Determine_Min_Max_Levels
 !$OMP PARALLEL DEFAULT(PRIVATE) SHARED( model )
         CALL Fill_Ghost_Cells_C( model%ghost_C )
 !$OMP END PARALLEL
         CALL Lap( t_Ghost_C )
 
         IF( T > 0 ) THEN
-            CALL Refine_Derefine_Mesh( model%Refinement_Error, model%Moments_g, model%refine_tol, model%deref_tol, &
-                                       changed )
-            CALL Determine_Min_Max_Levels
+            CALL Refine_Derefine_Mesh( model, changed )
             IF( changed ) THEN
 !$OMP PARALLEL DEFAULT(PRIVATE) SHARED( model )
                 CALL Fill_Ghost_Cells_C( model%ghost_C )
@@ -185,27 +187,27 @@ SUBROUTINE Main_Loop( model, problem, t_end )
         is_diagnostic = ( is_output .OR. MOD(T,nDiagStep) == 0 )
         IF( is_diagnostic ) THEN
             IF( .NOT. moments_done ) THEN
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( LeafBlks, nLeaf, model )
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( LeafByLevel, nLeaf, model )
                 DO m = 1, nLeaf
-                    CALL model%Moments_g( LeafBlks(m) )
+                    CALL model%Moments_g( LeafByLevel(m) )
                 END DO
 !$OMP END PARALLEL DO
                 moments_done = .True.
             END IF
             IF( is_output ) THEN
-                CALL Write_Output( T*SQRT(Gy/D) )
-                CALL Print_Diagnostics( T*SQRT(Gy/D) )
+                CALL Write_Output( T*time_per_step )
+                CALL Print_Diagnostics( T*time_per_step )
             END IF
-            CALL problem%Diagnostics( T*SQRT(Gy/D) )
+            CALL problem%Diagnostics( T*time_per_step )
             CALL Lap( t_Output )
             IF( T==Tf ) THEN
                 CALL Close_Output
-                CALL problem%Diagnostics( -1._wp )     ! close its files
+                IF( ASSOCIATED(problem%Finish) ) CALL problem%Finish
                 EXIT
             END IF
         END IF
 
-!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax, &
+!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax, &
 !$OMP   model, moments_done, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
@@ -237,13 +239,15 @@ SUBROUTINE Main_Loop( model, problem, t_end )
         CALL Lap( t_Ghost_hg )
 !$OMP END MASKED
 
-        !== streaming, and the phase field C = sum(h) while h of the block is in cache
+        !== streaming, and the phase field C = sum(h) while h of the block is in cache:
+        !   exact shift on the finest level, Lax-Wendroff with CFL number
+        !   1/dx (a time step of 1) on the coarser ones
         DO L = LevelMin, LevelMax
+        cfl = inv_dx_level( L )
 !$OMP DO SCHEDULE(STATIC)
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
-            cfl = inv_dx_level( Blk(n)%Level )      ! 1/dx: a time step of 1
-            IF( cfl > 0.9 ) THEN
+            IF( L == maxLevels ) THEN
                 CALL Perfect_Shift_AMR( Blk_h(:,:,:,n) )
                 CALL Perfect_Shift_AMR( Blk_g(:,:,:,n) )
             ELSE
@@ -292,7 +296,7 @@ CONTAINS
         elapsed = REAL( tnow - tp0, dp ) / Rate
         mlups   = REAL( cellUpdates, dp ) / MAX( REAL(tnow-tpLast,dp)/Rate, 1.e-9_dp ) / 1.e6_dp
         PRINT '(A,I9,A,I9,A,F5.1,A,F8.3,A,I9,A,F8.2,A,F7.2,4A)', ' step', Tdone, ' /', Tf, &
-            ' (', 100._dp*Tdone/Tf, '%)  t* =', Tdone*SQRT(Gy/D), '  leaf cells', nLeaf*nx*ny, &
+            ' (', 100._dp*Tdone/Tf, '%)  t* =', Tdone*time_per_step, '  leaf cells', nLeaf*nx*ny, &
             '  MLUPS', mlups, ' (', mlups/OMP_GET_MAX_THREADS(), ' per thread)  elapsed ', &
             Hms(elapsed), '  left ~', Hms( elapsed/Tdone*(Tf-Tdone) )
         FLUSH( OUTPUT_UNIT )
@@ -324,11 +328,11 @@ END SUBROUTINE Main_Loop
 
 !== one line of diagnostics: density range, maximum vertical velocity, total mass
 SUBROUTINE Print_Diagnostics( Time )
-    USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nLeaf, LeafBlks, nUnused, Blk_C, Blk_Uy
+    USE Config_Mod, ONLY: nx, ny, dx_level
+    USE Blocks_Mod, ONLY: Blk, Nblks, LevelMin, LevelMax, nLeaf, LeafByLevel, nUnused, Blk_C, Blk_Uy
     USE Physics_Mod, ONLY: Rhol, Rhoh
     IMPLICIT NONE
-    REAL(wp), INTENT(IN) :: Time    ! t* of the current step
+    REAL(wp), INTENT(IN) :: Time    ! time of the current step (the case's unit)
 
     INTEGER :: m, n, dx, i, j
     REAL(wp) :: Rho, Rho_min, Rho_max, U_max
@@ -338,12 +342,12 @@ SUBROUTINE Print_Diagnostics( Time )
     Rho_max = -10
     Mass  = 0
     U_max = 0
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafBlks, nLeaf, Rhol, Rhoh ) &
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_Uy, LeafByLevel, nLeaf, Rhol, Rhoh ) &
 !$OMP   REDUCTION(min:Rho_min) REDUCTION(max:Rho_max,U_max) REDUCTION(+:Mass)
     DO m = 1, nLeaf
-        n = LeafBlks(m)
+        n = LeafByLevel(m)
 
-        dx = Blk(n)%dx
+        dx = dx_level( Blk(n)%Level )
         DO j = 1, ny
         DO i = 1, nx
             Rho = Rhol + Blk_C(i,j, n) * (Rhoh - Rhol)
@@ -356,7 +360,7 @@ SUBROUTINE Print_Diagnostics( Time )
         U_max = MAX( U_max, MAXVAL(ABS(Blk_Uy(:,:,n))) )
     END DO
 !$OMP END PARALLEL DO
-    WRITE(*,10) Time, Nblks, nLeaf, nUnused, Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax
+    WRITE(*,10) Time, Nblks, nLeaf, nUnused(), Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax
 10  FORMAT(F7.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
 
 END SUBROUTINE Print_Diagnostics

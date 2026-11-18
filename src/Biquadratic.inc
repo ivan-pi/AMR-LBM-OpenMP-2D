@@ -5,6 +5,7 @@
 !   as dummy arguments (any strip) or as PARAMETERs (one fixed strip shape,
 !   which lets the compiler unroll the short loops); see Interpolations_Mod
 !   and Ghost_hg_Mod. Input i2 x j2 values per component, output x2 x y2.
+!   The macros are undefined at the end, ready for the next instantiation.
 !================================================
 
 SUBROUTINE FINE_NAME( SIZE_ARGS fin_F, fout_C )
@@ -78,3 +79,9 @@ SUBROUTINE COARSE_NAME( SIZE_ARGS fin_C, fout_F )
     END DO
 
 END SUBROUTINE COARSE_NAME
+
+#undef FINE_NAME
+#undef COARSE_NAME
+#undef SIZE_ARGS
+#undef FINE_SIZES
+#undef COARSE_SIZES

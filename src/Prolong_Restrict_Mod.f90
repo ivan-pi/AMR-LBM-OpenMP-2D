@@ -4,9 +4,9 @@
 !================================================
 MODULE Prolong_Restrict_Mod
     USE Kinds_Mod, ONLY: wp
-    USE Model_Mod, ONLY: Block_Kernel
-    USE Interpolations_Mod, ONLY: Bilinear_from_Coarse, Bilinear_from_Coarse_f, &
-                                  Bilinear_from_Fine, Bilinear_from_Fine_f
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, Clear_Slot
+    USE Interpolations_Mod, ONLY: Bilinear_from_Coarse, Bilinear_from_Coarse_f
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Prolong_Bilinear, Restrict_Bilinear
@@ -15,120 +15,68 @@ CONTAINS
 
 !******************************************************************************
 
-!== interpolate block n to its new children c..c+3; Moments_g (the model's
-!   kernel) derives their pressure and velocity from the interpolated g
-SUBROUTINE Prolong_Bilinear( n, c, Moments_g )
-    USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk_h, Blk_g, Blk_C
+!== interpolate h, g and C (with one ghost layer) of block n to its new
+!   children c..c+3; their pressure and velocity are left to the model
+SUBROUTINE Prolong_Bilinear( n, c )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, c
-    PROCEDURE(Block_Kernel) :: Moments_g
 
-    REAL(wp) :: hnew_F(2*nx,2*ny,9), Hnew_C(nx,ny,9)
-    REAL(wp) :: gnew_F(2*nx,2*ny,9), Gnew_C(nx,ny,9)
-    REAL(wp) :: C_F(0:2*nx+1,0:2*ny+1), C_C(0:nx+1,0:ny+1)
+    INTEGER  :: q, ox, oy
+    REAL(wp) :: hF(2*nx,2*ny,9), gF(2*nx,2*ny,9), CF(0:2*nx+1,0:2*ny+1)
 
-    Hnew_C = Blk_h(1:nx,1:ny,:, n)
-    Gnew_C = Blk_g(1:nx,1:ny,:, n)
-    C_C    = Blk_C(0:nx+1,0:ny+1, n)
+    CALL Bilinear_from_Coarse_f( Blk_h(1:nx,1:ny,:,n), hF )
+    CALL Bilinear_from_Coarse_f( Blk_g(1:nx,1:ny,:,n), gF )
+    CALL Bilinear_from_Coarse  ( Blk_C(0:nx+1,0:ny+1,n), CF )
 
-    CALL Bilinear_from_Coarse_f( Hnew_C, hnew_F )
-    CALL Bilinear_from_Coarse_f( Gnew_C, gnew_F )
-    CALL Bilinear_from_Coarse  ( C_C,    C_F    )
-
-!== now fill children data
-    CALL Fill_Children_Data( c  , 0 , 0 , gnew_F, hnew_F, C_F )
-    CALL Fill_Children_Data( c+1, nx, 0 , gnew_F, hnew_F, C_F )
-    CALL Fill_Children_Data( c+2, 0 , ny, gnew_F, hnew_F, C_F )
-    CALL Fill_Children_Data( c+3, nx, ny, gnew_F, hnew_F, C_F )
-
-CONTAINS
-
-    SUBROUTINE Fill_Children_Data( c, I_idx, J_idx, gnew_F, hnew_F, C_F )
-        USE Config_Mod, ONLY: nx, ny
-        USE Blocks_Mod, ONLY: Blk_h, Blk_g, Blk_C
-        INTEGER, INTENT(IN) :: c, I_idx, J_idx
-        REAL(wp), INTENT(IN) :: gnew_F(2*nx,2*ny,9)
-        REAL(wp), INTENT(IN) :: hnew_F(2*nx,2*ny,9)
-        REAL(wp), INTENT(IN) :: C_F(0:2*nx+1,0:2*ny+1)
-
-        INTEGER :: I, J
-
-        DO J = 1, ny
-        DO I = 1, nx
-            Blk_g(I,J,:, c) = gnew_F(I+I_idx,J+J_idx,:)
-            Blk_h(I,J,:, c) = hnew_F(I+I_idx,J+J_idx,:)
-        END DO
-        END DO
-        DO J = 0, ny+1
-        DO I = 0, nx+1
-            Blk_C(I,J, c) = C_F(I+I_idx,J+J_idx)
-        END DO
-        END DO
-
-        CALL Moments_g( c )
-
-    END SUBROUTINE Fill_Children_Data
+    !== child c+q covers the quadrant (MOD(q,2), q/2) of the parent
+    DO q = 0, 3
+        ox = nx * MOD(q,2)
+        oy = ny * (q/2)
+        Blk_h(1:nx,1:ny,:,c+q)       = hF(ox+1:ox+nx, oy+1:oy+ny, :)
+        Blk_g(1:nx,1:ny,:,c+q)       = gF(ox+1:ox+nx, oy+1:oy+ny, :)
+        Blk_C(0:nx+1,0:ny+1,c+q)     = CF(ox:ox+nx+1, oy:oy+ny+1)
+    END DO
 
 END SUBROUTINE Prolong_Bilinear
 
 !******************************************************************************
 
-
-!******************************************************************************
-
+!== the parent n of four leaves gets their 2x2 averages, child c+q into its
+!   quadrant (MOD(q,2), q/2); its ghost cells are cleared
 SUBROUTINE Restrict_Bilinear( n )
-    USE Config_Mod, ONLY: nx, ny
-    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n
 
-    INTEGER :: child, i, j, i1, i2, j1, j2
+    INTEGER :: c, q, i1, i2, j1, j2
 
-    REAL(wp), DIMENSION(2*nx,2*ny,9) :: h, g
-    REAL(wp), DIMENSION(   2*nx,2*ny) :: C, P, Ux, Uy
-    REAL(wp) :: hc(nx,ny,9), gc(nx,ny,9), Cc(nx,ny)     ! contiguous results for h, g, C
+    c = Blk(n)%child
+    CALL Clear_Slot( n )
 
-!-- New Correction! (Added 2016-08-30):
-    Blk_h(:,:,:,n)  = 0
-    Blk_g(:,:,:,n)  = 0
-    Blk_C(:,:,n)  = 0
-    Blk_P(:,:,n)  = 0
-    Blk_Ux(:,:,n) = 0
-    Blk_Uy(:,:,n) = 0
-!== newly added (02/26/2016) - Correction (2016-08-30)
-
-    child = Blk(n)%child(1)
-
-    DO j = 0, 1
-        j1 = 1  + ny*j
-        j2 = ny + ny*j
-        DO i = 0, 1
-            i1 = 1  + nx*i
-            i2 = nx + nx*i
-
-            h (i1:i2,j1:j2,:) = Blk_h(1:nx,1:ny,:, child)
-            g (i1:i2,j1:j2,:) = Blk_g(1:nx,1:ny,:, child)
-            C (   i1:i2,j1:j2) = Blk_C(   1:nx,1:ny, child)
-            P (   i1:i2,j1:j2) = Blk_P(   1:nx,1:ny, child)
-            Ux(   i1:i2,j1:j2) = Blk_Ux(   1:nx,1:ny, child)
-            Uy(   i1:i2,j1:j2) = Blk_Uy(   1:nx,1:ny, child)
-
-            child = child + 1
-
-        END DO
+    DO q = 0, 3
+        i1 = 1 + (nx/2) * MOD(q,2)
+        j1 = 1 + (ny/2) * (q/2)
+        i2 = i1 + nx/2 - 1
+        j2 = j1 + ny/2 - 1
+        Blk_h(i1:i2,j1:j2,:,n)     = Average_2x2( Blk_h(1:nx,1:ny,:,c+q) )
+        Blk_g(i1:i2,j1:j2,:,n)     = Average_2x2( Blk_g(1:nx,1:ny,:,c+q) )
+        Blk_C(i1:i2,j1:j2,n:n)     = Average_2x2( Blk_C(1:nx,1:ny,c+q:c+q) )
+        Blk_P(i1:i2,j1:j2,n:n)     = Average_2x2( Blk_P(:,:,c+q:c+q) )
+        Blk_Ux(i1:i2,j1:j2,n:n)    = Average_2x2( Blk_Ux(:,:,c+q:c+q) )
+        Blk_Uy(i1:i2,j1:j2,n:n)    = Average_2x2( Blk_Uy(:,:,c+q:c+q) )
     END DO
 
-    CALL Bilinear_from_Fine_f( 2*nx,2*ny, nx,ny, h , hc, 9 )
-    CALL Bilinear_from_Fine_f( 2*nx,2*ny, nx,ny, g , gc, 9 )
-    CALL Bilinear_from_Fine  ( 2*nx,2*ny, nx,ny, C , Cc )
-    CALL Bilinear_from_Fine  ( 2*nx,2*ny, nx,ny, P , Blk_P(:,:,n)  )
-    CALL Bilinear_from_Fine  ( 2*nx,2*ny, nx,ny, Ux, Blk_Ux(:,:,n) )
-    CALL Bilinear_from_Fine  ( 2*nx,2*ny, nx,ny, Uy, Blk_Uy(:,:,n) )
-    Blk_h(1:nx,1:ny,:, n) = hc
-    Blk_g(1:nx,1:ny,:, n) = gc
-    Blk_C(1:nx,1:ny, n)   = Cc
+CONTAINS
 
-END
+    !== mean of each 2x2 group of cells (pairs in y first, then in x)
+    PURE FUNCTION Average_2x2( f ) RESULT( fc )
+        REAL(wp), INTENT(IN) :: f(:,:,:)
+        REAL(wp) :: fc(SIZE(f,1)/2,SIZE(f,2)/2,SIZE(f,3))
+
+        fc = 0.5_wp * ( 0.5_wp * ( f(1::2,1::2,:) + f(1::2,2::2,:) ) &
+                      + 0.5_wp * ( f(2::2,1::2,:) + f(2::2,2::2,:) ) )
+
+    END FUNCTION Average_2x2
+
+END SUBROUTINE Restrict_Bilinear
 
 END MODULE Prolong_Restrict_Mod

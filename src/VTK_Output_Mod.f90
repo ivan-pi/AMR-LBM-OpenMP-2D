@@ -108,8 +108,8 @@ CONTAINS
 
     !== all leaf cells (nx*ny quads per leaf block)
     SUBROUTINE Build_Cells( md )
-        USE Config_Mod, ONLY: nx, ny, L0
-        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks, Blk_C, Blk_P, Blk_Ux, Blk_Uy
+        USE Config_Mod, ONLY: nx, ny, L0, dx_level
+        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafByLevel, Blk_C, Blk_P, Blk_Ux, Blk_Uy
         TYPE(Mesh_Data), INTENT(OUT) :: md
 
             INTEGER :: nPts, nCells, m, b, i, j, k, e, p0, dx
@@ -123,10 +123,10 @@ CONTAINS
             md%VName  = 'Velocity'
             md%INames = [character(len=16) :: 'Level', 'Block']
 
-!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_P, Blk_Ux, Blk_Uy, LeafBlks, nLeaf, md )
+!$OMP PARALLEL DO DEFAULT(PRIVATE) SHARED( Blk, Blk_C, Blk_P, Blk_Ux, Blk_Uy, LeafByLevel, nLeaf, md )
             DO m = 1, nLeaf
-                b  = LeafBlks(m)
-                dx = Blk(b)%dx
+                b  = LeafByLevel(m)
+                dx = dx_level( Blk(b)%Level )
                 p0 = (m-1) * (nx+1) * (ny+1)    ! points before this block (0-based)
 
                 DO j = 1, ny+1
@@ -161,8 +161,8 @@ CONTAINS
 
     !== the block structure: one quad per leaf block
     SUBROUTINE Build_Blocks( md )
-        USE Config_Mod, ONLY: nx, ny, L0
-        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafBlks
+        USE Config_Mod, ONLY: nx, ny, L0, dx_level
+        USE Blocks_Mod, ONLY: Blk, nLeaf, LeafByLevel
         TYPE(Mesh_Data), INTENT(OUT) :: md
 
             INTEGER :: m, b, dx, k
@@ -176,8 +176,8 @@ CONTAINS
                        BSize => md%RData, IData => md%IData )
 
             DO m = 1, nLeaf
-                b  = LeafBlks(m)
-                dx = Blk(b)%dx
+                b  = LeafByLevel(m)
+                dx = dx_level( Blk(b)%Level )
                 k  = 4*(m-1)
                 Pts(:,k+1) = [ REAL( Blk(b)%I   *dx*nx, wp), REAL( Blk(b)%J   *dx*ny, wp), 0.0_wp ] / L0
                 Pts(:,k+2) = [ REAL((Blk(b)%I+1)*dx*nx, wp), REAL( Blk(b)%J   *dx*ny, wp), 0.0_wp ] / L0
