@@ -331,6 +331,18 @@ typedef struct {
     int    redraw, reupload;             /* pending work for the next render_step */
     Uint64 last_draw;                    /* performance counter of the last frame */
     int    font_scale;                   /* atlas in font_tex: 1 or 2 (high DPI), 0 none yet */
+    struct {                             /* the numbers shown in the status panel */
+        Uint64 tick;                     /* when they were taken; 0: take them now */
+        int    stale;                    /* newer numbers wait for the next refresh */
+        double time;
+        long   step;
+        int    n, lev_min, lev_max;
+        float  lo, hi;
+        double rate;
+        int    mx, my, have_probe, level;    /* value under the cursor */
+        double px, py;
+        float  value;
+    } shown;
     double font_ratio;                   /* drawable pixels per window unit it was set for */
 } render_t;
 
@@ -612,20 +624,54 @@ static void ov_printf(render_t *r, float x, float y, const float *c, const char 
 }
 
 /* status panel (top left): field, colour bar, time, mesh, speed, value under the cursor */
-static void hud(render_t *r)
+/* the numbers of the status panel change with every snapshot, many times a
+   second: they are taken at most 4 times a second so that they can be read,
+   at once after a key, a pause or the end of the run (shown.tick = 0), and
+   the value under the cursor also when the mouse moves */
+#define HUD_REFRESH_HZ 4
+
+static void hud_take(render_t *r)
 {
     const snapshot_t *s = V.front;
+    Uint64 now = SDL_GetPerformanceCounter();
+    int refresh = r->shown.tick == 0 || r->paused || r->finished ||
+                  now - r->shown.tick >= SDL_GetPerformanceFrequency() / HUD_REFRESH_HZ;
+    if (refresh) {
+        r->shown.tick    = now;
+        r->shown.stale   = 0;
+        r->shown.time    = s->time;
+        r->shown.step    = s->step;
+        r->shown.n       = s->n;
+        r->shown.lev_min = r->lev_min;
+        r->shown.lev_max = r->lev_max;
+        r->shown.lo      = r->lo;
+        r->shown.hi      = r->hi;
+        r->shown.rate    = r->rate;
+    } else {
+        r->shown.stale = 1;
+    }
+    if (refresh || r->mx != r->shown.mx || r->my != r->shown.my) {
+        int ww, wh;
+        double sc = view_scale(r, &ww, &wh);
+        r->shown.mx = r->mx;
+        r->shown.my = r->my;
+        r->shown.px = r->cx + (r->mx - 0.5 * ww) / sc;
+        r->shown.py = r->cy - (r->my - 0.5 * wh) / sc;
+        r->shown.have_probe = SDL_GetMouseFocus() == r->win &&
+                              probe(r, r->shown.px, r->shown.py, &r->shown.level, &r->shown.value);
+    }
+}
+
+/* status panel (top left): field, colour bar, time, mesh, speed, value under the cursor */
+static void hud(render_t *r)
+{
     const float lh = AMRVIZ_FONT_H + 2, pad = 8;
     const float w = 34 * AMRVIZ_FONT_W + 2 * pad;
     float x = 10, y = 10, ty;
-    int nlines = 6, level;
-    float value;
-    int ww, wh;
-    double sc = view_scale(r, &ww, &wh);
-    double px = r->cx + (r->mx - 0.5 * ww) / sc, py = r->cy - (r->my - 0.5 * wh) / sc;
-    int have_probe = SDL_GetMouseFocus() == r->win && probe(r, px, py, &level, &value);
+    int nlines = 6;
 
-    if (have_probe) nlines++;
+    hud_take(r);
+    if (r->shown.have_probe) nlines++;
     if (r->paused || r->finished) nlines++;
     ov_quad(r, x, y, w, nlines * lh + 2 * pad + 4, 0, 0, 0, 0, PANEL, OV_SOLID);
     x += pad;
@@ -636,26 +682,27 @@ static void hud(render_t *r)
     ty += lh;
     ov_quad(r, x, ty + 2, w - 2 * pad, 10, 0, 0, 1, 0, WHITE, OV_BAR);
     ty += 14;
-    ov_printf(r, x, ty, GREY, "%-.4g", r->lo);
+    ov_printf(r, x, ty, GREY, "%-.4g", r->shown.lo);
     {
         char hi[32];
-        int n = snprintf(hi, sizeof hi, "%.4g", r->hi);
+        int n = snprintf(hi, sizeof hi, "%.4g", r->shown.hi);
         ov_text(r, x + w - 2 * pad - n * AMRVIZ_FONT_W, ty, GREY, hi);
     }
     ty += lh;
-    ov_printf(r, x, ty, WHITE, "t = %.5g   step %ld", s->time, s->step);
+    ov_printf(r, x, ty, WHITE, "t = %.5g   step %ld", r->shown.time, r->shown.step);
     ty += lh;
-    ov_printf(r, x, ty, WHITE, "%d blocks, %ld cells", s->n, (long)s->n * V.ncell);
+    ov_printf(r, x, ty, WHITE, "%d blocks, %ld cells", r->shown.n, (long)r->shown.n * V.ncell);
     ty += lh;
-    ov_printf(r, x, ty, WHITE, "levels %d-%d   zoom %.3g", r->lev_min, r->lev_max, r->zoom);
+    ov_printf(r, x, ty, WHITE, "levels %d-%d   zoom %.3g", r->shown.lev_min, r->shown.lev_max, r->zoom);
     ty += lh;
-    if (r->rate > 0 && !r->paused && !r->finished)
-        ov_printf(r, x, ty, WHITE, "%.0f steps/s", r->rate);
+    if (r->shown.rate > 0 && !r->paused && !r->finished)
+        ov_printf(r, x, ty, WHITE, "%.0f steps/s", r->shown.rate);
     else
         ov_text(r, x, ty, GREY, "- steps/s");
     ty += lh;
-    if (have_probe) {
-        ov_printf(r, x, ty, AMBER, "(%.1f, %.1f) L%d: %.5g", px, py, level, value);
+    if (r->shown.have_probe) {
+        ov_printf(r, x, ty, AMBER, "(%.1f, %.1f) L%d: %.5g", r->shown.px, r->shown.py,
+                  r->shown.level, r->shown.value);
         ty += lh;
     }
     if (r->finished)
@@ -862,6 +909,7 @@ static int handle_event(render_t *r, const SDL_Event *e)
             r->reupload = 1;
             update_title(r);
         }
+        r->shown.tick = 0;               /* show the effect of the key at once */
         r->redraw = 1;
         break;
     }
@@ -869,6 +917,7 @@ static int handle_event(render_t *r, const SDL_Event *e)
         int mx, my;
         SDL_GetMouseState(&mx, &my);
         zoom_at(r, pow(1.15, e->wheel.y), mx, my);
+        r->shown.mx = -1;                /* another point under the cursor */
         r->redraw = 1;
         break;
     }
@@ -995,6 +1044,9 @@ static int render_step(render_t *r, int wait_ms)
         r->redraw = 1;
     }
 
+    if (r->shown.stale && r->shown.tick &&  /* newer numbers due in the status panel */
+        SDL_GetPerformanceCounter() - r->shown.tick >= SDL_GetPerformanceFrequency() / HUD_REFRESH_HZ)
+        r->redraw = 1;
     if (wait_ms == 0 && r->last_draw &&
         SDL_GetPerformanceCounter() - r->last_draw < SDL_GetPerformanceFrequency() / 60)
         return 1;                        /* keep the work for a later call */
