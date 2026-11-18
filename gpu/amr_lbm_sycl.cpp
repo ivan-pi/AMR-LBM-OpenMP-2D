@@ -111,23 +111,26 @@ private:
 
 //== the field pool, slots 1..cap. h and g are double-buffered: the
 //   streaming reads neighbouring blocks directly, so it writes the other
-//   buffer (next()) and the two are swapped afterwards
+//   buffer (next()) and the two are swapped afterwards. Their ghost rings
+//   (lbm_kernels.hpp: Pool) are single: the streaming writes interiors only
 struct DeviceFields {
-    DeviceArray<real> h0, g0, h1, g1, C, P, Ux, Uy;
+    DeviceArray<real> h0, g0, h1, g1, hg, gg, C, P, Ux, Uy;
     int cur = 0;
 
     DeviceFields(sycl::queue &q, size_t cap)
-        : h0(q, HB * cap), g0(q, HB * cap), h1(q, HB * cap), g1(q, HB * cap),
+        : h0(q, HB * cap), g0(q, HB * cap), h1(q, HB * cap), g1(q, HB * cap), hg(q, GB * cap), gg(q, GB * cap),
           C(q, CB * cap), P(q, PB * cap), Ux(q, PB * cap), Uy(q, PB * cap) {}
 
-    Fields view() const {
-        return {cur ? h1.get() : h0.get(), cur ? g1.get() : g0.get(), C.get(), P.get(), Ux.get(), Uy.get()};
-    }
-    Fields next() const {
-        return {cur ? h0.get() : h1.get(), cur ? g0.get() : g1.get(), C.get(), P.get(), Ux.get(), Uy.get()};
-    }
+    Fields view() const { return fields(cur); }
+    Fields next() const { return fields(1 - cur); }
     void swap() { cur = 1 - cur; }
-    static double mib_per_block() { return double(4 * HB + CB + 3 * PB) * sizeof(real) / (1 << 20); }
+    static double mib_per_block() { return double(4 * HB + 2 * GB + CB + 3 * PB) * sizeof(real) / (1 << 20); }
+
+private:
+    Fields fields(int b) const {
+        return {{b ? h1.get() : h0.get(), hg.get()}, {b ? g1.get() : g0.get(), gg.get()},
+                C.get(), P.get(), Ux.get(), Uy.get()};
+    }
 };
 
 //==============================================================================

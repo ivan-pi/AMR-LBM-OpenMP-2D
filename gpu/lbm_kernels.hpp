@@ -1,13 +1,16 @@
 //==============================================================================
 //  Device kernels of the AMR-LBM solver (JCP 2016 model, SYCL)
 //
-//  The fields live on the device in the layout of the Fortran block pool
+//  The fields live on the device in block pools like the Fortran ones
 //  (src/Blocks_Mod.f90): column-major, last index = block, block indices from 1.
-//      h, g      (0:nx+1, 0:ny+1, 9, cap)
+//      h, g      interior (1:nx, 1:ny, 9, cap), dense planes, and apart a
+//                ghost ring per moving direction (Pool, iix, gix, at)
 //      C         (-1:nx+2, -1:ny+2, cap)
 //      P, Ux, Uy (1:nx, 1:ny, cap)
-//  Each kernel follows a Fortran routine (named in its comment) with the
-//  same 1-based index arithmetic, so the two can be compared line by line.
+//  Unlike the Fortran (0:nx+1, 0:ny+1) planes of h and g, the dense planes
+//  fill whole cache lines: the halo padding doubled the memory traffic of
+//  the streaming. Each kernel follows a Fortran routine (named in its
+//  comment) with the same 1-based indices, so the two can be compared.
 //  Block-wise kernels run one work-group per block.
 //  Single precision: the Arc A-series GPUs have no FP64 hardware.
 //==============================================================================
@@ -27,9 +30,10 @@ namespace amr {
 using real = float;
 
 constexpr int NX = AMR_BLOCK_SIZE, NY = AMR_BLOCK_SIZE;
-constexpr int HX = NX + 2, HY = NY + 2;     // h, g: 0..nx+1
 constexpr int CX = NX + 4, CY = NY + 4;     // C: -1..nx+2
-constexpr size_t HB = size_t(HX) * HY * 9;  // values per block
+constexpr size_t HB = size_t(NX) * NY * 9;  // h or g: interior values per block
+constexpr int NR = 2 * (NX + 2) + 2 * NY;   // ghost ring cells per direction
+constexpr size_t GB = size_t(NR) * 8;       // h or g: ghost values per block (directions 2..9)
 constexpr size_t CB = size_t(CX) * CY;
 constexpr size_t PB = size_t(NX) * NY;
 constexpr int MAXLEV = 32;
@@ -43,10 +47,22 @@ constexpr int di[9]      = {0, -1, 1, 0, 0, -1, -1, 1, 1};
 constexpr int dj[9]      = {0, 0, 0, -1, 1, -1, 1, -1, 1};
 constexpr int facing1[9] = {0, 1, 0, 2, 0, 3, 1, 2, 0};
 
-// Fortran-order offsets (1-based block n and direction q)
-inline size_t hix(int i, int j, int q, int n) {
-    return size_t(i) + HX * (size_t(j) + HY * (size_t(q - 1) + 9 * size_t(n - 1)));
+// h and g: per block 9 dense nx x ny planes (an 8x8 plane of floats is four
+// 64-byte cache lines; no padding) and, apart, a ring of ghost cells for the
+// moving directions 2..9: rows 0 and ny+1 (x = 0..nx+1), then columns 0 and
+// nx+1 (y = 1..ny). Indices 1-based as in the Fortran code: interior
+// 1..nx x 1..ny, ghost layer 0 and nx+1 / ny+1.
+struct Pool { real *in, *gh; };
+inline size_t iix(int i, int j, int q, int n) {
+    return size_t(i - 1) + NX * (size_t(j - 1) + NY * (size_t(q - 1) + 9 * size_t(n - 1)));
 }
+inline size_t gix(int i, int j, int q, int n) {
+    const int r = j == 0 ? i : j == NY + 1 ? (NX + 2) + i : i == 0 ? 2 * (NX + 2) + (j - 1) : 2 * (NX + 2) + NY + (j - 1);
+    return size_t(r) + NR * (size_t(q - 2) + 8 * size_t(n - 1));
+}
+inline bool inside(int i, int j) { return i >= 1 && i <= NX && j >= 1 && j <= NY; }
+//== a cell of block n or of its ghost layer
+inline real &at(Pool f, int i, int j, int q, int n) { return inside(i, j) ? f.in[iix(i, j, q, n)] : f.gh[gix(i, j, q, n)]; }
 inline size_t cix(int i, int j, int n) {
     return size_t(i + 1) + CX * (size_t(j + 1) + CY * size_t(n - 1));
 }
@@ -235,7 +251,7 @@ inline real coarse_at(int x, int y, In in) {
 //  direction q. All 8 moving directions are filled (the CPU copies only
 //  those the streaming reads; the others are never read)
 //------------------------------------------------------------------------------
-inline void fill_f_cell(real *f, const Mesh &M, int n, int k, int pos, int q, bool second) {
+inline void fill_f_cell(Pool f, const Mesh &M, int n, int k, int pos, int q, bool second) {
     const int nb = nbr_of(M, n, k);
     if (nb <= 0) return;
     const bool coarse = M.level[nb - 1] < M.level[n - 1];
@@ -247,32 +263,32 @@ inline void fill_f_cell(real *f, const Mesh &M, int n, int k, int pos, int q, bo
         real v;
         if (coarse) {
             const int i0 = s < 0 ? NX + 1 : 0, Y = (NY / 2) * (M.bJ[n - 1] % 2);
-            v = coarse_at(1, j, [&](int l, int jj) { return f[hix(i0 + s * l, Y + jj, q, nb)]; });
+            v = coarse_at(1, j, [&](int l, int jj) { return at(f, i0 + s * l, Y + jj, q, nb); });
         } else if (leaf) {
-            v = f[hix(s < 0 ? NX : 1, j, q, nb)];
+            v = at(f, s < 0 ? NX : 1, j, q, nb);
         } else {
             const int i0 = s < 0 ? NX : 1, c = M.child[nb - 1] + (s < 0 ? 1 : 0);     // children c, c+2
             v = fine_at(1, j, [&](int l, int jj) {
-                return jj < NY ? f[hix(i0 + s * l, jj + 1, q, c)] : f[hix(i0 + s * l, jj - NY + 1, q, c + 2)];
+                return jj < NY ? at(f, i0 + s * l, jj + 1, q, c) : at(f, i0 + s * l, jj - NY + 1, q, c + 2);
             });
         }
-        f[hix(ig, j, q, n)] = v;
+        at(f, ig, j, q, n) = v;
 
     } else if (k <= 4) {                                            // Fill_Side_Y
         const int s = dj[k], jg = s < 0 ? 0 : NY + 1, i = pos;
         real v;
         if (coarse) {
             const int j0 = s < 0 ? NY + 1 : 0, X = (NX / 2) * (M.bI[n - 1] % 2);
-            v = coarse_at(i, 1, [&](int ii, int l) { return f[hix(X + ii, j0 + s * l, q, nb)]; });
+            v = coarse_at(i, 1, [&](int ii, int l) { return at(f, X + ii, j0 + s * l, q, nb); });
         } else if (leaf) {
-            v = f[hix(i, s < 0 ? NY : 1, q, nb)];
+            v = at(f, i, s < 0 ? NY : 1, q, nb);
         } else {
             const int j0 = s < 0 ? NY : 1, c = M.child[nb - 1] + (s < 0 ? 2 : 0);     // children c, c+1
             v = fine_at(i, 1, [&](int ii, int l) {
-                return ii < NX ? f[hix(ii + 1, j0 + s * l, q, c)] : f[hix(ii - NX + 1, j0 + s * l, q, c + 1)];
+                return ii < NX ? at(f, ii + 1, j0 + s * l, q, c) : at(f, ii - NX + 1, j0 + s * l, q, c + 1);
             });
         }
-        f[hix(i, jg, q, n)] = v;
+        at(f, i, jg, q, n) = v;
 
     } else {                                                        // Fill_Corner
         const int sx = di[k], sy = dj[k];
@@ -282,24 +298,24 @@ inline void fill_f_cell(real *f, const Mesh &M, int n, int k, int pos, int q, bo
             const int px = M.bI[n - 1] % 2, py = M.bJ[n - 1] % 2;
             const int i0 = sx < 0 ? NX + 1 - (NX / 2) * px : (NX / 2) * (1 - px);
             const int j0 = sy < 0 ? NY + 1 - (NY / 2) * py : (NY / 2) * (1 - py);
-            v = coarse_at(1, 1, [&](int l, int m) { return f[hix(i0 + sx * l, j0 + sy * m, q, nb)]; });
+            v = coarse_at(1, 1, [&](int l, int m) { return at(f, i0 + sx * l, j0 + sy * m, q, nb); });
         } else {
             const int i0 = sx < 0 ? NX : 1, j0 = sy < 0 ? NY : 1;
             if (leaf) {
-                v = f[hix(i0, j0, q, nb)];
+                v = at(f, i0, j0, q, nb);
             } else {
                 const int c = M.child[nb - 1] + facing1[k];
-                v = fine_at(1, 1, [&](int l, int m) { return f[hix(i0 + sx * l, j0 + sy * m, q, c)]; });
+                v = fine_at(1, 1, [&](int l, int m) { return at(f, i0 + sx * l, j0 + sy * m, q, c); });
             }
         }
-        f[hix(ig, jg, q, n)] = v;
+        at(f, ig, jg, q, n) = v;
     }
 }
 
 //==============================================================================
 //  Kernels
 //==============================================================================
-struct Fields { real *h, *g, *C, *P, *Ux, *Uy; };
+struct Fields { Pool h, g; real *C, *P, *Ux, *Uy; };
 
 // a block with its level and position (lists of blocks that are not, or not
 // yet, in the uploaded leaf list)
@@ -327,7 +343,7 @@ inline real chem_pot(const real *C, int n, int i, int j, real inv_dx, const Para
 inline void moments_cell(const real *C, const real *g, int n, int i, int j, real inv_dx, real mu,
                          const Params &p, real &Pc, real &vx, real &vy) {
     auto Cv = [&](int a, int b) { return C[cix(a, b, n)]; };
-    auto G  = [&](int q) { return g[hix(i, j, q, n)]; };
+    auto G  = [&](int q) { return g[iix(i, j, q, n)]; };
     const real c1 = inv_dx / real(3), c2 = inv_dx / real(12);
     const real gx = c1 * (Cv(i + 1, j) - Cv(i - 1, j))
                   + c2 * (Cv(i + 1, j + 1) + Cv(i + 1, j - 1) - Cv(i - 1, j + 1) - Cv(i - 1, j - 1));
@@ -392,7 +408,7 @@ void ghost_C_pass(sycl::queue &q, Fields F, Mesh M, const int *list, int count, 
 inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, const int *list, int count, bool second) {
     constexpr int WG = 4 * 8 * NX;
     static_assert(NX == NY && WG >= 32);
-    real *h = F.h, *g = F.g;
+    const Pool h = F.h, g = F.g;
     q.parallel_for(sycl::nd_range<1>(size_t(count) * WG, WG), [=](sycl::nd_item<1> it) {
         const int n = list[it.get_group(0)];
         const int t = int(it.get_local_id(0));
@@ -410,16 +426,16 @@ inline void ghost_hg_pass(sycl::queue &q, Fields F, Mesh M, const int *list, int
         sycl::group_barrier(it.get_group());
         const bool bottom = nbr_of(M, n, 3) < 0, top = nbr_of(M, n, 4) < 0;
         if (!bottom && !top) return;
-        for (int w = t; w < (NX + 2) * 9; w += WG) {
-            const int X = w % (NX + 2), i = w / (NX + 2) + 1;
-            for (real *f : {h, g}) {
+        for (int w = t; w < (NX + 2) * 8; w += WG) {      // the rest direction is never read there
+            const int X = w % (NX + 2), i = w / (NX + 2) + 2;
+            for (Pool f : {h, g}) {
                 if (bottom) {
                     const int Xn = sycl::min(sycl::max(0, X + ex[i] * ey[i]), NX + 1);
-                    f[hix(X, 0, i, n)] = (i == 1) ? f[hix(X, 1, 1, n)] : f[hix(Xn, 1, opp[i], n)];
+                    at(f, X, 0, i, n) = at(f, Xn, 1, opp[i], n);
                 }
                 if (top) {
                     const int Xn = sycl::min(sycl::max(0, X - ex[i] * ey[i]), NX + 1);
-                    f[hix(X, NY + 1, i, n)] = (i == 1) ? f[hix(X, NY, 1, n)] : f[hix(Xn, NY, opp[i], n)];
+                    at(f, X, NY + 1, i, n) = at(f, Xn, NY, opp[i], n);
                 }
             }
         }
@@ -467,8 +483,8 @@ inline void collide(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, bool 
         const real inv_dx = p.inv_dx[M.level[n - 1]];
         const real *C = F.C;
         auto Cv = [&](int a, int b) { return C[cix(a, b, n)]; };
-        auto G  = [&](int qq) -> real & { return F.g[hix(i, j, qq, n)]; };
-        auto H  = [&](int qq) -> real & { return F.h[hix(i, j, qq, n)]; };
+        auto G  = [&](int qq) -> real & { return F.g.in[iix(i, j, qq, n)]; };
+        auto H  = [&](int qq) -> real & { return F.h.in[iix(i, j, qq, n)]; };
 
         const real C0 = Cv(i, j);
         const real mu = chem_pot(C, n, i, j, inv_dx, p);
@@ -477,7 +493,7 @@ inline void collide(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, bool 
         real vx, vy, Pc;
         const size_t pc = pix(i, j, n);
         if (moments) {
-            moments_cell(C, F.g, n, i, j, inv_dx, mu, p, Pc, vx, vy);
+            moments_cell(C, F.g.in, n, i, j, inv_dx, mu, p, Pc, vx, vy);
             F.P[pc] = Pc; F.Ux[pc] = vx; F.Uy[pc] = vy;
         } else {
             vx = F.Ux[pc]; vy = F.Uy[pc]; Pc = F.P[pc];
@@ -569,14 +585,14 @@ inline void collide(sycl::queue &q, Fields F, Mesh M, Params p, int nLeaf, bool 
 //== f at (x,y), a cell of block n or of its ghost layer: a ghost cell towards a
 //   same-level leaf is read from that leaf (Ghost_hg_Mod's copy), any other
 //   from the ghost layer (interpolated, restricted or a wall value)
-inline real pull(const real *f, const Mesh &M, int n, int x, int y, int q) {
+inline real pull(Pool f, const Mesh &M, int n, int x, int y, int q) {
     const int sx = x < 1 ? -1 : (x > NX ? 1 : 0), sy = y < 1 ? -1 : (y > NY ? 1 : 0);
     if (sx != 0 || sy != 0) {
         constexpr int k_of[3][3] = {{5, 1, 6}, {3, 0, 4}, {7, 2, 8}};
         const int nb = M.pullnb[8 * (n - 1) + k_of[sx + 1][sy + 1] - 1];
-        if (nb > 0) return f[hix(x - sx * NX, y - sy * NY, q, nb)];
+        if (nb > 0) return f.in[iix(x - sx * NX, y - sy * NY, q, nb)];
     }
-    return f[hix(x, y, q, n)];
+    return at(f, x, y, q, n);
 }
 
 inline void stream(sycl::queue &q, Fields F, Fields Out, Mesh M, Params p, int nLeaf) {
@@ -585,17 +601,17 @@ inline void stream(sycl::queue &q, Fields F, Fields Out, Mesh M, Params p, int n
         const int n = M.leaves[it.get_group(0)];
         const int t = int(it.get_local_id(0)), X = t % NX + 1, Y = t / NX + 1;
         const int L = M.level[n - 1];
-        const real *h = F.h, *g = F.g;
-        real *ho = Out.h, *go = Out.g;
-        const real h1 = h[hix(X, Y, 1, n)];
-        ho[hix(X, Y, 1, n)] = h1;
-        go[hix(X, Y, 1, n)] = g[hix(X, Y, 1, n)];
+        const Pool h = F.h, g = F.g;
+        real *ho = Out.h.in, *go = Out.g.in;
+        const real h1 = h.in[iix(X, Y, 1, n)];
+        ho[iix(X, Y, 1, n)] = h1;
+        go[iix(X, Y, 1, n)] = g.in[iix(X, Y, 1, n)];
         real Cs = h1;
         if (L == p.maxLevels) {
             for (int qd = 2; qd <= 9; ++qd) {
                 const real hn = pull(h, M, n, X - ex[qd], Y - ey[qd], qd);
-                ho[hix(X, Y, qd, n)] = hn;
-                go[hix(X, Y, qd, n)] = pull(g, M, n, X - ex[qd], Y - ey[qd], qd);
+                ho[iix(X, Y, qd, n)] = hn;
+                go[iix(X, Y, qd, n)] = pull(g, M, n, X - ex[qd], Y - ey[qd], qd);
                 Cs += hn;
             }
         } else {
@@ -603,10 +619,10 @@ inline void stream(sycl::queue &q, Fields F, Fields Out, Mesh M, Params p, int n
             const real cU = real(0.5) * cfl * (real(1) + cfl), c0 = real(1) - cfl * cfl;
             const real cD = real(0.5) * cfl * (real(1) - cfl);
             for (int qd = 2; qd <= 9; ++qd) {
-                const real hn = cU * pull(h, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * h[hix(X, Y, qd, n)]
+                const real hn = cU * pull(h, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * h.in[iix(X, Y, qd, n)]
                               - cD * pull(h, M, n, X + ex[qd], Y + ey[qd], qd);
-                ho[hix(X, Y, qd, n)] = hn;
-                go[hix(X, Y, qd, n)] = cU * pull(g, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * g[hix(X, Y, qd, n)]
+                ho[iix(X, Y, qd, n)] = hn;
+                go[iix(X, Y, qd, n)] = cU * pull(g, M, n, X - ex[qd], Y - ey[qd], qd) + c0 * g.in[iix(X, Y, qd, n)]
                                      - cD * pull(g, M, n, X + ex[qd], Y + ey[qd], qd);
                 Cs += hn;
             }
@@ -626,7 +642,7 @@ inline void moments(sycl::queue &q, Fields F, Params p, const BlockRef *list, in
         const real inv_dx = p.inv_dx[b.L];
         const real mu = chem_pot(F.C, b.n, i, j, inv_dx, p);
         real Pc, vx, vy;
-        moments_cell(F.C, F.g, b.n, i, j, inv_dx, mu, p, Pc, vx, vy);
+        moments_cell(F.C, F.g.in, b.n, i, j, inv_dx, mu, p, Pc, vx, vy);
         const size_t pc = pix(i, j, b.n);
         F.P[pc] = Pc; F.Ux[pc] = vx; F.Uy[pc] = vy;
     });
@@ -675,9 +691,9 @@ inline void initial_state(sycl::queue &q, Fields F, Params p, Bubble bb, const B
             const real eU = real(ex[k]) * U + real(ey[k]) * V;
             const real eN = real(ex[k]) * ni + real(ey[k]) * nj;
             const real Gam = Wa[k] * (real(1) + eU * (real(3) + real(4.5) * eU) - real(1.5) * (U * U + V * V));
-            F.h[hix(i, j, k, b.n)] = C0 * (Gam + cT * (real(1) - C0) * Wa[k] * eN);
+            F.h.in[iix(i, j, k, b.n)] = C0 * (Gam + cT * (real(1) - C0) * Wa[k] * eN);
             const real hlp = ((Gam - Wa[k]) * dRho3 + Gam * mu) * (eDc[k] - (U * DcDx + V * DcDy));
-            F.g[hix(i, j, k, b.n)] = Pc * Wa[k] + (Gam - Wa[k]) * (Rho * c13) - real(0.5) * hlp;
+            F.g.in[iix(i, j, k, b.n)] = Pc * Wa[k] + (Gam - Wa[k]) * (Rho * c13) - real(0.5) * hlp;
         }
     });
 }
@@ -690,7 +706,8 @@ inline void clear_slots(sycl::queue &q, Fields F, const int *slots, int count) {
     q.parallel_for(sycl::nd_range<1>(size_t(count) * WG, WG), [=](sycl::nd_item<1> it) {
         const size_t n = size_t(slots[it.get_group(0)]);
         const int t = int(it.get_local_id(0));
-        for (size_t c = t; c < HB; c += WG) { F.h[HB * (n - 1) + c] = 0; F.g[HB * (n - 1) + c] = 0; }
+        for (size_t c = t; c < HB; c += WG) { F.h.in[HB * (n - 1) + c] = 0; F.g.in[HB * (n - 1) + c] = 0; }
+        for (size_t c = t; c < GB; c += WG) { F.h.gh[GB * (n - 1) + c] = 0; F.g.gh[GB * (n - 1) + c] = 0; }
         for (size_t c = t; c < CB; c += WG) F.C[CB * (n - 1) + c] = 0;
         for (size_t c = t; c < PB; c += WG) {
             F.P[PB * (n - 1) + c] = 0; F.Ux[PB * (n - 1) + c] = 0; F.Uy[PB * (n - 1) + c] = 0;
@@ -714,11 +731,11 @@ inline void prolong(sycl::queue &q, Fields F, const int *pairs /* parent, c1 */,
             const int Y = sycl::max(1, sycl::min(NY - 1, fj / 2)), c = 2 * fj - 4 * Y + 1, d = 4 - c;
             const int qc = (fi - 1) / NX + 2 * ((fj - 1) / NY);       // child c1+qc
             const int ci = fi - NX * ((fi - 1) / NX), cj = fj - NY * ((fj - 1) / NY);
-            for (real *f : {F.h, F.g})
+            for (real *f : {F.h.in, F.g.in})
                 for (int k = 1; k <= 9; ++k) {
-                    const real t0 = real(b) * f[hix(X, Y, k, n)]     + real(a) * f[hix(X + 1, Y, k, n)];
-                    const real t1 = real(b) * f[hix(X, Y + 1, k, n)] + real(a) * f[hix(X + 1, Y + 1, k, n)];
-                    f[hix(ci, cj, k, c1 + qc)] = (real(d) * t0 + real(c) * t1) / real(16);
+                    const real t0 = real(b) * f[iix(X, Y, k, n)]     + real(a) * f[iix(X + 1, Y, k, n)];
+                    const real t1 = real(b) * f[iix(X, Y + 1, k, n)] + real(a) * f[iix(X + 1, Y + 1, k, n)];
+                    f[iix(ci, cj, k, c1 + qc)] = (real(d) * t0 + real(c) * t1) / real(16);
                 }
         }
         // C: fine cells 0..2nx+1 from coarse 0..nx+1, each child gets nx+2 x ny+2
@@ -750,7 +767,8 @@ inline void restrict_children(sycl::queue &q, Fields F, const int *pairs /* pare
         const int m = int(it.get_group(0)), n = pairs[2 * m], c = pairs[2 * m + 1];
         const int t = int(it.get_local_id(0));
         const size_t nn = size_t(n);
-        for (size_t w = t; w < HB; w += WG) { F.h[HB * (nn - 1) + w] = 0; F.g[HB * (nn - 1) + w] = 0; }
+        for (size_t w = t; w < HB; w += WG) { F.h.in[HB * (nn - 1) + w] = 0; F.g.in[HB * (nn - 1) + w] = 0; }
+        for (size_t w = t; w < GB; w += WG) { F.h.gh[GB * (nn - 1) + w] = 0; F.g.gh[GB * (nn - 1) + w] = 0; }
         for (size_t w = t; w < CB; w += WG) F.C[CB * (nn - 1) + w] = 0;
         sycl::group_barrier(it.get_group());
         // parent cell (i, j) <- child q, cells (2ii+1..2ii+2, 2jj+1..2jj+2)
@@ -760,10 +778,10 @@ inline void restrict_children(sycl::queue &q, Fields F, const int *pairs /* pare
         auto avg = [](real f11, real f12, real f21, real f22) {
             return real(0.5) * (real(0.5) * (f11 + f12) + real(0.5) * (f21 + f22));
         };
-        for (real *f : {F.h, F.g})
+        for (real *f : {F.h.in, F.g.in})
             for (int k = 1; k <= 9; ++k)
-                f[hix(i, j, k, n)] = avg(f[hix(a, b, k, ch)], f[hix(a, b + 1, k, ch)],
-                                         f[hix(a + 1, b, k, ch)], f[hix(a + 1, b + 1, k, ch)]);
+                f[iix(i, j, k, n)] = avg(f[iix(a, b, k, ch)], f[iix(a, b + 1, k, ch)],
+                                         f[iix(a + 1, b, k, ch)], f[iix(a + 1, b + 1, k, ch)]);
         F.C[cix(i, j, n)] = avg(F.C[cix(a, b, ch)], F.C[cix(a, b + 1, ch)],
                                 F.C[cix(a + 1, b, ch)], F.C[cix(a + 1, b + 1, ch)]);
         for (real *f : {F.P, F.Ux, F.Uy})
