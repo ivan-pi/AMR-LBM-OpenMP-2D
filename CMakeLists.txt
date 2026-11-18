@@ -27,7 +27,7 @@ set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of t
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
-option(AMR_NATIVE "Optimize for the build machine (-march=native / -xHost)" ON)
+option(AMR_NATIVE "Optimize for the build machine (gfortran: -mcpu=native on Arm, -march=native elsewhere; ifx: -xHost)" ON)
 
 if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
@@ -75,19 +75,28 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   set(AMR_FLAG_NATIVE   -xHost)
 endif()
 
-# not every target has -march=native (GCC for Apple Silicon may only take
-# -mcpu=native, or neither): use the first flag the compiler accepts
+# GCC on Arm (Apple Silicon, Graviton, ...) takes -mcpu=native, which sets
+# the architecture and the tuning; there -march=native can turn into a CPU
+# name (-march=apple-m2) that GCC then rejects. Elsewhere -march=native.
+# The first of the two that the compiler accepts is used, or none.
 if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
   include(CheckFortranCompilerFlag)
-  check_fortran_compiler_flag(-march=native AMR_HAVE_MARCH_NATIVE)
-  if(NOT AMR_HAVE_MARCH_NATIVE)
-    check_fortran_compiler_flag(-mcpu=native AMR_HAVE_MCPU_NATIVE)
-    if(AMR_HAVE_MCPU_NATIVE)
-      set(AMR_FLAG_NATIVE -mcpu=native)
-    else()
-      message(STATUS "AMR-LBM: ${CMAKE_Fortran_COMPILER} takes neither -march=native nor -mcpu=native; AMR_NATIVE has no effect")
-      unset(AMR_FLAG_NATIVE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64|aarch64|AARCH64|arm.*)$")
+    set(_amr_native_flags -mcpu=native -march=native)
+  else()
+    set(_amr_native_flags -march=native -mcpu=native)
+  endif()
+  unset(AMR_FLAG_NATIVE)
+  foreach(_flag IN LISTS _amr_native_flags)
+    string(MAKE_C_IDENTIFIER "AMR_HAVE${_flag}" _var)   # AMR_HAVE_mcpu_native, ...
+    check_fortran_compiler_flag(${_flag} ${_var})
+    if(${_var})
+      set(AMR_FLAG_NATIVE ${_flag})
+      break()
     endif()
+  endforeach()
+  if(NOT DEFINED AMR_FLAG_NATIVE)
+    message(STATUS "AMR-LBM: ${CMAKE_Fortran_COMPILER} takes neither -march=native nor -mcpu=native; AMR_NATIVE has no effect")
   endif()
 endif()
 

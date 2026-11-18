@@ -92,7 +92,7 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 | `AMR_BLOCK_SIZE` | `8` | cells per block in each direction (`16` is faster for larger cases) |
 | `AMR_WITH_FVTKHDF` | `OFF` | VTKHDF output; set `CMAKE_PREFIX_PATH` to the fVTKHDF install |
 | `AMR_BUILD_OFFLOAD` | `OFF` | build the GPU offload prototype in `offload/` (ifx only) |
-| `AMR_NATIVE` | `ON` | optimize for the build machine (`-march=native`, or `-mcpu=native` where gfortran lacks it, e.g. on Apple Silicon / `-xHost`) |
+| `AMR_NATIVE` | `ON` | optimize for the build machine (gfortran: `-mcpu=native` on Arm, e.g. Apple Silicon, `-march=native` elsewhere; ifx: `-xHost`) |
 
 The number of threads is taken from `OMP_NUM_THREADS`. The optional arguments
 override the number of time steps (default: 8 bubble-rise time units) and the
