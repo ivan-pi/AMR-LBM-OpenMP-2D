@@ -280,8 +280,9 @@ The controls are inspired by [FluidX3D](https://github.com/ProjectPhysX/FluidX3D
 | `P`, Space | pause / resume the solver; `N` one more update while paused |
 | `Z` / Shift+`Z`, Tab | field: C, P, Ux, Uy, \|U\|, level |
 | `C` / Shift+`C` | colour map: viridis, magma, coolwarm (range symmetric about zero), gray |
-| `1` `2` `3` `4` | field colouring, block outlines, cell outlines, status panel on/off |
-| `F` | freeze the colour range |
+| `1` `2` `3` `4` `5` | field colouring, block outlines, cell outlines, status panel, colour bar on/off |
+| `F` | fit the colour range to the current data (each field keeps its range, taken when first shown, rounded) |
+| `A` | auto colour range: follow every update |
 | `+` `-`, wheel | zoom |
 | `I` `J` `K` `L`, arrows, drag | pan |
 | `R` | reset the view |

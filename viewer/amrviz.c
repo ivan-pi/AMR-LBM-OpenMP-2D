@@ -298,7 +298,7 @@ static void snapshot_free(snapshot_t *s)
 /* ------------------------------------------------------------------------ */
 /* Render thread                                                             */
 
-enum { LAYER_FIELD = 1, LAYER_BLOCKS = 2, LAYER_CELLS = 4, LAYER_HUD = 8 };
+enum { LAYER_FIELD = 1, LAYER_BLOCKS = 2, LAYER_CELLS = 4, LAYER_HUD = 8, LAYER_CBAR = 16 };
 enum { OV_SOLID = 0, OV_GLYPH = 1, OV_BAR = 2 };
 #define OV_FLOATS 9                      /* x, y, u, v, r, g, b, a, mode */
 
@@ -318,7 +318,10 @@ typedef struct {
     int    cmap;                         /* colour map (C) */
     int    layers;                       /* LAYER_* bits */
     int    help;                         /* help overlay (H) */
-    int    frozen;                       /* keep the colour range (F) */
+    int    autorange;                    /* colour range follows every snapshot (A) */
+    int    refit;                        /* take the range from the next upload (F) */
+    int    range_set[AMRVIZ_MAX_FIELDS];      /* range of each field taken yet */
+    float  range_lo[AMRVIZ_MAX_FIELDS], range_hi[AMRVIZ_MAX_FIELDS];
     float  lo, hi;                       /* colour range */
     double zoom, cx, cy;                 /* view: zoom factor, centre */
     int    dragging, mx, my;
@@ -506,6 +509,22 @@ static void pan(render_t *r, double fx, double fy)
 
 /* --- data ---------------------------------------------------------------- */
 
+/* widen [lo, hi] to round numbers: multiples of a hundredth of the power of
+   ten of its width (C: 4.463e-06 .. 1.002 -> 0 .. 1.01) */
+static void nice_range(float *lo, float *hi)
+{
+    double span = (double)*hi - *lo, step;
+    if (!(span > 1e-30 * fmax(fabs(*lo), fabs(*hi))) || span < 1e-30) {
+        double d = fmax(0.5 * fabs(*lo), 0.5);   /* one value: a range around it */
+        *lo -= (float)d;
+        *hi += (float)d;
+        span = (double)*hi - *lo;
+    }
+    step = pow(10.0, floor(log10(span)) - 2.0);
+    *lo = (float)(floor(*lo / step) * step);
+    *hi = (float)(ceil(*hi / step) * step);
+}
+
 /* upload the front snapshot (blocks and the shown field), update the range */
 static void upload(render_t *r)
 {
@@ -536,18 +555,29 @@ static void upload(render_t *r)
         glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(ncells * sizeof(float)), a, GL_STREAM_DRAW);
         for (k = 0; k < ncells; k++)
             if (isfinite(a[k])) { lo = fminf(lo, a[k]); hi = fmaxf(hi, a[k]); }
-    } else if (s->n > 0) {
-        lo = (float)r->lev_min;
-        hi = (float)r->lev_max;
-    }
-    if (!r->frozen && lo <= hi) {
-        if (amrviz_cmap_diverging[r->cmap] && r->field < V.nfields && lo < 0.0f && hi > 0.0f) {
-            hi = fmaxf(-lo, hi);         /* diverging map: white at zero */
-            lo = -hi;
+        /* fixed range per field: from the first snapshot it is shown in, again
+           on F, from every snapshot in auto mode (A) */
+        if (lo <= hi && (r->autorange || r->refit || !r->range_set[r->field])) {
+            nice_range(&lo, &hi);
+            r->range_lo[r->field] = lo;
+            r->range_hi[r->field] = hi;
+            r->range_set[r->field] = 1;
         }
-        if (hi - lo < 1e-30f) { lo -= 0.5f; hi += 0.5f; }
-        r->lo = lo;
-        r->hi = hi;
+        r->refit = 0;
+        if (r->range_set[r->field]) {
+            lo = r->range_lo[r->field];
+            hi = r->range_hi[r->field];
+            if (amrviz_cmap_diverging[r->cmap] && lo < 0.0f && hi > 0.0f) {
+                hi = fmaxf(-lo, hi);     /* diverging map: white at zero */
+                lo = -hi;
+            }
+            r->lo = lo;
+            r->hi = hi;
+        }
+    } else if (s->n > 0) {               /* block level: always the levels present */
+        r->lo = (float)r->lev_min;
+        r->hi = (float)r->lev_max;
+        if (r->hi - r->lo < 0.5f) { r->lo -= 0.5f; r->hi += 0.5f; }
     }
 }
 
@@ -623,12 +653,11 @@ static void ov_printf(render_t *r, float x, float y, const float *c, const char 
     ov_text(r, x, y, c, buf);
 }
 
-/* status panel (top left): field, colour bar, time, mesh, speed, value under the cursor */
 /* the numbers of the status panel change with every snapshot, many times a
-   second: they are taken at most 4 times a second so that they can be read,
+   second: they are taken at most 10 times a second so that they can be read,
    at once after a key, a pause or the end of the run (shown.tick = 0), and
    the value under the cursor also when the mouse moves */
-#define HUD_REFRESH_HZ 4
+#define HUD_REFRESH_HZ 10
 
 static void hud_take(render_t *r)
 {
@@ -662,33 +691,45 @@ static void hud_take(render_t *r)
     }
 }
 
-/* status panel (top left): field, colour bar, time, mesh, speed, value under the cursor */
+/* panel at the top left: the field and colour map, then the colour bar with
+   its range (5), then the status (4): time, mesh, speed, value under the
+   cursor, pause */
 static void hud(render_t *r)
 {
-    const float lh = AMRVIZ_FONT_H + 2, pad = 8;
+    const float lh = AMRVIZ_FONT_H + 2, pad = 8, bar_h = 14;
     const float w = 34 * AMRVIZ_FONT_W + 2 * pad;
-    float x = 10, y = 10, ty;
-    int nlines = 6;
+    const int bar = (r->layers & LAYER_CBAR) != 0, status = (r->layers & LAYER_HUD) != 0;
+    float x = 10, y = 10, ty, h;
+    int nlines = 1;                      /* field and colour map */
 
+    if (!bar && !status) return;
     hud_take(r);
-    if (r->shown.have_probe) nlines++;
-    if (r->paused || r->finished) nlines++;
-    ov_quad(r, x, y, w, nlines * lh + 2 * pad + 4, 0, 0, 0, 0, PANEL, OV_SOLID);
+    if (bar) nlines += 1;                /* range */
+    if (status) {
+        nlines += 4;
+        if (r->shown.have_probe) nlines++;
+        if (r->paused || r->finished) nlines++;
+    }
+    h = nlines * lh + (bar ? bar_h + 4 : 0) + 2 * pad;
+    ov_quad(r, x, y, w, h, 0, 0, 0, 0, PANEL, OV_SOLID);
     x += pad;
     ty = y + pad;
 
     ov_printf(r, x, ty, WHITE, "%-6s %-9s%s", V.names[r->field], amrviz_cmap_names[r->cmap],
-              r->frozen ? " (frozen)" : "");
+              r->autorange ? " (auto)" : "");
     ty += lh;
-    ov_quad(r, x, ty + 2, w - 2 * pad, 10, 0, 0, 1, 0, WHITE, OV_BAR);
-    ty += 14;
-    ov_printf(r, x, ty, GREY, "%-.4g", r->shown.lo);
-    {
-        char hi[32];
-        int n = snprintf(hi, sizeof hi, "%.4g", r->shown.hi);
-        ov_text(r, x + w - 2 * pad - n * AMRVIZ_FONT_W, ty, GREY, hi);
+    if (bar) {
+        ov_quad(r, x, ty + 2, w - 2 * pad, 10, 0, 0, 1, 0, WHITE, OV_BAR);
+        ty += bar_h;
+        ov_printf(r, x, ty, GREY, "%-.4g", r->shown.lo);
+        {
+            char hi[32];
+            int n = snprintf(hi, sizeof hi, "%.4g", r->shown.hi);
+            ov_text(r, x + w - 2 * pad - n * AMRVIZ_FONT_W, ty, GREY, hi);
+        }
+        ty += lh + 4;
     }
-    ty += lh;
+    if (!status) return;
     ov_printf(r, x, ty, WHITE, "t = %.5g   step %ld", r->shown.time, r->shown.step);
     ty += lh;
     ov_printf(r, x, ty, WHITE, "%d blocks, %ld cells", r->shown.n, (long)r->shown.n * V.ncell);
@@ -722,8 +763,10 @@ static const char *help_lines[] = {
     "2            block outlines on/off",
     "3            cell outlines on/off",
     "4            status panel on/off",
+    "5            colour bar on/off",
     "C, Shift+C   next / previous colour map",
-    "F            freeze / unfreeze colour range",
+    "F            fit colour range to the data",
+    "A            auto colour range on/off",
     "+, -, wheel  zoom in / out",
     "I J K L      pan up / left / down / right",
     "arrows, drag pan",
@@ -739,9 +782,12 @@ static void help(render_t *r, int pw, int ph)
 {
     const int n = (int)(sizeof help_lines / sizeof help_lines[0]);
     const float lh = AMRVIZ_FONT_H + 2, pad = 14;
-    const float w = 40 * AMRVIZ_FONT_W + 2 * pad, h = n * lh + 2 * pad;
-    float x = floorf(0.5f * (pw - w)), y = floorf(0.5f * (ph - h));
+    size_t len = 0;
     int k;
+    for (k = 0; k < n; k++)
+        if (strlen(help_lines[k]) > len) len = strlen(help_lines[k]);
+    const float w = (float)len * AMRVIZ_FONT_W + 2 * pad, h = n * lh + 2 * pad;
+    float x = floorf(0.5f * (pw - w)), y = floorf(0.5f * (ph - h));
     if (x < 0) x = 0;
     if (y < 0) y = 0;
     ov_quad(r, x, y, w, h, 0, 0, 0, 0, PANEL, OV_SOLID);
@@ -807,7 +853,7 @@ static void draw(render_t *r)
        (Retina) display one unit is several drawable pixels, and the text
        keeps its size on screen */
     r->ov_n = 0;
-    if (r->have_data && (r->layers & LAYER_HUD)) hud(r);
+    if (r->have_data) hud(r);
     if (r->help) help(r, ww, wh);
     else if (!r->have_data) ov_text(r, 10, 10, GREY, "waiting for the first snapshot ...  (H: help)");
     if (r->ov_n > 0) {
@@ -840,7 +886,7 @@ static void print_view(render_t *r)
 {
     printf(" amrviz view: centre (%.6g, %.6g), zoom %.6g, field %s, colour map %s, range [%.6g, %.6g]%s\n",
            r->cx, r->cy, r->zoom, V.names[r->field], amrviz_cmap_names[r->cmap], r->lo, r->hi,
-           r->frozen ? " (frozen)" : "");
+           r->autorange ? " (auto)" : "");
     fflush(stdout);
 }
 
@@ -883,7 +929,9 @@ static int handle_event(render_t *r, const SDL_Event *e)
         case SDLK_2:   r->layers ^= LAYER_BLOCKS; break;
         case SDLK_3:   r->layers ^= LAYER_CELLS;  break;
         case SDLK_4:   r->layers ^= LAYER_HUD;    break;
-        case SDLK_f:   r->frozen = !r->frozen; r->reupload = 1; break;
+        case SDLK_5:   r->layers ^= LAYER_CBAR;   break;
+        case SDLK_f:   r->refit = 1; r->reupload = 1; break;
+        case SDLK_a:   r->autorange = !r->autorange; r->reupload = 1; break;
         case SDLK_c:
             r->cmap = (r->cmap + (shift ? AMRVIZ_CMAP_COUNT - 1 : 1)) % AMRVIZ_CMAP_COUNT;
             r->reupload = 1;             /* the range may become symmetric */
@@ -963,7 +1011,7 @@ static void update_rate(render_t *r)
 static int render_init(render_t *r, int swap_interval)
 {
     memset(r, 0, sizeof *r);
-    r->layers = LAYER_FIELD | LAYER_BLOCKS | LAYER_HUD;
+    r->layers = LAYER_FIELD | LAYER_BLOCKS | LAYER_HUD | LAYER_CBAR;
     r->redraw = 1;
     reset_view(r);
 

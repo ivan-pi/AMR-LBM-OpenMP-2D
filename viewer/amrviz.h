@@ -35,9 +35,10 @@
  *   Z / Shift+Z, Tab        next / previous field
  *   C / Shift+C             next / previous colour map (viridis, magma,
  *                           coolwarm with a range symmetric about zero, gray)
- *   1 2 3 4                 field colouring, block outlines, cell outlines,
- *                           status panel on/off
- *   F                       freeze / unfreeze the colour range
+ *   1 2 3 4 5               field colouring, block outlines, cell outlines,
+ *                           status panel, colour bar on/off
+ *   F                       fit the colour range to the current data
+ *   A                       auto colour range on/off (follows every snapshot)
  *   +, -, mouse wheel       zoom (the wheel about the cursor)
  *   I J K L, arrows, drag   pan
  *   R                       reset the view

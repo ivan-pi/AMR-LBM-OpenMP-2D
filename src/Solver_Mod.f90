@@ -466,8 +466,8 @@ CONTAINS
             '  P, Space    pause / resume        N           one update while paused', &
             '  Z, Tab      next field: C, P, Ux, Uy, |U|, level (Shift+Z: previous)', &
             '  C           next colour map (Shift+C: previous)', &
-            '  1 2 3 4     toggle field, block outlines, cell outlines, status panel', &
-            '  F           freeze the colour range', &
+            '  1 2 3 4 5   toggle field, block outlines, cell outlines, status, colour bar', &
+            '  F           fit the colour range to the data    A   auto range on/off', &
             '  wheel, + -  zoom                  drag, arrows, I J K L   pan', &
             '  R           reset the view        G           print the view settings', &
             '  H           help in the window    Esc         close the window (run goes on)'
