@@ -44,6 +44,10 @@ MODULE Parker_Cases_Mod
     REAL(wp) :: x_mix     = 0.5_wp      ! spinodal: mean mole fraction of species 1
     REAL(wp) :: noise     = 0.05_wp     ! spinodal: amplitude of the perturbation
     INTEGER  :: n_steps   = 12000       ! number of time steps
+    !== mesh policy overrides (negative: keep the model's value)
+    INTEGER  :: max_island = -1         ! largest coarse island refined (0: off)
+    REAL(wp) :: refine_tol = -1         ! refinement / derefinement tolerances of max |grad ln gamma|
+    REAL(wp) :: deref_tol  = -1
 
     REAL(wp) :: xa, xb                  ! coexisting mole fractions of species 1
     REAL(wp) :: X0, Y0                  ! centre of the droplet / of the square
@@ -61,6 +65,7 @@ FUNCTION Parker_Case() RESULT( problem )
     problem%Initial_State => Initial_State
     problem%Diagnostics   => Diagnostics
     problem%Finish        => Close_Diagnostics
+    problem%Adjust_Model  => Adjust_Model
 
 END FUNCTION Parker_Case
 
@@ -73,7 +78,8 @@ SUBROUTINE Setup( t_end_out, time_per_step )
     IMPLICIT NONE
     REAL(wp), INTENT(OUT) :: t_end_out, time_per_step
 
-    NAMELIST /parker/ kind, D_lu, kappa, nu_lu, A_12, A_21, c_total, Radius, eps, x_mix, noise, n_steps
+    NAMELIST /parker/ kind, D_lu, kappa, nu_lu, A_12, A_21, c_total, Radius, eps, x_mix, noise, n_steps, &
+                      max_island, refine_tol, deref_tol
 
     CHARACTER(len=256) :: file
     INTEGER :: length, stat, un
@@ -116,6 +122,21 @@ SUBROUTINE Setup( t_end_out, time_per_step )
     time_per_step = 1
 
 END SUBROUTINE Setup
+
+!******************************************************************************
+
+!== mesh policy from the namelist (negative values keep the model's defaults)
+SUBROUTINE Adjust_Model( model )
+    USE Model_Mod, ONLY: LBM_Model
+    TYPE(LBM_Model), INTENT(INOUT) :: model
+
+    IF( max_island >= 0 ) model%max_island_blocks = max_island
+    IF( refine_tol >  0 ) model%refine_tol = refine_tol
+    IF( deref_tol  >  0 ) model%deref_tol  = deref_tol
+    PRINT '(A,2ES10.2,I4)', 'mesh: refine_tol, deref_tol, max_island_blocks:', &
+        model%refine_tol, model%deref_tol, model%max_island_blocks
+
+END SUBROUTINE Adjust_Model
 
 !******************************************************************************
 

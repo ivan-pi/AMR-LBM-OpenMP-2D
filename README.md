@@ -187,7 +187,9 @@ their public entities explicitly; helpers used by a single routine are internal
 procedures of that routine.
 
 The solver knows the model and the case only through the procedure pointers
-of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`): a new case is a new
+of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`). A case may adjust
+the model's mesh policy (tolerances, island refinement) through the optional
+`Adjust_Model`, called after its setup: a new case is a new
 module with a constructor like `Rising_Bubble_Case()`, a new model one like
 `JCP2016_Model()`. Each model brings its refinement criterion (`Block_Error`
 interface) and tolerances, since the blocks it needs on the finest level depend
@@ -259,6 +261,7 @@ Parameters come from the namelist `&parker` in the file `AMR_CASE`:
 | `Radius`, `eps` | 20, 0 | droplet radius and elongation |
 | `x_mix`, `noise` | 0.5, 0.05 | spinodal/box: mean mole fraction of species 1 and perturbation (`noise = 0.5`: uniform in [0, 1]) |
 | `n_steps` | 12000 | number of time steps |
+| `refine_tol`, `deref_tol`, `max_island` | model: 0.02, 0.01, 16 | mesh policy overrides (negative: keep the model's value); the refine tolerance must lie below the gradient of ln γ that the initial state shows on the coarsest level, or the mesh never resolves it |
 
 Spinodal decomposition in a periodic box as in Parker's `periodic.f90`
 (128 × 128, uniform random x₁, D = ν = 1/3, κ = 1/(36 D²)):

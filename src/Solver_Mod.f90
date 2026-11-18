@@ -20,18 +20,21 @@ MODULE Solver_Mod
 
 CONTAINS
 
-!== run a test case with an LBM model
-SUBROUTINE Run_AMR_LBM( model, problem )
+!== run a test case with an LBM model; the case may adjust the model's mesh
+!   policy (tolerances, island refinement) after its setup
+SUBROUTINE Run_AMR_LBM( model_in, problem )
     USE Config_Mod, ONLY: minLevels, maxLevels
     USE Blocks_Mod, ONLY: nScalars
     IMPLICIT NONE
-    TYPE(LBM_Model), INTENT(IN) :: model
+    TYPE(LBM_Model), INTENT(IN) :: model_in
     TYPE(AMR_Case),  INTENT(IN) :: problem
 
+    TYPE(LBM_Model) :: model
     INTEGER    :: L
     INTEGER(8) :: t1, t2, Rate
     REAL(wp)   :: t_end, time_per_step
 
+    model = model_in
     IF( .NOT. ( ASSOCIATED(model%Initialize) .AND. ASSOCIATED(model%Collide) .AND. &
                 ASSOCIATED(model%Moments_g)  .AND. ASSOCIATED(model%Moments_and_Collide) .AND. &
                 ASSOCIATED(model%Refinement_Error) ) ) ERROR STOP 'Run_AMR_LBM: incomplete model'
@@ -42,6 +45,7 @@ SUBROUTINE Run_AMR_LBM( model, problem )
 
     PRINT '(/2A)', 'Case: ', TRIM(problem%name)
     CALL problem%Setup( t_end, time_per_step )
+    IF( ASSOCIATED(problem%Adjust_Model) ) CALL problem%Adjust_Model( model )
 
     nScalars = model%n_scalars      ! before the block pool is allocated
     CALL Create_Domain
