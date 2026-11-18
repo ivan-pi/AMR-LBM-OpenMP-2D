@@ -14,6 +14,7 @@ MODULE Solver_Mod
     USE Ghost_C_Mod, ONLY: Fill_Ghost_Cells_C
     USE Ghost_hg_Mod, ONLY: Fill_Ghost_Cells_hg
     USE Output_Mod, ONLY: Select_Writer, Write_Output, Close_Output
+    USE Viewer_Mod, ONLY: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Run_AMR_LBM
@@ -124,6 +125,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
         IF( ios /= 0 .OR. nOutStep < 1 ) STOP 'usage: amr_lbm [number_of_time_steps [output_interval_in_steps]]'
     END IF
     CALL Select_Writer
+    CALL Viewer_Open
     !== the case's diagnostics are recorded 120 times per run and at every output
     nDiagStep = MAX( Tf/120, 1 )
     !== a progress line (speed, estimated time left) 20 times per run
@@ -180,6 +182,12 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 !$OMP END PARALLEL
             END IF
             CALL Lap( t_refine )
+        END IF
+
+        !== real-time view (optional, AMR_VIEW): C of this step, P and U of the last moments
+        IF( Viewer_Due( T, Tf ) ) THEN
+            CALL Viewer_Update( T, T*time_per_step )
+            CALL Lap( t_Output )
         END IF
 
         moments_done  = ( T == 0 )
@@ -280,6 +288,8 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     PRINT '(A,F12.3,A,I0,A,F0.2,A)', ' t_nbr_table:     ', DBLE(t_nbr_table)/Rate, &
         '   (in t_refine; ', n_nbr_rebuilds, ' rebuilds, ', &
         1.e6_dp*DBLE(t_nbr_table)/Rate/MAX(n_nbr_rebuilds,1), ' us each)'
+
+    CALL Viewer_Close
 
 CONTAINS
 
