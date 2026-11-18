@@ -28,7 +28,7 @@ MODULE Ghost_hg_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, di, dj, facing
-    USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
+    USE Boundaries_Mod, ONLY: Side
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Fill_Ghost_Cells_hg
@@ -55,10 +55,13 @@ CONTAINS
 !   interpolating block's level or the coarser one, filled by the first
 !   pass. So the levels need no barrier between them (NOWAIT), the passes
 !   one. The wall conditions run in the first pass only: their values that
-!   come from a side ghost cell still to be interpolated (end columns,
-!   directions with ex*ey /= 0 pointing out of the block) are read neither
-!   by the streaming nor by finer neighbours, which read the wall row on
-!   their own side (restricted in the first pass). The static
+!   come from a ghost cell still to be interpolated (at the ends of the wall
+!   row or column, directions pointing out of the block) are read neither
+!   by the streaming nor by finer neighbours, which read the wall row or
+!   column on their own side (restricted in the first pass). The same holds
+!   for walls on the left and right as on the bottom and top: the wall
+!   conditions are mirror images (BC_Mod). Where two walls meet, both fill
+!   the corner ghost cell; they agree in the directions that are read. The static
 !   schedules per level are those of the collision and streaming loops:
 !   each block stays with one thread.
 SUBROUTINE Fill_Ghost_Cells_hg
@@ -93,7 +96,7 @@ SUBROUTINE Fill_Ghost_Cells_hg
                 END IF
             END DO
 
-            CALL Walls( n, 0, nx+1 )
+            CALL Walls( n )
 
         END DO
 !$OMP END DO NOWAIT
@@ -126,17 +129,16 @@ SUBROUTINE Fill_Ghost_Cells_hg
 
 CONTAINS
 
-    !== bounce-back on the bottom and top walls, columns X1:X2
-    SUBROUTINE Walls( n, X1, X2 )
-        INTEGER, INTENT(IN) :: n, X1, X2
-        IF( Blk(n)%nbr(3) < 0 ) THEN
-            CALL Bounce_Back_3( Blk_h(:,:,:,n), X1, X2 )
-            CALL Bounce_Back_3( Blk_g(:,:,:,n), X1, X2 )
-        END IF
-        IF( Blk(n)%nbr(4) < 0 ) THEN
-            CALL Bounce_Back_4( Blk_h(:,:,:,n), X1, X2 )
-            CALL Bounce_Back_4( Blk_g(:,:,:,n), X1, X2 )
-        END IF
+    !== the boundary conditions of the domain sides (Boundaries_Mod) next to
+    !   block n, along the whole side including the corners
+    SUBROUTINE Walls( n )
+        INTEGER, INTENT(IN) :: n
+        INTEGER :: k
+        DO k = 1, 4
+            IF( Blk(n)%nbr(k) >= 0 ) CYCLE
+            CALL Side(k)%h( Blk_h(:,:,:,n), 0, MERGE( ny+1, nx+1, k <= 2 ) )
+            CALL Side(k)%g( Blk_g(:,:,:,n), 0, MERGE( ny+1, nx+1, k <= 2 ) )
+        END DO
     END SUBROUTINE Walls
 
 END SUBROUTINE Fill_Ghost_Cells_hg

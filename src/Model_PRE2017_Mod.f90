@@ -39,19 +39,35 @@ MODULE Model_PRE2017_Mod
 
 CONTAINS
 
-!== the model. refine_light_phase (default .TRUE.) selects the refinement
-!   criterion: the interface and the light phase (Interface_Light_Phase_Error),
-!   or the interface only (Interface_Error). The light phase is needed on the
+!== the model. refine_light_phase selects the refinement criterion: the
+!   interface and the light phase (Interface_Light_Phase_Error), or the
+!   interface only (Interface_Error). The light phase is needed on the
 !   finest level at high density ratios (rising bubble, rho_h/rho_l = 1000),
 !   not at low ones (Rayleigh-Taylor at At = 0.5: same fronts, half the cost).
-FUNCTION PRE2017_Model( refine_light_phase ) RESULT( model )
-    LOGICAL, INTENT(IN), OPTIONAL :: refine_light_phase
+!   It is taken from the argument light_phase if present, else from the
+!   namelist &pre2017 of the case file, else .TRUE.
+FUNCTION PRE2017_Model( light_phase ) RESULT( model )
+    USE Case_File_Mod, ONLY: Open_Case_File, Close_Case_File
+    LOGICAL, INTENT(IN), OPTIONAL :: light_phase
     TYPE(LBM_Model) :: model
 
-    LOGICAL :: light
+    LOGICAL :: refine_light_phase, found
+    CHARACTER(len=256) :: msg
+    INTEGER :: u, stat
 
-    light = .TRUE.
-    IF( PRESENT(refine_light_phase) ) light = refine_light_phase
+    NAMELIST /pre2017/ refine_light_phase
+
+    refine_light_phase = .TRUE.
+    IF( PRESENT(light_phase) ) THEN
+        refine_light_phase = light_phase
+    ELSE
+        CALL Open_Case_File( u, found )
+        IF( found ) THEN
+            msg = ''
+            READ( u, NML=pre2017, IOSTAT=stat, IOMSG=msg )
+            CALL Close_Case_File( u, stat, msg, 'pre2017', required=.FALSE. )
+        END IF
+    END IF
 
     model%name       =  'improved-locality phase-field LBM (Fakhari et al., PRE 2017)'
     model%ghost_C    =  1       ! isotropic differences only
@@ -59,7 +75,7 @@ FUNCTION PRE2017_Model( refine_light_phase ) RESULT( model )
     model%Collide    => Collide_Block
     model%Moments_g  => Moments_g_Block
     model%Moments_and_Collide => Moments_and_Collide_Block
-    IF( light ) THEN
+    IF( refine_light_phase ) THEN
         model%Refinement_Error => Interface_Light_Phase_Error
     ELSE
         model%name             =  TRIM(model%name) // ', interface-only refinement'

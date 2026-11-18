@@ -12,7 +12,7 @@ MODULE Ghost_C_Mod
     USE Config_Mod, ONLY: nx, ny
     USE Blocks_Mod, ONLY: Blk, Blk_C, di, dj, facing
     USE Interpolations_Mod, ONLY: Biquadratic_from_Fine, Biquadratic_from_Coarse
-    USE BC_Mod, ONLY: Symmetric_C_3, Symmetric_C_4
+    USE Boundaries_Mod, ONLY: Side
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Fill_Ghost_Cells_C
@@ -23,21 +23,25 @@ CONTAINS
 !== fill ng ghost layers of C on all leaf blocks, in two passes over the
 !   levels as for h and g (Fill_Ghost_Cells_hg): copies, restrictions and
 !   walls first, then the interpolations from coarser neighbours. The wall
-!   ghost cells in the end columns next to an interpolated side copy its
+!   ghost cells at the ends of a wall next to an interpolated side copy its
 !   ghost cells and are redone then; the collision stencils read them.
+!   Where two walls meet, the second one fills the corner from the ghost
+!   cells of the first, which gives the mirror image across both.
 SUBROUTINE Fill_Ghost_Cells_C( ng )
     USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: ng
 
-    INTEGER :: L, k, m, n, X1
+    INTEGER :: L, k, m, n, w, i1
 
     DO L = LevelMin, LevelMax
 !$OMP DO schedule(static)
         DO m = LevelStart(L), LevelStart(L+1)-1
             n = LeafByLevel(m)
             CALL Fill( n, L, .FALSE. )
-            CALL Walls( n, 1-ng, nx+ng )
+            DO w = 1, 4
+                IF( Blk(n)%nbr(w) < 0 ) CALL Side(w)%C( ng, Blk_C(:,:,n), 1-ng, MERGE( ny, nx, w <= 2 )+ng )
+            END DO
         END DO
 !$OMP END DO NOWAIT
     END DO
@@ -49,11 +53,15 @@ SUBROUTINE Fill_Ghost_Cells_C( ng )
             n = LeafByLevel(m)
             IF( .NOT. Blk(n)%Coarser ) CYCLE
             CALL Fill( n, L, .TRUE. )
-            DO k = 1, 2
-                IF( Blk(n)%nbr(k) <= 0 ) CYCLE
-                IF( Blk(Blk(n)%nbr(k))%Level == L ) CYCLE
-                X1 = MERGE( 1-ng, nx+1, k == 1 )
-                CALL Walls( n, X1, X1+ng-1 )
+            !== the ends of each wall w next to an interpolated side k across it
+            DO w = 1, 4
+                IF( Blk(n)%nbr(w) >= 0 ) CYCLE
+                DO k = MERGE( 3, 1, w <= 2 ), MERGE( 4, 2, w <= 2 )
+                    IF( Blk(n)%nbr(k) <= 0 ) CYCLE
+                    IF( Blk(Blk(n)%nbr(k))%Level == L ) CYCLE
+                    i1 = MERGE( 1-ng, MERGE( ny, nx, w <= 2 )+1, MOD(k,2) == 1 )
+                    CALL Side(w)%C( ng, Blk_C(:,:,n), i1, i1+ng-1 )
+                END DO
             END DO
         END DO
 !$OMP END DO NOWAIT
@@ -81,13 +89,6 @@ CONTAINS
             END IF
         END DO
     END SUBROUTINE Fill
-
-    !== symmetry on the bottom and top walls, columns X1:X2
-    SUBROUTINE Walls( n, X1, X2 )
-        INTEGER, INTENT(IN) :: n, X1, X2
-        IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, Blk_C(:,:,n), X1, X2 )
-        IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, Blk_C(:,:,n), X1, X2 )
-    END SUBROUTINE Walls
 
 END SUBROUTINE Fill_Ghost_Cells_C
 

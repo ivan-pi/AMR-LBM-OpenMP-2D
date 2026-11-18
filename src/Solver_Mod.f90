@@ -1,8 +1,8 @@
 !================================================
 !   The AMR-LBM solver: initialization and time loop for a given LBM model
-!   (Model_Mod) and test case (Case_Mod); the drivers main_*.f90 select both.
-!   The domain is set in Config_Mod: periodic sides, walls at the bottom
-!   and top.
+!   (Model_Mod) and test case (Case_Mod); the driver main.f90 selects both
+!   (Registry_Mod). The size of the domain is set in Config_Mod, its
+!   boundaries by the case (Boundaries_Mod).
 !================================================
 MODULE Solver_Mod
     USE Kinds_Mod, ONLY: wp, dp
@@ -24,6 +24,7 @@ CONTAINS
 !== run a test case with an LBM model
 SUBROUTINE Run_AMR_LBM( model, problem )
     USE Config_Mod, ONLY: minLevels, maxLevels
+    USE Boundaries_Mod, ONLY: Set_Boundaries
     IMPLICIT NONE
     TYPE(LBM_Model), INTENT(IN) :: model
     TYPE(AMR_Case),  INTENT(IN) :: problem
@@ -43,6 +44,7 @@ SUBROUTINE Run_AMR_LBM( model, problem )
     PRINT '(/2A)', 'Case: ', TRIM(problem%name)
     CALL problem%Setup( t_end, time_per_step )
 
+    CALL Set_Boundaries( problem%side )     ! before the neighbour table
     CALL Create_Domain
 
     CALL Initialize_State( model, problem )

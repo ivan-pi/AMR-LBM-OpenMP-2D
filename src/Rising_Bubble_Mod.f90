@@ -22,13 +22,15 @@
 !   Bubble of diameter D = L0/5 at (L0/2, L0/2) in an L0 x 3*L0 channel,
 !   periodic sides, walls at the bottom and top (Fakhari, Geier & Lee,
 !   J. Comput. Phys. 315 (2016), Sec. 5.1). The dimensionless numbers are
-!   read from the namelist &rising_bubble in the file named by the
-!   environment variable AMR_CASE (see cases/); without it the defaults
-!   below are used. The rise of the bubble is written to bubble_rise.dat.
+!   read from the namelist &rising_bubble in the case file (Case_File_Mod,
+!   see cases/); without one the defaults below are used. The sides of the
+!   channel are the case's default boundaries (&boundaries can change
+!   them). The rise of the bubble is written to bubble_rise.dat.
 !================================================
 MODULE Rising_Bubble_Mod
     USE Kinds_Mod, ONLY: wp, dp
     USE Case_Mod, ONLY: AMR_Case
+    USE Boundaries_Mod, ONLY: Periodic, Wall
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Rising_Bubble_Case
@@ -63,6 +65,7 @@ FUNCTION Rising_Bubble_Case() RESULT( problem )
     problem%Initial_State => Initial_State
     problem%Diagnostics   => Bubble_Diagnostics
     problem%Finish        => Close_Diagnostics
+    problem%side          =  [ Periodic(), Periodic(), Wall(3), Wall(4) ]
 
 END FUNCTION Rising_Bubble_Case
 
@@ -71,14 +74,16 @@ END FUNCTION Rising_Bubble_Case
 SUBROUTINE Setup( t_end_out, time_per_step )
     USE Config_Mod, ONLY: L0
     USE Physics_Mod, ONLY: W, Sigma, Beta, kappa, taul, tauh, Rhol, Rhoh, Gy, D, M0, wc
+    USE Case_File_Mod, ONLY: Open_Case_File, Close_Case_File
     IMPLICIT NONE
     REAL(wp), INTENT(OUT) :: t_end_out      ! end time t*
     REAL(wp), INTENT(OUT) :: time_per_step  ! t* of one lattice time step: sqrt(Gy/D)
 
     NAMELIST /rising_bubble/ Eo, Re, rho_ratio, mu_ratio, Gy_lu, Mobility, Pe, Width, Cn, t_end
 
-    CHARACTER(len=256) :: file
-    INTEGER  :: length, stat, u
+    CHARACTER(len=256) :: msg
+    INTEGER  :: stat, u
+    LOGICAL  :: found
     REAL(wp) :: mul
 
     !== bubble of diameter D = L0/5 at (L0/2, L0/2)
@@ -87,14 +92,11 @@ SUBROUTINE Setup( t_end_out, time_per_step )
     X0 = L0/2
     Y0 = L0/2
 
-    CALL GET_ENVIRONMENT_VARIABLE( 'AMR_CASE', file, length, stat )
-    IF( stat == 0 .AND. length > 0 ) THEN
-        OPEN( NEWUNIT=u, FILE=TRIM(file), STATUS='OLD', ACTION='READ', IOSTAT=stat )
-        IF( stat /= 0 ) ERROR STOP 'AMR_CASE: cannot open the case file'
-        READ( u, NML=rising_bubble, IOSTAT=stat )
-        IF( stat /= 0 ) ERROR STOP 'AMR_CASE: error in namelist &rising_bubble'
-        CLOSE( u )
-        PRINT '(/2A)', 'Case file: ', TRIM(file)
+    CALL Open_Case_File( u, found )
+    IF( found ) THEN
+        msg = ''
+        READ( u, NML=rising_bubble, IOSTAT=stat, IOMSG=msg )
+        CALL Close_Case_File( u, stat, msg, 'rising_bubble', required=.TRUE. )
     END IF
 
     Rhoh = 1

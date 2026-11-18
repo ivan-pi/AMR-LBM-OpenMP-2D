@@ -6,8 +6,8 @@
 !   L0 x L0 lattice units at the finest level, and a uniform background
 !   refinement to minLevels. As constants they let the compiler specialise
 !   every block kernel for the block size. The domain is nBaseX x nBaseY
-!   base blocks (L0 x nBaseY*L0, by default L0 x 3*L0), periodic in x,
-!   with walls at the bottom and top.
+!   base blocks (L0 x nBaseY*L0, by default L0 x 3*L0); its sides are set
+!   at run time by the case (Boundaries_Mod).
 !================================================
 MODULE Config_Mod
     USE Kinds_Mod, ONLY: wp

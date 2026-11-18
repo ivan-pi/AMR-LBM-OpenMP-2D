@@ -13,17 +13,47 @@ This package is for numerical simulation of multiphase flows (rising bubble,
 Rayleigh–Taylor instability).
 It employs OpenMP parallelization for share-memory machines.
 
-The computational setup is a 2D bubble rising due to buoyancy force.
-The computational domain is periodic in the x-direction and no-slip (bounce-back) at the bottom and top boundaries.
+The default computational setup is a 2D bubble rising due to buoyancy force.
+The computational domain is periodic in the x-direction and no-slip (bounce-back) at the bottom and top boundaries
+(both cases' default; any side can be made a wall or periodic, see *Case files*).
 
 The geometry, boundary conditions, density ratio 1000, viscosity ratio 100,
 body force and refinement criterion (|∇C| with ε_r = 0.002, ε_d = 0.001) are
 those of the rising-bubble case of Fakhari, Geier & Lee (2016), Sec. 5.1.
 
-### Case parameters
+### Case files
+
+One executable, `amr_lbm`, runs every case with every model. All run-time
+choices come from one namelist file, the *case file*, named by the
+environment variable `AMR_CASE` (examples in `cases/`). Each module reads its
+own group from it:
+
+| group | read by | contents |
+|---|---|---|
+| `&run` | `Registry_Mod` | `case` (`'rising_bubble'`, `'rayleigh_taylor'`) and `model` (`'jcp2016'`, `'pre2017'`); defaults `'rising_bubble'`, `'jcp2016'` |
+| `&boundaries` | `Boundaries_Mod` | `left`, `right`, `bottom`, `top`: `'periodic'` or `'wall'`; unset sides keep the case's choice |
+| `&rising_bubble`, `&rayleigh_taylor` | the case | the case parameters (required when the case file selects that case; `&rising_bubble /` keeps all defaults) |
+| `&pre2017` | the PRE 2017 model | `refine_light_phase` (default `.true.`) |
+
+The environment variable `AMR_MODEL` overrides the model of `&run`, so one case
+file runs with both models. Without a case file the run is the rising bubble
+with the JCP 2016 model and all defaults. For example, the rising bubble in a
+closed box with the PRE 2017 model:
+
+```
+&run  case = 'rising_bubble', model = 'pre2017' /
+&boundaries  left = 'wall', right = 'wall' /
+&rising_bubble  Eo = 10 /
+```
+
+Opposite sides must both be periodic or both not. A wall is a halfway
+bounce-back wall for h (no flux of C) and g (no slip) with a zero normal
+gradient of C (90° contact angle).
+
+### Rising-bubble parameters
 
 The dimensionless numbers are read at start-up from the namelist
-`&rising_bubble` in the file named by the environment variable `AMR_CASE`:
+`&rising_bubble` of the case file:
 
 | variable | default | meaning |
 |---|---|---|
@@ -42,7 +72,8 @@ they need L0 = 512 (l_max = 6):
 
 ```
 cmake -B build-paper -DAMR_L0=512 && cmake --build build-paper -j
-AMR_CASE=cases/paper2016_Eo20.nml ./build-paper/amr_lbm
+AMR_CASE=cases/paper2016_Eo20.nml ./build-paper/amr_lbm                     # JCP 2016 model
+AMR_CASE=cases/paper2016_Eo20.nml AMR_MODEL=pre2017 ./build-paper/amr_lbm   # PRE 2017 model
 ```
 
 Every run writes `bubble_rise.dat` (120 samples and every output): the
@@ -65,12 +96,13 @@ The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
 cmake -B build                                  # Release, double precision
 cmake --build build -j
 OMP_NUM_THREADS=8 ./build/amr_lbm [number_of_time_steps [output_interval_in_steps]]
-OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
+OMP_NUM_THREADS=8 AMR_MODEL=pre2017 ./build/amr_lbm [...]    # same case, PRE 2017 model
 ```
 
-Four drivers are built, one per case and LBM model (see *Models*): `amr_lbm`
-(JCP 2016) and `amr_lbm_pre2017` (PRE 2017) for the rising bubble,
-`amr_lbm_rt` and `amr_lbm_rt_pre2017` for the Rayleigh–Taylor instability.
+One executable is built; the case file and `AMR_MODEL` choose the case and
+the LBM model at run time (see *Case files* and *Models*). The domain size
+(`AMR_L0`, `AMR_DOMAIN_HEIGHT`) and the block size remain compile-time
+options, so the kernels stay specialised for the block size.
 
 The block fields live in one pool array per field, allocated at start-up for
 the blocks of the fully refined quadtree (`4**(maxLevels+1) - 1`, e.g. 4095
@@ -108,19 +140,18 @@ always accumulated in double precision.
 
 A heavy fluid above a light one, the interface at mid-height perturbed by
 y = 0.1 L0 cos(2πx/L0): the single-mode case of Fakhari, Mitchell, Leonardi &
-Bolster (PRE 2017), Sec. IV B, Figs. 5–6. The drivers are `amr_lbm_rt` (JCP 2016
-model) and `amr_lbm_rt_pre2017`; the paper's L × 4L domain needs
-`-DAMR_DOMAIN_HEIGHT=4`:
+Bolster (PRE 2017), Sec. IV B, Figs. 5–6 (`&run case = 'rayleigh_taylor' /`);
+the paper's L × 4L domain needs `-DAMR_DOMAIN_HEIGHT=4`:
 
 ```
 cmake -B build-rt -DAMR_L0=256 -DAMR_DOMAIN_HEIGHT=4 && cmake --build build-rt -j
-AMR_CASE=cases/paper2017_RT_At05.nml ./build-rt/amr_lbm_rt
+AMR_CASE=cases/paper2017_RT_At05.nml AMR_MODEL=jcp2016 ./build-rt/amr_lbm
 python3 tools/plot_rt.py rt_fronts.dat:JCP2016 --paper -o rt.png
 ```
 
 The namelist `&rayleigh_taylor` sets `At` (Atwood number), `Re` = ρh U0 L0/μh,
 `mu_ratio`, `Ca` = μh U0/σ, `Pe` = U0 L0/M (or `Mobility`), `Cn` / `Width`,
-`Gy_lu`, `Amplitude` (/L0), `t_end` and `refine_light_phase`, with U0 = √(g L0) and the time
+`Gy_lu`, `Amplitude` (/L0) and `t_end`, with U0 = √(g L0) and the time
 t* = t/t0, t0 = √(L0/(g At)). The defaults are the paper's At = 0.5 case
 (Re = 3000, μh/μl = 1, Ca = 0.26, Pe = 1000, W = 5, t0 = 16000 steps at
 L0 = 256) but end at t* = 2.5, when the spike nears the bottom wall of the
@@ -134,11 +165,11 @@ Paper case (L0 = 256, l_max = 5, min level 1, 3 threads each on a loaded machine
 | t* | 1 | 1.5 | 2 | 2.5 | 3 |
 |---|---|---|---|---|---|
 | bubble, PRE 2017 Fig. 6 | 0.29 | 0.425 | 0.555 | 0.685 | 0.835 |
-| bubble, `amr_lbm_rt` | 0.289 | 0.428 | 0.561 | 0.696 | 0.841 |
-| bubble, `amr_lbm_rt_pre2017` | 0.287 | 0.423 | 0.554 | 0.686 | 0.828 |
+| bubble, JCP 2016 | 0.289 | 0.428 | 0.561 | 0.696 | 0.841 |
+| bubble, PRE 2017 | 0.287 | 0.423 | 0.554 | 0.686 | 0.828 |
 | spike, PRE 2017 Fig. 6 | −0.36 | −0.61 | −0.86 | −1.11 | −1.43 |
-| spike, `amr_lbm_rt` | −0.347 | −0.593 | −0.825 | −1.066 | −1.372 |
-| spike, `amr_lbm_rt_pre2017` | −0.350 | −0.600 | −0.839 | −1.085 | −1.387 |
+| spike, JCP 2016 | −0.347 | −0.593 | −0.825 | −1.066 | −1.372 |
+| spike, PRE 2017 | −0.350 | −0.600 | −0.839 | −1.085 | −1.387 |
 
 The paper values are read off Fig. 6 (its "current" curve, about ±0.01). Both
 models reproduce the bubble front within 0.01 L0 and the shapes of Fig. 5 (the
@@ -150,8 +181,9 @@ the AMR run trails the uniform one by up to 0.02 L0, and min level 3 is
 the same as min level 1 to 0.001 L0. The total mass changes by −0.015 % (AMR)
 and 0 (uniform) by t* = 3.2.
 
-`refine_light_phase` (default `.false.`) selects the refinement criterion of
-the PRE 2017 model in `amr_lbm_rt_pre2017`. The rising bubble needs the light
+`refine_light_phase` in `&pre2017` (default `.true.`; `cases/paper2017_RT_At05.nml`
+sets `.false.`) selects the refinement criterion of the PRE 2017 model. The
+rising bubble needs the light
 phase on the finest level (see *Models*), but at At = 0.5 the interface alone
 suffices: the fronts agree with the light-phase criterion to within
 0.004 L0 (bubble) and 0.001 L0 (spike), at about half the run time (196 vs 413 s
@@ -163,7 +195,8 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 
 | file (`src/`) | contents |
 |---|---|
-| `main_jcp2016.f90`, `main_pre2017.f90`, `main_rt_*.f90` | driver programs: select the model and the case |
+| `main.f90`, `Registry_Mod.f90` | the driver program; the models and cases by name (`&run`, `AMR_MODEL`) |
+| `Case_File_Mod.f90` | the case file (`AMR_CASE`): opening it and checking the namelist reads of every module |
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
 | `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble and the Rayleigh–Taylor instability |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
@@ -172,7 +205,8 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
 | `Blocks_Mod.f90`, `Mesh_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, the neighbour table (rebuilt from the block positions after every mesh change) |
 | `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement; data transfer to children and parents |
-| `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers) and of h/g, wall conditions, coarse/fine interpolation |
+| `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers) and of h/g, coarse/fine interpolation |
+| `Boundaries_Mod.f90`, `BC_Mod.f90` | the four sides of the domain (periodic, or a ghost-cell condition per field: `Side_BC`, `Periodic()`, `Wall(k)`, `&boundaries`); the wall kernels |
 | `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
@@ -185,14 +219,20 @@ procedures of that routine.
 The solver knows the model and the case only through the procedure pointers
 of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`): a new case is a new
 module with a constructor like `Rising_Bubble_Case()`, a new model one like
-`JCP2016_Model()`. Each model brings its refinement criterion (`Block_Error`
+`JCP2016_Model()`, each plus one entry in `Registry_Mod` (and the file in
+`CMakeLists.txt`). The case also sets the sides of the domain
+(`problem%side = [Periodic(), Periodic(), Wall(3), Wall(4)]`); a side is a
+`Side_BC` with one ghost-cell procedure each for h, g and C, so a variant can
+replace a single one (e.g. a wetting condition for C). These are called once
+per block (the procedure pointers) or once per wall side of a block, never per
+cell: the kernels stay plain, vectorised loops. Each model brings its refinement criterion (`Block_Error`
 interface) and tolerances, since the blocks it needs on the finest level depend
 on the model; mesh adaptation takes the model (`Refine_Derefine_Mesh(model)`)
 and also uses its moments kernel for new blocks. A case returns its end time
 and its time unit per lattice time step from `Setup`; the solver passes times in
-that unit to the output and to the case's diagnostics. The domain shape
+that unit to the output and to the case's diagnostics. The domain size
 (`nBaseX` x `nBaseY` base blocks of `L0` x `L0`, `nBaseY` from
-`AMR_DOMAIN_HEIGHT`) is set in `Config_Mod`.
+`AMR_DOMAIN_HEIGHT`) is set in `Config_Mod`, its boundaries by the case.
 All sources go through the preprocessor
 (CMake `Fortran_PREPROCESS`); the case size, precision and optional fVTKHDF
 support are set with the CMake options above.
@@ -203,14 +243,14 @@ Both models solve the conservative Allen–Cahn equation for the phase field C
 (distribution h) and a pressure-based hydrodynamic equation (distribution g)
 on the same AMR mesh, ghost-cell, streaming and output machinery.
 
-| | `amr_lbm` – JCP 2016 | `amr_lbm_pre2017` – PRE 2017 |
+| | `jcp2016` – JCP 2016 | `pre2017` – PRE 2017 |
 |---|---|---|
 | interface sharpening | in the equilibrium of h | source term of the h equation |
 | hydrodynamic forcing | central and mixed directional differences of C (two ghost layers of C) | surface tension, pressure and viscous forces from the isotropic gradient and Laplacian (one ghost layer) |
 | g | physical pressure | normalised by the density (sum g = 3p/ρ) |
 | collision of g | reduced MRT: stress moments relax with 1/τ(C), all others with 1 | the same MRT as in the paper, Eqs. (27)–(29) (the reference code uses BGK); viscous force from the stress relaxed with the same rates, Eq. (31) |
 | relaxation time τ(C) | 1/τ interpolated linearly in C (harmonic) | dynamic viscosity interpolated linearly in C, τ = μ/(ρc²ₛ), Eqs. (24)–(25) |
-| refinement criterion (chosen by the model) | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block); `PRE2017_Model(refine_light_phase=.false.)` gives `Interface_Error` |
+| refinement criterion (chosen by the model) | `Interface_Error`: maximum gradient of C in a block | `Interface_Light_Phase_Error`: the interface, and additionally the light phase (max(1−C) of a block); `refine_light_phase = .false.` in `&pre2017` gives `Interface_Error` |
 
 The PRE 2017 model needs the bubble interior on the finest level: its g
 carries 3p/ρ, a thousand times the physical pressure in the light phase, and

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(AMR_LBM_2D
-  DESCRIPTION "2D AMR lattice Boltzmann solver for a rising bubble (OpenMP)"
+  DESCRIPTION "2D AMR lattice Boltzmann solver for two-phase flows (OpenMP)"
   LANGUAGES Fortran)
 
 # ---------------------------------------------------------------------------
@@ -86,8 +86,7 @@ target_compile_options(amr_options INTERFACE
 
 # ---------------------------------------------------------------------------
 # Solver: one module per file in src/, file name = module name.
-# amr_core holds everything but the driver programs; each driver selects
-# an LBM model for the rising-bubble case.
+# amr_core holds everything but the driver program.
 
 add_library(amr_core OBJECT
   src/Kinds_Mod.f90
@@ -95,10 +94,12 @@ add_library(amr_core OBJECT
   src/Blocks_Mod.f90
   src/D2Q9_Mod.f90
   src/Physics_Mod.f90
+  src/Case_File_Mod.f90
   src/Model_Mod.f90
+  src/BC_Mod.f90
+  src/Boundaries_Mod.f90
   src/Case_Mod.f90
   src/Interpolations_Mod.f90
-  src/BC_Mod.f90
   src/LBM_Common_Mod.f90
   src/Phase_Field_Mod.f90
   src/Model_JCP2016_Mod.f90
@@ -115,6 +116,7 @@ add_library(amr_core OBJECT
   src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
   src/Rayleigh_Taylor_Mod.f90
+  src/Registry_Mod.f90
 )
 target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
                                             AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT})
@@ -147,22 +149,13 @@ if(AMR_WITH_VIEWER)
   target_compile_definitions(amr_core PRIVATE USE_AMRVIZ)
 endif()
 
-# drivers, one per case and model:
-#   amr_lbm,    amr_lbm_pre2017     rising bubble
-#   amr_lbm_rt, amr_lbm_rt_pre2017  Rayleigh-Taylor instability
-# with the models of Fakhari, Geier & Lee (JCP 2016) and Fakhari et al.
-# (PRE 2017, improved locality)
-add_executable(amr_lbm            src/main_jcp2016.f90)
-add_executable(amr_lbm_pre2017    src/main_pre2017.f90)
-add_executable(amr_lbm_rt         src/main_rt_jcp2016.f90)
-add_executable(amr_lbm_rt_pre2017 src/main_rt_pre2017.f90)
-set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017)
-foreach(_exe ${_amr_drivers})
-  target_link_libraries(${_exe} PRIVATE amr_core)
-  set_target_properties(${_exe} PROPERTIES Fortran_PREPROCESS ON)
-endforeach()
+# the driver: the case and the model are chosen at run time by the case
+# file (AMR_CASE, namelist &run) and AMR_MODEL (Registry_Mod)
+add_executable(amr_lbm src/main.f90)
+target_link_libraries(amr_lbm PRIVATE amr_core)
+set_target_properties(amr_lbm PROPERTIES Fortran_PREPROCESS ON)
 
-install(TARGETS ${_amr_drivers})
+install(TARGETS amr_lbm)
 
 # ---------------------------------------------------------------------------
 # GPU offload prototype

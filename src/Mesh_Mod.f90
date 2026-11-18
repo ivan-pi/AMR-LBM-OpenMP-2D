@@ -140,22 +140,29 @@ END
 !== Blk(:)%nbr of every live block from the block positions alone: the block
 !   at the neighbouring position on the same level, else the block one level
 !   coarser that covers it (the 2:1 balance guarantees one of them exists).
-!   Periodic in x; above the top or below the bottom the neighbour is the
-!   boundary code -k. Called after every change of the mesh; the block
-!   positions are the only neighbour information that is stored.
+!   Across a periodic side of the domain (Boundaries_Mod) the positions wrap
+!   around; beyond any other side the neighbour is the boundary code -k (a
+!   corner direction gets it as soon as one of its two sides is such a
+!   boundary). Called after every change of the mesh; the block positions
+!   are the only neighbour information that is stored.
 SUBROUTINE Rebuild_Neighbor_Table
     USE Config_Mod, ONLY: MaxBlks, nBaseX, nBaseY
     USE Blocks_Mod, ONLY: di, dj
+    USE Boundaries_Mod, ONLY: Is_Periodic
     IMPLICIT NONE
 
     !== block at position (I,J) of level L: at( Slot(L,I,J) ), 0 if none
     !   (kept all 0 between calls, so only the entries of live blocks are touched)
     INTEGER, SAVE :: at(MaxBlks) = 0
 
-    INTEGER :: n, k, L, I, J, b
+    INTEGER :: n, k, L, I, J, b, nI, nJ
+    LOGICAL :: wrap_x, wrap_y
     INTEGER(8) :: t0, t1
 
     CALL SYSTEM_CLOCK( t0 )
+
+    wrap_x = Is_Periodic(1)
+    wrap_y = Is_Periodic(3)
 
     DO n = 1, Nblks
         IF( Blk(n)%Level >= 0 ) at( Slot( Blk(n)%Level, Blk(n)%I, Blk(n)%J ) ) = n
@@ -164,13 +171,18 @@ SUBROUTINE Rebuild_Neighbor_Table
     DO n = 1, Nblks
         L = Blk(n)%Level
         IF( L < 0 ) CYCLE
+        nI = nBaseX*2**L
+        nJ = nBaseY*2**L
         DO k = 1, 8
+            I = Blk(n)%I + di(k)
             J = Blk(n)%J + dj(k)
-            IF( J < 0 .OR. J >= nBaseY*2**L ) THEN
+            IF( ( .NOT. wrap_x .AND. (I < 0 .OR. I >= nI) ) .OR. &
+                ( .NOT. wrap_y .AND. (J < 0 .OR. J >= nJ) ) ) THEN
                 Blk(n)%nbr(k) = -k
                 CYCLE
             END IF
-            I = MODULO( Blk(n)%I + di(k), nBaseX*2**L )
+            I = MODULO( I, nI )
+            J = MODULO( J, nJ )
             b = at( Slot(L, I, J) )
             IF( b == 0 .AND. L > 0 ) b = at( Slot(L-1, I/2, J/2) )
             IF( b == 0 ) THEN

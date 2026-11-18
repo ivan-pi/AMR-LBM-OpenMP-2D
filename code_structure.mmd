@@ -1,9 +1,8 @@
 flowchart TD
-    subgraph EXE["Executables (CMake)"]
-        mainJ["main_jcp2016<br/><i>amr_lbm</i>"]
-        mainP["main_pre2017<br/><i>amr_lbm_pre2017</i>"]
-        mainRJ["main_rt_jcp2016<br/><i>amr_lbm_rt</i>"]
-        mainRP["main_rt_pre2017<br/><i>amr_lbm_rt_pre2017</i>"]
+    subgraph EXE["Executable (CMake)"]
+        MAIN["main<br/><i>amr_lbm</i>"]
+        REG["Registry_Mod<br/>models and cases by name<br/>(&run, AMR_MODEL)"]
+        CF["Case_File_Mod<br/>case file (AMR_CASE),<br/>namelist checks"]
     end
 
     subgraph DRV["Solver"]
@@ -11,7 +10,7 @@ flowchart TD
     end
 
     subgraph CASE["Test cases"]
-        CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics, Finish)"]
+        CM["Case_Mod<br/>AMR_Case type<br/>(Setup, Initial_State, Diagnostics, Finish, side)"]
         RB["Rising_Bubble_Mod<br/>parameters (namelist), bubble,<br/>bubble_rise.dat"]
         RT["Rayleigh_Taylor_Mod<br/>parameters (namelist), perturbed interface,<br/>rt_fronts.dat"]
     end
@@ -34,7 +33,8 @@ flowchart TD
         GC["Ghost_C_Mod"]
         GHG["Ghost_hg_Mod"]
         INT["Interpolations_Mod<br/>biquadratic strips, bilinear blocks"]
-        BC["BC_Mod<br/>bounce-back, symmetric C"]
+        BND["Boundaries_Mod<br/>Side_BC: periodic / wall,<br/>per-field procedures, &boundaries"]
+        BC["BC_Mod<br/>bounce-back, symmetric C<br/>(four sides)"]
     end
 
     subgraph OUT["Output"]
@@ -53,18 +53,13 @@ flowchart TD
         PH["Physics_Mod<br/>fluid & interface parameters<br/>(set by the case)"]
     end
 
-    mainJ --> SOL
-    mainJ --> JCP
-    mainJ --> RB
-    mainP --> SOL
-    mainP --> PRE
-    mainP --> RB
-    mainRJ --> SOL
-    mainRJ --> JCP
-    mainRJ --> RT
-    mainRP --> SOL
-    mainRP --> PRE
-    mainRP --> RT
+    MAIN --> SOL
+    MAIN --> REG
+    REG --> JCP
+    REG --> PRE
+    REG --> RB
+    REG --> RT
+    REG --> CF
 
     SOL --> MM
     SOL --> CM
@@ -79,6 +74,11 @@ flowchart TD
     RB --> CM
     RT --> CM
     CM --> MM
+    CM --> BND
+    RB --> CF
+    RT --> CF
+    PRE --> CF
+    SOL --> BND
     JCP --> MM
     JCP --> PF
     PRE --> MM
@@ -90,9 +90,12 @@ flowchart TD
     PR --> INT
 
     GC --> INT
-    GC --> BC
+    GC --> BND
     GHG --> INT
-    GHG --> BC
+    GHG --> BND
+    MESH --> BND
+    BND --> BC
+    BND --> CF
 
     OM --> VTK
     OM --> TEC

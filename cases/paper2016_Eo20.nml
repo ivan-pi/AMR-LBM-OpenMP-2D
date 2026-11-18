@@ -3,9 +3,14 @@
 ! Cn = 0.010, t* = 12, Eo = 20. Needs L0 = 512 (l_max = 6):
 !   cmake -B build-paper -DAMR_L0=512 && cmake --build build-paper -j
 !   AMR_CASE=cases/paper2016_Eo20.nml ./build-paper/amr_lbm
+! (AMR_MODEL=pre2017 runs the same case with the PRE 2017 model)
 ! The gravity in lattice units is not given in the paper. It matters: the model is
 ! weakly compressible, so the bubble swells as it rises in the closed box (by ~25%
 ! at 2.5e-6, ~50% at 5e-6, proportional to Gy_lu). 2.5e-6 reproduces Fig. 4 best.
+&run
+  case  = 'rising_bubble'
+  model = 'jcp2016'
+/
 &rising_bubble
   Eo        = 20
   Re        = 100

@@ -9,10 +9,14 @@
 !   its ghost layers), P, Ux and Uy of a leaf block, from which the model
 !   computes h and g; Diagnostics records the case's own quantities at a
 !   time; Finish (optional) closes the case's files after the last step.
+!   side(1:4) are the left, right, bottom and top sides of the domain
+!   (Boundaries_Mod: Periodic() or Wall(k), the default periodic); the
+!   namelist &boundaries of the case file can override them.
 !================================================
 MODULE Case_Mod
     USE Kinds_Mod, ONLY: wp
     USE Model_Mod, ONLY: Block_Kernel
+    USE Boundaries_Mod, ONLY: Side_BC
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: AMR_Case
@@ -38,6 +42,7 @@ MODULE Case_Mod
         PROCEDURE(Block_Kernel),     POINTER, NOPASS :: Initial_State => NULL()
         PROCEDURE(Case_Diagnostics), POINTER, NOPASS :: Diagnostics   => NULL()
         PROCEDURE(Case_Finish),      POINTER, NOPASS :: Finish        => NULL()
+        TYPE(Side_BC) :: side(4)
     END TYPE AMR_Case
 
 END MODULE Case_Mod

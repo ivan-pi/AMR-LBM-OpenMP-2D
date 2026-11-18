@@ -48,7 +48,8 @@ MODULE Blocks_Mod
     !== metadata of a block (the defaults describe an unused slot)
     !   nbr(k) is the neighbour in direction k: the block at the neighbouring
     !   position on the same level, else the coarser block covering it, or
-    !   the boundary code -k beyond the bottom and top walls. It is rebuilt
+    !   the boundary code -k beyond a non-periodic side of the domain
+    !   (Boundaries_Mod). It is rebuilt
     !   from the block positions (Level, I, J) after every mesh change
     !   (Rebuild_Neighbor_Table in Mesh_Mod).
     TYPE :: Block_t

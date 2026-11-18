@@ -12,11 +12,10 @@
 !       At = (rho_h - rho_l) / (rho_h + rho_l),  Re = rho_h U0 L / mu_h,
 !       Ca = mu_h U0 / sigma,                    Pe = U0 L / M,
 !   and the time is t* = t / t0. They are read from the namelist
-!   &rayleigh_taylor in the file named by the environment variable AMR_CASE
-!   (see cases/); without it the defaults below (the paper's At = 0.5 case
-!   at L0 = 256) are used. The namelist also holds refine_light_phase, the
-!   refinement criterion option of the PRE 2017 model, which the drivers
-!   read with Light_Phase_Refinement() before they create the model.
+!   &rayleigh_taylor in the case file (Case_File_Mod, see cases/); without
+!   one the defaults below (the paper's At = 0.5 case at L0 = 256) are used.
+!   The sides of the channel are the case's default boundaries (&boundaries
+!   can change them).
 !
 !   The models apply gravity as the buoyancy (rho_h - rho) g relative to the
 !   heavy fluid, so the heavy fluid stays at rest under P = 0 and the light
@@ -29,9 +28,10 @@
 MODULE Rayleigh_Taylor_Mod
     USE Kinds_Mod, ONLY: wp
     USE Case_Mod, ONLY: AMR_Case
+    USE Boundaries_Mod, ONLY: Periodic, Wall
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Rayleigh_Taylor_Case, Light_Phase_Refinement
+    PUBLIC :: Rayleigh_Taylor_Case
 
     !== case parameters (namelist &rayleigh_taylor), defaults: PRE 2017, Fig. 5-6
     REAL(wp) :: At        = 0.5_wp      ! Atwood number
@@ -45,14 +45,8 @@ MODULE Rayleigh_Taylor_Mod
     REAL(wp) :: Width     = 5           ! interface width W, used if Cn <= 0
     REAL(wp) :: Cn        = 0           ! Cahn number W / L0, if > 0
     REAL(wp) :: t_end     = 2.5_wp      ! end time t* = t / t0 (3.2 in the paper, needs height 4)
-    !== PRE 2017 model only: keep the light phase on the finest level as for the
-    !   rising bubble; not needed at At = 0.5 (same fronts at half the cost),
-    !   set it for high density ratios
-    LOGICAL  :: refine_light_phase = .FALSE.
 
-    NAMELIST /rayleigh_taylor/ At, Re, mu_ratio, Ca, Gy_lu, Amplitude, Mobility, Pe, Width, Cn, &
-                               t_end, refine_light_phase
-    LOGICAL :: namelist_read = .FALSE.
+    NAMELIST /rayleigh_taylor/ At, Re, mu_ratio, Ca, Gy_lu, Amplitude, Mobility, Pe, Width, Cn, t_end
 
     REAL(wp) :: Y0                          ! unperturbed interface height (H/2)
 
@@ -75,39 +69,24 @@ FUNCTION Rayleigh_Taylor_Case() RESULT( problem )
     problem%Initial_State => Initial_State
     problem%Diagnostics   => Front_Diagnostics
     problem%Finish        => Close_Diagnostics
+    problem%side          =  [ Periodic(), Periodic(), Wall(3), Wall(4) ]
 
 END FUNCTION Rayleigh_Taylor_Case
 
 !******************************************************************************
 
-!== refine_light_phase from the case file, for the PRE 2017 model's criterion
-FUNCTION Light_Phase_Refinement() RESULT( light )
-    LOGICAL :: light
-
-    CALL Read_Parameters
-    light = refine_light_phase
-
-END FUNCTION Light_Phase_Refinement
-
-!******************************************************************************
-
-!== the namelist &rayleigh_taylor from the file named by AMR_CASE (once)
+!== the namelist &rayleigh_taylor from the case file
 SUBROUTINE Read_Parameters
-    CHARACTER(len=256) :: file
-    INTEGER :: length, stat, unit
+    USE Case_File_Mod, ONLY: Open_Case_File, Close_Case_File
+    CHARACTER(len=256) :: msg
+    INTEGER :: stat, unit
+    LOGICAL :: found
 
-    IF( namelist_read ) RETURN
-    namelist_read = .TRUE.
-
-    CALL GET_ENVIRONMENT_VARIABLE( 'AMR_CASE', file, length, stat )
-    IF( stat == 0 .AND. length > 0 ) THEN
-        OPEN( NEWUNIT=unit, FILE=TRIM(file), STATUS='OLD', ACTION='READ', IOSTAT=stat )
-        IF( stat /= 0 ) ERROR STOP 'AMR_CASE: cannot open the case file'
-        READ( unit, NML=rayleigh_taylor, IOSTAT=stat )
-        IF( stat /= 0 ) ERROR STOP 'AMR_CASE: error in namelist &rayleigh_taylor'
-        CLOSE( unit )
-        PRINT '(/2A)', 'Case file: ', TRIM(file)
-    END IF
+    CALL Open_Case_File( unit, found )
+    IF( .NOT. found ) RETURN
+    msg = ''
+    READ( unit, NML=rayleigh_taylor, IOSTAT=stat, IOMSG=msg )
+    CALL Close_Case_File( unit, stat, msg, 'rayleigh_taylor', required=.TRUE. )
 
 END SUBROUTINE Read_Parameters
 
