@@ -11,7 +11,9 @@
 !   Each update copies C, P, Ux, Uy and the speed |U| of every leaf block
 !   (as float) into the viewer's buffer; drawing runs on the viewer's own
 !   thread and never holds up the solver, except while the user has paused
-!   the run with the space bar. Pressure and velocity are those of the last
+!   the run with the space bar. On macOS the window has to live on the main
+!   thread, the solver's: each update then also handles the window's input
+!   and draws, so the window reacts only at updates (keep AMR_VIEW small). Pressure and velocity are those of the last
 !   moments of g (one step old, except on output and diagnostic steps).
 !   Closing the window lets the run continue without the viewer; at the end
 !   of the run the window stays open until it is closed.

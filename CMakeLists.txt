@@ -75,6 +75,22 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   set(AMR_FLAG_NATIVE   -xHost)
 endif()
 
+# not every target has -march=native (GCC for Apple Silicon may only take
+# -mcpu=native, or neither): use the first flag the compiler accepts
+if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  include(CheckFortranCompilerFlag)
+  check_fortran_compiler_flag(-march=native AMR_HAVE_MARCH_NATIVE)
+  if(NOT AMR_HAVE_MARCH_NATIVE)
+    check_fortran_compiler_flag(-mcpu=native AMR_HAVE_MCPU_NATIVE)
+    if(AMR_HAVE_MCPU_NATIVE)
+      set(AMR_FLAG_NATIVE -mcpu=native)
+    else()
+      message(STATUS "AMR-LBM: ${CMAKE_Fortran_COMPILER} takes neither -march=native nor -mcpu=native; AMR_NATIVE has no effect")
+      unset(AMR_FLAG_NATIVE)
+    endif()
+  endif()
+endif()
+
 add_library(amr_options INTERFACE)
 target_compile_definitions(amr_options INTERFACE
   AMR_BLOCK_SIZE=${AMR_BLOCK_SIZE}

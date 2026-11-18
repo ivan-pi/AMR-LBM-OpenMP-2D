@@ -92,7 +92,7 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 | `AMR_BLOCK_SIZE` | `8` | cells per block in each direction (`16` is faster for larger cases) |
 | `AMR_WITH_FVTKHDF` | `OFF` | VTKHDF output; set `CMAKE_PREFIX_PATH` to the fVTKHDF install |
 | `AMR_BUILD_OFFLOAD` | `OFF` | build the GPU offload prototype in `offload/` (ifx only) |
-| `AMR_NATIVE` | `ON` | optimize for the build machine (`-march=native` / `-xHost`) |
+| `AMR_NATIVE` | `ON` | optimize for the build machine (`-march=native`, or `-mcpu=native` where gfortran lacks it, e.g. on Apple Silicon / `-xHost`) |
 
 The number of threads is taken from `OMP_NUM_THREADS`. The optional arguments
 override the number of time steps (default: 8 bubble-rise time units) and the
@@ -318,7 +318,28 @@ each update copies the leaf-block fields as float into a buffer that the
 render thread picks up, so the solver waits only while paused. On the GPU
 every block is one instanced quad and the cell values are one texture buffer.
 The render thread needs a CPU core: leave one free, e.g.
-`OMP_NUM_THREADS=3 taskset -c 4-7`.
+`OMP_NUM_THREADS=3 taskset -c 4-7`. Without a display (e.g. over ssh without
+X forwarding) the viewer reports that it has no window and the run continues
+without it.
+
+**macOS** (Apple Silicon or Intel; with Homebrew `gcc` for gfortran, `sdl2` and
+`cmake`). macOS's OpenGL stops at 4.1, which is enough for the GL 3.3 core
+shaders. Cocoa allows windows and their events only on a program's main
+thread, which here is the solver's, so on macOS the viewer has no render
+thread: each update handles the window's input and draws (at most about 60
+frames a second), and while the run is paused or finished the solver thread
+runs the window's event loop. The window therefore reacts to input only at
+updates: choose `AMR_VIEW` so that there are several per second. The
+help and status text keep their size on Retina displays.
+
+```
+brew install gcc sdl2 cmake
+cmake -B build-view -DAMR_WITH_VIEWER=ON -DCMAKE_Fortran_COMPILER=gfortran && cmake --build build-view -j
+AMR_VIEW=20 AMR_OUTPUT=none ./build-view/amr_lbm
+```
+
+`AMRVIZ_THREAD=0` selects the same single-thread mode on Linux, which is how
+it was tested (Xvfb and Mesa); it has not yet been run on a Mac.
 
 ## Conservation across levels
 
