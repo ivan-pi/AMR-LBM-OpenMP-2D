@@ -64,7 +64,7 @@ The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
 ```
 cmake -B build                                  # Release, double precision
 cmake --build build -j
-OMP_NUM_THREADS=8 ./build/amr_lbm [--view[=N]] [number_of_time_steps [output_interval_in_steps]]
+OMP_NUM_THREADS=8 ./build/amr_lbm [--view[=N]] [steps [output_interval]]
 OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
 ```
 
@@ -99,7 +99,8 @@ override the number of time steps (default: 8 bubble-rise time units) and the
 output interval in time steps (default: one twentieth of the run; use a smaller
 interval for smooth animations). The initial and the final state are always
 written. `--view[=N]` opens the real-time view (see *Real-time view*), `-h`
-prints the usage.
+prints a help with the arguments, the environment variables and the view
+controls.
 
 All floating-point data use the kind parameter `wp` from `Kinds_Mod`
 (`real64` by default, `real32` with `-DAMR_PRECISION=4`). The total-mass diagnostic is

@@ -17,7 +17,13 @@ MODULE Solver_Mod
     USE Viewer_Mod, ONLY: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Run_AMR_LBM
+    PUBLIC :: Run_AMR_LBM, Read_Command_Line
+
+    !== the command line (Read_Command_Line); 0: the default
+    LOGICAL :: cmd_read  = .FALSE.
+    INTEGER :: cmd_steps = 0    ! number of time steps
+    INTEGER :: cmd_out   = 0    ! output interval in time steps
+    INTEGER :: cmd_view  = 0    ! real-time view update interval in time steps
 
 CONTAINS
 
@@ -37,6 +43,8 @@ SUBROUTINE Run_AMR_LBM( model, problem )
                 ASSOCIATED(model%Refinement_Error) ) ) ERROR STOP 'Run_AMR_LBM: incomplete model'
     IF( .NOT. ( ASSOCIATED(problem%Setup) .AND. ASSOCIATED(problem%Initial_State) .AND. &
                 ASSOCIATED(problem%Diagnostics) ) ) ERROR STOP 'Run_AMR_LBM: incomplete case'
+
+    IF( .NOT. cmd_read ) CALL Read_Command_Line( '' )
 
     CALL SYSTEM_CLOCK( t1, Rate )
 
@@ -111,7 +119,10 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     !   output interval in time steps (default: 20 outputs over the run; the
     !   initial and the final state are always written), real-time view
     Tf = NINT(t_end / time_per_step /20)*20
-    CALL Read_Command_Line( Tf, nOutStep, nViewStep )
+    IF( cmd_steps > 0 ) Tf = cmd_steps
+    nOutStep = MAX( Tf/20, 1 )
+    IF( cmd_out > 0 ) nOutStep = cmd_out
+    nViewStep = cmd_view
     CALL Select_Writer
     CALL Viewer_Open( nViewStep )
     !== the case's diagnostics are recorded 120 times per run and at every output
@@ -365,63 +376,103 @@ END SUBROUTINE Print_Diagnostics
 
 !******************************************************************************
 
-!== command line: [--view[=N]] [number_of_time_steps [output_interval_in_steps]];
-!   options may come anywhere. Tf holds the default number of steps on entry.
-SUBROUTINE Read_Command_Line( Tf, nOutStep, nViewStep )
+!== the command line: [--view[=N]] [steps [output_interval]], options
+!   anywhere; -h/--help prints the help and stops. Drivers call it first,
+!   before anything is printed or read, with a one-line description of the
+!   executable for the help (the case and the model).
+SUBROUTINE Read_Command_Line( description )
+    USE ISO_FORTRAN_ENV, ONLY: ERROR_UNIT
     IMPLICIT NONE
-    INTEGER, INTENT(INOUT) :: Tf
-    INTEGER, INTENT(OUT)   :: nOutStep, nViewStep
+    CHARACTER(len=*), INTENT(IN) :: description
 
     INTEGER, PARAMETER :: nViewDefault = 20      ! --view without an interval
-    CHARACTER(len=64) :: arg, prog
-    INTEGER :: k, length, ios, npos, nout_arg
+    CHARACTER(len=256) :: arg, prog
+    INTEGER :: k, length, ios, npos
 
-    CALL GET_COMMAND_ARGUMENT( 0, prog )
-    nViewStep = 0
-    nout_arg  = 0
+    cmd_read  = .TRUE.
+    cmd_steps = 0
+    cmd_out   = 0
+    cmd_view  = 0
     npos      = 0
+    CALL GET_COMMAND_ARGUMENT( 0, prog )
+    prog = prog( INDEX(prog, '/', BACK=.TRUE.)+1 : )
+    IF( LEN_TRIM(prog) == 0 ) prog = 'amr_lbm'
+
     DO k = 1, COMMAND_ARGUMENT_COUNT()
         CALL GET_COMMAND_ARGUMENT( k, arg, length )
-        IF( length > LEN(arg) ) CALL Usage( 'argument too long: ' // arg )
+        IF( length > LEN(arg) ) CALL Fail( 'argument too long' )
         IF( arg == '-h' .OR. arg == '--help' ) THEN
-            CALL Usage( '' )
+            CALL Help
         ELSE IF( arg == '--view' ) THEN
-            nViewStep = nViewDefault
+            cmd_view = nViewDefault
         ELSE IF( arg(1:7) == '--view=' ) THEN
-            READ( arg(8:), *, IOSTAT=ios ) nViewStep
-            IF( ios /= 0 .OR. nViewStep < 1 ) CALL Usage( 'update interval in time steps expected: ' // arg )
+            READ( arg(8:), *, IOSTAT=ios ) cmd_view
+            IF( ios /= 0 .OR. cmd_view < 1 ) CALL Fail( 'update interval in time steps expected: ' // arg )
         ELSE IF( arg(1:1) == '-' ) THEN
-            CALL Usage( 'unknown option ' // arg )
+            CALL Fail( 'unknown option ' // arg )
         ELSE
             npos = npos + 1
             SELECT CASE( npos )
             CASE( 1 )
-                READ( arg, *, IOSTAT=ios ) Tf
-                IF( ios /= 0 .OR. Tf < 1 ) CALL Usage( 'number of time steps expected: ' // arg )
+                READ( arg, *, IOSTAT=ios ) cmd_steps
+                IF( ios /= 0 .OR. cmd_steps < 1 ) CALL Fail( 'number of time steps expected: ' // arg )
             CASE( 2 )
-                READ( arg, *, IOSTAT=ios ) nout_arg
-                IF( ios /= 0 .OR. nout_arg < 1 ) CALL Usage( 'output interval in time steps expected: ' // arg )
+                READ( arg, *, IOSTAT=ios ) cmd_out
+                IF( ios /= 0 .OR. cmd_out < 1 ) CALL Fail( 'output interval in time steps expected: ' // arg )
             CASE DEFAULT
-                CALL Usage( 'too many arguments: ' // arg )
+                CALL Fail( 'too many arguments: ' // arg )
             END SELECT
         END IF
     END DO
-    nOutStep = MAX( Tf/20, 1 )
-    IF( nout_arg > 0 ) nOutStep = nout_arg
 
 CONTAINS
 
-    !== print the usage (after the error, if any) and stop
-    SUBROUTINE Usage( error )
+    !== the error and the usage on stderr, exit status 2
+    SUBROUTINE Fail( error )
         CHARACTER(len=*), INTENT(IN) :: error
-        IF( LEN_TRIM(error) > 0 ) PRINT '(/2A)', 'Error: ', TRIM(error)
-        PRINT '(/3A)', 'usage: ', TRIM(prog), ' [--view[=N]] [number_of_time_steps [output_interval_in_steps]]'
-        PRINT '(A)',   '  --view[=N]   real-time view of the mesh and a field, updated every N steps', &
-                       '               (default 20; needs a build with -DAMR_WITH_VIEWER=ON)', &
-                       '  -h, --help   this message'
-        IF( LEN_TRIM(error) > 0 ) ERROR STOP 2
+        WRITE( ERROR_UNIT, '(3A)' ) TRIM(prog), ': ', TRIM(error)
+        WRITE( ERROR_UNIT, '(3A)' ) 'usage: ', TRIM(prog), ' [--view[=N]] [steps [output_interval]]'
+        WRITE( ERROR_UNIT, '(3A)' ) 'Run "', TRIM(prog), ' --help" for more.'
+        STOP 2, QUIET=.TRUE.             ! exit status 2, no STOP message or backtrace
+    END SUBROUTINE Fail
+
+    SUBROUTINE Help
+        PRINT '(2A)', TRIM(prog), ': 2D two-phase lattice Boltzmann solver with adaptive mesh refinement'
+        IF( LEN_TRIM(description) > 0 ) PRINT '(2A)', '  ', TRIM(description)
+        PRINT '(/3A)', 'usage: ', TRIM(prog), ' [--view[=N]] [steps [output_interval]]'
+        PRINT '(A)', &
+            '', &
+            '  steps            time steps to run (default: up to the case''s end time t_end)', &
+            '  output_interval  time steps between outputs (default: steps/20); the initial', &
+            '                   and the final state are always written', &
+            '  --view[=N]       show the mesh and a field in a window during the run,', &
+            '                   updated every N steps (default 20)'
+#ifndef USE_AMRVIZ
+        PRINT '(A)', &
+            '                   (not in this build: configure with -DAMR_WITH_VIEWER=ON)'
+#endif
+        PRINT '(A)', &
+            '  -h, --help       this help', &
+            '', &
+            'Environment:', &
+            '  OMP_NUM_THREADS     number of OpenMP threads', &
+            '  AMR_CASE            namelist file with the case parameters, e.g.', &
+            '                      cases/paper2016_Eo20.nml (default: built-in values)', &
+            '  AMR_OUTPUT          vtk (default), vtkhdf, tecplot or none', &
+            '  AMR_BLOCK_CAPACITY  start capacity of the block pool (default: all blocks)', &
+            '  AMRVIZ_THREAD=0     view: draw on the solver thread (always so on macOS)', &
+            '', &
+            'View controls (--view):', &
+            '  P, Space    pause / resume        N           one update while paused', &
+            '  Z, Tab      next field: C, P, Ux, Uy, |U|, level (Shift+Z: previous)', &
+            '  C           next colour map (Shift+C: previous)', &
+            '  1 2 3 4     toggle field, block outlines, cell outlines, status panel', &
+            '  F           freeze the colour range', &
+            '  wheel, + -  zoom                  drag, arrows, I J K L   pan', &
+            '  R           reset the view        G           print the view settings', &
+            '  H           help in the window    Esc         close the window (run goes on)'
         STOP
-    END SUBROUTINE Usage
+    END SUBROUTINE Help
 
 END SUBROUTINE Read_Command_Line
 
