@@ -24,8 +24,8 @@ SUBROUTINE Refine_Derefine_Mesh( model, changed )
 
     LOGICAL :: mesh_changed
 
-    CALL Flag_for_refinement  ( model%Refinement_Error, model%refine_tol )
-    CALL Flag_for_derefinement( model%Refinement_Error, model%deref_tol )
+    CALL Flag_for_refinement  ( model%Refinement_Error, model%refine_tol, model%max_island_blocks )
+    CALL Flag_for_derefinement( model%Refinement_Error, model%deref_tol, model%max_island_blocks )
 
     mesh_changed = ANY( Blk(1:Nblks)%Refin ) .OR. ANY( Blk(1:Nblks)%Deref )
     IF( PRESENT(changed) ) changed = mesh_changed
@@ -42,12 +42,15 @@ END SUBROUTINE Refine_Derefine_Mesh
 !******************************************************************************
 
 !== leaves below the finest level whose error exceeds refinTol, plus the
-!   coarser neighbours needed to keep the 2:1 balance
-SUBROUTINE Flag_for_refinement( criterion, refinTol )
+!   coarser neighbours needed to keep the 2:1 balance. With max_island > 0,
+!   also small groups of leaves enclosed by finer blocks (e.g. the interior of
+!   a large droplet), so that no coarse/fine edges are left inside a phase.
+SUBROUTINE Flag_for_refinement( criterion, refinTol, max_island )
     USE Config_Mod, ONLY: maxLevels
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: refinTol
+    INTEGER,  INTENT(IN) :: max_island
 
     INTEGER :: n
 
@@ -58,11 +61,86 @@ SUBROUTINE Flag_for_refinement( criterion, refinTol )
     END DO
 !$OMP END PARALLEL DO
 
+    IF( max_island > 0 ) CALL Refine_Coarse_Islands( max_island, after_deref = .FALSE. )
+
     DO n = 1, Nblks
         IF( Blk(n)%Refin ) CALL Enforce_1_Level_Jump( n )
     END DO
 
 END SUBROUTINE Flag_for_refinement
+
+!******************************************************************************
+
+!== coarse islands: connected groups (through the four sides) of at most
+!   max_island leaves on one level below the finest that touch only finer
+!   blocks, e.g. the
+!   interior of a large droplet whose gradient-based criterion is zero (a group
+!   that reaches a wall or a coarser block is not an island). Their
+!   leaves are flagged for refinement. after_deref: the mesh after the planned
+!   derefinement, where parents flagged Deref are leaves; an island made of
+!   them keeps its children instead.
+SUBROUTINE Refine_Coarse_Islands( max_island, after_deref )
+    USE Config_Mod, ONLY: maxLevels
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: max_island
+    LOGICAL, INTENT(IN) :: after_deref
+
+    INTEGER, ALLOCATABLE :: comp(:), stack(:), members(:)
+    INTEGER :: n, m, b, k, top, nm, ic
+    LOGICAL :: enclosed
+
+    ALLOCATE( comp(Nblks), stack(Nblks), members(Nblks) )
+    comp = 0
+    ic   = 0
+    DO n = 1, Nblks
+        IF( comp(n) /= 0 .OR. .NOT. Coarse_Leaf( n ) ) CYCLE
+        ic = ic + 1
+        comp(n) = ic
+        top = 1;  stack(1) = n
+        nm  = 0
+        enclosed = .TRUE.
+        DO WHILE( top > 0 )
+            m = stack(top);  top = top - 1
+            nm = nm + 1;  members(nm) = m
+            DO k = 1, 4
+                b = Blk(m)%nbr(k)
+                IF( b <= 0 ) THEN
+                    enclosed = .FALSE.                                  ! a wall: the far field, not an island
+                ELSE IF( Blk(b)%Level < Blk(m)%Level ) THEN
+                    enclosed = .FALSE.                                  ! a coarser neighbour
+                ELSE IF( Leaf_After( b ) ) THEN
+                    IF( comp(b) == 0 ) THEN                             ! same-level leaf: same island
+                        comp(b) = ic
+                        top = top + 1;  stack(top) = b
+                    END IF
+                END IF                                                  ! else finer
+            END DO
+        END DO
+        IF( .NOT. enclosed .OR. nm > max_island ) CYCLE
+        DO k = 1, nm
+            m = members(k)
+            IF( Blk(m)%Deref ) THEN
+                Blk(m)%Deref = .FALSE.
+            ELSE
+                Blk(m)%Refin = .TRUE.
+            END IF
+        END DO
+    END DO
+
+CONTAINS
+
+    !== n is a leaf (after the planned derefinement, if after_deref) that is not flagged for refinement
+    LOGICAL FUNCTION Leaf_After( n )
+        INTEGER, INTENT(IN) :: n
+        Leaf_After = ( Blk(n)%IsLeaf .AND. .NOT. Blk(n)%Refin ) .OR. ( after_deref .AND. Blk(n)%Deref )
+    END FUNCTION Leaf_After
+
+    LOGICAL FUNCTION Coarse_Leaf( n )
+        INTEGER, INTENT(IN) :: n
+        Coarse_Leaf = Blk(n)%Level >= 0 .AND. Blk(n)%Level < maxLevels .AND. Leaf_After( n )
+    END FUNCTION Coarse_Leaf
+
+END SUBROUTINE Refine_Coarse_Islands
 
 !******************************************************************************
 
@@ -89,11 +167,12 @@ END SUBROUTINE Enforce_1_Level_Jump
 
 !== parents of four leaves, none flagged for refinement, all below derefTol;
 !   kept where removing the children would break the 2:1 balance
-SUBROUTINE Flag_for_derefinement( criterion, derefTol )
+SUBROUTINE Flag_for_derefinement( criterion, derefTol, max_island )
     USE Config_Mod, ONLY: minLevels
     IMPLICIT NONE
     PROCEDURE(Block_Error) :: criterion
     REAL(wp), INTENT(IN) :: derefTol
+    INTEGER,  INTENT(IN) :: max_island
 
     INTEGER :: n, L, c, q
 
@@ -113,6 +192,10 @@ SUBROUTINE Flag_for_derefinement( criterion, derefTol )
         END DO
     END DO
 !$OMP END PARALLEL DO
+
+    !== parents that would form a small island of leaves enclosed by finer
+    !   blocks keep their children (they would be refined again at the next step)
+    IF( max_island > 0 ) CALL Refine_Coarse_Islands( max_island, after_deref = .TRUE. )
 
     !== finest first: a block kept refined may keep its coarser neighbours refined
     DO L = LevelMax-1, LevelMin-1, -1

@@ -59,18 +59,21 @@ python3 tools/plot_rise.py jcp/bubble_rise.dat:JCP2016 pre/bubble_rise.dat:PRE20
 ## Building and running
 
 The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
-(tested with gfortran 13 and Intel ifx 2026.1):
+(tested with gfortran 13, Intel ifx 2026.1 and NAG Fortran 7.2):
 
 ```
 cmake -B build                                  # Release, double precision
 cmake --build build -j
 OMP_NUM_THREADS=8 ./build/amr_lbm [number_of_time_steps [output_interval_in_steps]]
 OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
+AMR_CASE=drop.nml ./build/amr_lbm_parker [...]     # two species (see Two-species model)
 ```
 
-Four drivers are built, one per case and LBM model (see *Models*): `amr_lbm`
+Five drivers are built, one per case and LBM model (see *Models*): `amr_lbm`
 (JCP 2016) and `amr_lbm_pre2017` (PRE 2017) for the rising bubble,
-`amr_lbm_rt` and `amr_lbm_rt_pre2017` for the Rayleigh–Taylor instability.
+`amr_lbm_rt` and `amr_lbm_rt_pre2017` for the Rayleigh–Taylor instability, and
+`amr_lbm_parker` for the two-species model of Parker & Jovanovic (2009) with
+its own cases.
 
 The block fields live in one pool array per field, allocated at start-up for
 the blocks of the fully refined quadtree (`4**(maxLevels+1) - 1`, e.g. 4095
@@ -83,13 +86,14 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 
 | option | default | meaning |
 |---|---|---|
-| `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx` |
+| `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx`, `nagfor` |
 | `CMAKE_BUILD_TYPE` | `Release` | `Debug` adds bounds checking and warnings |
 | `AMR_PRECISION` | `8` | working precision `wp`: `8` (real64) or `4` (real32) |
 | `AMR_L0` | `256` | base block width in finest lattice units |
 | `AMR_DOMAIN_HEIGHT` | `3` | domain height in base blocks (domain `L0 x AMR_DOMAIN_HEIGHT*L0`; 4 for the Rayleigh–Taylor paper case) |
 | `AMR_MIN_LEVEL` | `1` | minimum (uniform background) refinement level |
 | `AMR_BLOCK_SIZE` | `8` | cells per block in each direction (`16` is faster for larger cases) |
+| `AMR_PERIODIC_Y` | `OFF` | periodic in y as well (default: walls at the bottom and top) |
 | `AMR_WITH_FVTKHDF` | `OFF` | VTKHDF output; set `CMAKE_PREFIX_PATH` to the fVTKHDF install |
 | `AMR_BUILD_OFFLOAD` | `OFF` | build the GPU offload prototype in `offload/` (ifx only) |
 | `AMR_NATIVE` | `ON` | optimize for the build machine (`-march=native` / `-xHost`) |
@@ -163,16 +167,16 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 
 | file (`src/`) | contents |
 |---|---|
-| `main_jcp2016.f90`, `main_pre2017.f90`, `main_rt_*.f90` | driver programs: select the model and the case |
+| `main_jcp2016.f90`, `main_pre2017.f90`, `main_rt_*.f90`, `main_parker2009.f90` | driver programs: select the model and the case |
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
-| `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble and the Rayleigh–Taylor instability |
+| `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90`, `Parker_Cases_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble, the Rayleigh–Taylor instability, droplets and spinodal decomposition of the two-species model |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
-| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90` | the two models' kernels and criteria |
+| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
 | `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
 | `Blocks_Mod.f90`, `Mesh_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, the neighbour table (rebuilt from the block positions after every mesh change) |
-| `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement; data transfer to children and parents |
-| `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers) and of h/g, wall conditions, coarse/fine interpolation |
+| `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement (optionally refining coarse islands enclosed by finer blocks); data transfer to children and parents |
+| `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers; and of C2 for two-scalar models) and of h/g, wall conditions, coarse/fine interpolation |
 | `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
@@ -183,7 +187,9 @@ their public entities explicitly; helpers used by a single routine are internal
 procedures of that routine.
 
 The solver knows the model and the case only through the procedure pointers
-of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`): a new case is a new
+of `LBM_Model` (`Model_Mod`) and `AMR_Case` (`Case_Mod`). A case may adjust
+the model's mesh policy (tolerances, island refinement) through the optional
+`Adjust_Model`, called after its setup: a new case is a new
 module with a constructor like `Rising_Bubble_Case()`, a new model one like
 `JCP2016_Model()`. Each model brings its refinement criterion (`Block_Error`
 interface) and tolerances, since the blocks it needs on the finest level depend
@@ -224,6 +230,56 @@ t = 8 (the PRE 2017 bubble rises less and sheds no satellite droplets).
 
 `Blk_P` holds the physical pressure for both models, so the output, restriction
 and prolongation are the same.
+
+### Two-species model (Parker & Jovanovic 2009)
+
+`amr_lbm_parker` runs the multicomponent model of J. M. Parker (PhD thesis,
+Oregon State University, 2008; Parker & Jovanovic, Chem. Biochem. Eng. Q. 23,
+2009): species 1 in h (`Blk_C` = c₁), species 2 in g (`Blk_C2` = c₂, a second
+ghost-cell scalar that the solver allocates, fills and transfers only for
+models with `n_scalars = 2`). Each species relaxes towards the equilibrium of
+a fluid moving with u + u′ᵢ, where u′ᵢ = −D ∇ln γᵢ (mass-average reference) and
+ln γᵢ comes from Margules' equation. Diffusion is driven by the chemical
+potential, and the phases separate where the mixture is unstable. The u′u′
+terms of the second moments are scaled by κ, so the mixture carries the
+capillary stress T = κ Σᵢ cᵢ u′ᵢu′ᵢ and the surface tension is
+σ = κ ∫ Σᵢ cᵢ u′²ᵢ,ₙ dn ≈ κ D² c I (I ≈ 0.65–0.81, depending on κD²).
+The collision is in central Hermite moments about u (Galilean invariant). The
+refinement criterion is max |∇ln γᵢ|: zero in the bulk, largest in
+interfaces (∇μᵢ itself vanishes across an equilibrium interface). The model
+also refines small coarse islands enclosed by finer blocks (`max_island_blocks`), as the
+interior of a large droplet would otherwise be coarser than its interface and
+lose mass at the coarse/fine edges inside it.
+
+Parameters come from the namelist `&parker` in the file `AMR_CASE`:
+
+| variable | default | meaning |
+|---|---|---|
+| `kind` | `'droplet'` | `'droplet'` (Laplace test, or n = 2 oscillation with `eps > 0`; `droplet.dat`), `'spinodal'` (mixture square of L0 × L0; `spinodal.dat`) or `'box'` (the whole domain mixed, e.g. a periodic box; `spinodal.dat`) |
+| `D_lu`, `kappa`, `nu_lu` | 0.2, 1, 0.02 | diffusivity, surface-tension scaling, viscosity |
+| `A_12`, `A_21` | 2.7627, 2.4474 | Margules parameters |
+| `Radius`, `eps` | 20, 0 | droplet radius and elongation |
+| `x_mix`, `noise` | 0.5, 0.05 | spinodal/box: mean mole fraction of species 1 and perturbation (`noise = 0.5`: uniform in [0, 1]) |
+| `n_steps` | 12000 | number of time steps |
+| `refine_tol`, `deref_tol`, `max_island` | model: 0.02, 0.01, 16 | mesh policy overrides (negative: keep the model's value); the refine tolerance must lie below the gradient of ln γ that the initial state shows on the coarsest level, or the mesh never resolves it |
+
+Spinodal decomposition in a periodic box as in Parker's `periodic.f90`
+(128 × 128, uniform random x₁, D = ν = 1/3, κ = 1/(36 D²)):
+
+```
+cmake -B build-box -DAMR_L0=128 -DAMR_DOMAIN_HEIGHT=1 -DAMR_PERIODIC_Y=ON && cmake --build build-box -j
+printf "&parker kind='box', noise=0.5, D_lu=0.3333333, nu_lu=0.3333333, kappa=0.25, n_steps=60000 /\n" > box.nml
+AMR_CASE=box.nml ./build-box/amr_lbm_parker 60000 300
+python3 tools/animate_vtk.py Rising_Bubble_2D.pvd --no-blocks --clim 0 1 --cmap gnuplot -o box.mp4
+```
+
+Checked against the exact linear viscous theory of 2D droplet oscillations
+(`docs/parker_model/`): adaptive and uniform finest-level runs agree, the
+oscillation frequency is within ±1 % of theory for R = 10, 20 and 40, and the
+Laplace pressure converges to the flat-interface σ (−0.3 % at R = 40).
+The derivation, the numerical checks and the open points (the composition
+error of the grid-scale interface, the stencil mismatch of the drift) are in
+`docs/parker_model/README.md`.
 
 ## Output
 

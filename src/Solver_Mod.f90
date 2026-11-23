@@ -5,7 +5,7 @@
 !   and top.
 !================================================
 MODULE Solver_Mod
-    USE Kinds_Mod, ONLY: wp, dp
+    USE Kinds_Mod, ONLY: wp, dp, i64
     USE Mesh_Mod, ONLY: Create_Domain
     USE Refine_Mod, ONLY: Refine_Derefine_Mesh
     USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR
@@ -21,17 +21,21 @@ MODULE Solver_Mod
 
 CONTAINS
 
-!== run a test case with an LBM model
-SUBROUTINE Run_AMR_LBM( model, problem )
+!== run a test case with an LBM model; the case may adjust the model's mesh
+!   policy (tolerances, island refinement) after its setup
+SUBROUTINE Run_AMR_LBM( model_in, problem )
     USE Config_Mod, ONLY: minLevels, maxLevels
+    USE Blocks_Mod, ONLY: nScalars
     IMPLICIT NONE
-    TYPE(LBM_Model), INTENT(IN) :: model
+    TYPE(LBM_Model), INTENT(IN) :: model_in
     TYPE(AMR_Case),  INTENT(IN) :: problem
 
+    TYPE(LBM_Model) :: model
     INTEGER    :: L
-    INTEGER(8) :: t1, t2, Rate
+    INTEGER(i64) :: t1, t2, Rate
     REAL(wp)   :: t_end, time_per_step
 
+    model = model_in
     IF( .NOT. ( ASSOCIATED(model%Initialize) .AND. ASSOCIATED(model%Collide) .AND. &
                 ASSOCIATED(model%Moments_g)  .AND. ASSOCIATED(model%Moments_and_Collide) .AND. &
                 ASSOCIATED(model%Refinement_Error) ) ) ERROR STOP 'Run_AMR_LBM: incomplete model'
@@ -42,7 +46,9 @@ SUBROUTINE Run_AMR_LBM( model, problem )
 
     PRINT '(/2A)', 'Case: ', TRIM(problem%name)
     CALL problem%Setup( t_end, time_per_step )
+    IF( ASSOCIATED(problem%Adjust_Model) ) CALL problem%Adjust_Model( model )
 
+    nScalars = model%n_scalars      ! before the block pool is allocated
     CALL Create_Domain
 
     CALL Initialize_State( model, problem )
@@ -86,7 +92,7 @@ END SUBROUTINE Initialize_State
 
 SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     USE Config_Mod, ONLY: nx, ny, maxLevels, inv_dx_level
-    USE Blocks_Mod, ONLY: nLeaf, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
+    USE Blocks_Mod, ONLY: nLeaf, Blk_h, Blk_g, Blk_C, Blk_C2, LeafByLevel, LevelStart, LevelMin, LevelMax
     USE Physics_Mod, ONLY: W, M0, taul, tauh, wc, Sigma
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
@@ -102,10 +108,10 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     REAL(wp)    :: cfl
     LOGICAL    :: changed, moments_done, is_output, is_diagnostic
     INTEGER    :: nDiagStep
-    INTEGER(8) :: t1, Rate
-    INTEGER(8) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
+    INTEGER(i64) :: t1, Rate
+    INTEGER(i64) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
     INTEGER    :: nProgStep
-    INTEGER(8) :: tp0, tpLast, cellUpdates
+    INTEGER(i64) :: tp0, tpLast, cellUpdates
 
     !==================================
     Tf   = NINT(t_end / time_per_step /20)*20
@@ -144,7 +150,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     PRINT '(/A/)', '    Tf     Sigma    W      M0    tauc   taul   tauh     Ref_Tols'
     PRINT '(I8,F8.4,F6.2,4F7.3,2F8.4)', Tf, Sigma, W, M0, 1/wc, taul, tauh, &
         model%refine_tol, model%deref_tol
-    PRINT '(/A/)','     T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels'
+    PRINT '(/A/)','        T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels'
     !==========================================================
 
     CALL SYSTEM_CLOCK( t1, Rate )
@@ -215,7 +221,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
             END IF
         END IF
 
-!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax, &
+!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk_h, Blk_g, Blk_C, Blk_C2, LeafByLevel, LevelStart, LevelMin, LevelMax, &
 !$OMP   model, moments_done, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
@@ -263,6 +269,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
                 CALL Streaming_LaxWendroff_AMR( cfl, Blk_g(:,:,:,n) )
             END IF
             CALL Macroscopic_Values_h_AMR( Blk_h(:,:,:,n), Blk_C(:,:,n) )
+            IF( model%n_scalars == 2 ) CALL Macroscopic_Values_h_AMR( Blk_g(:,:,:,n), Blk_C2(:,:,n) )
         END DO
 !$OMP END DO NOWAIT
         END DO
@@ -273,7 +280,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 
 !$OMP END PARALLEL
 
-        cellUpdates = cellUpdates + INT(nLeaf,8)*nx*ny
+        cellUpdates = cellUpdates + INT(nLeaf,i64)*nx*ny
         IF( MOD(T+1,nProgStep) == 0 .AND. T+1 < Tf ) CALL Progress( T+1 )
 
     END DO
@@ -299,7 +306,7 @@ CONTAINS
     !   time per step so far (it changes with the number of refined blocks)
     SUBROUTINE Progress( Tdone )
         INTEGER, INTENT(IN) :: Tdone
-        INTEGER(8) :: tnow
+        INTEGER(i64) :: tnow
         REAL(dp)   :: elapsed, mlups
 
         CALL SYSTEM_CLOCK( tnow )
@@ -325,8 +332,8 @@ CONTAINS
 
     !== add the time elapsed since the last call to the accumulator tacc
     SUBROUTINE Lap( tacc )
-        INTEGER(8), INTENT(INOUT) :: tacc
-        INTEGER(8) :: tnow
+        INTEGER(i64), INTENT(INOUT) :: tacc
+        INTEGER(i64) :: tnow
         CALL SYSTEM_CLOCK( tnow )
         tacc = tacc + (tnow - t1)
         t1 = tnow
@@ -371,7 +378,7 @@ SUBROUTINE Print_Diagnostics( Time )
     END DO
 !$OMP END PARALLEL DO
     WRITE(*,10) Time, Nblks, nLeaf, nUnused(), Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax
-10  FORMAT(F7.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
+10  FORMAT(F10.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
 
 END SUBROUTINE Print_Diagnostics
 
