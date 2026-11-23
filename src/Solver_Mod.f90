@@ -5,7 +5,7 @@
 !   and top.
 !================================================
 MODULE Solver_Mod
-    USE Kinds_Mod, ONLY: wp, dp
+    USE Kinds_Mod, ONLY: wp, dp, i64
     USE Mesh_Mod, ONLY: Create_Domain
     USE Refine_Mod, ONLY: Refine_Derefine_Mesh
     USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR
@@ -31,7 +31,7 @@ SUBROUTINE Run_AMR_LBM( model_in, problem )
 
     TYPE(LBM_Model) :: model
     INTEGER    :: L
-    INTEGER(8) :: t1, t2, Rate
+    INTEGER(i64) :: t1, t2, Rate
     REAL(wp)   :: t_end, time_per_step
 
     model = model_in
@@ -107,10 +107,10 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     REAL(wp)    :: cfl
     LOGICAL    :: changed, moments_done, is_output, is_diagnostic
     INTEGER    :: nDiagStep
-    INTEGER(8) :: t1, Rate
-    INTEGER(8) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
+    INTEGER(i64) :: t1, Rate
+    INTEGER(i64) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
     INTEGER    :: nProgStep
-    INTEGER(8) :: tp0, tpLast, cellUpdates
+    INTEGER(i64) :: tp0, tpLast, cellUpdates
 
     !==================================
     Tf   = NINT(t_end / time_per_step /20)*20
@@ -272,7 +272,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 
 !$OMP END PARALLEL
 
-        cellUpdates = cellUpdates + INT(nLeaf,8)*nx*ny
+        cellUpdates = cellUpdates + INT(nLeaf,i64)*nx*ny
         IF( MOD(T+1,nProgStep) == 0 .AND. T+1 < Tf ) CALL Progress( T+1 )
 
     END DO
@@ -296,7 +296,7 @@ CONTAINS
     !   time per step so far (it changes with the number of refined blocks)
     SUBROUTINE Progress( Tdone )
         INTEGER, INTENT(IN) :: Tdone
-        INTEGER(8) :: tnow
+        INTEGER(i64) :: tnow
         REAL(dp)   :: elapsed, mlups
 
         CALL SYSTEM_CLOCK( tnow )
@@ -322,8 +322,8 @@ CONTAINS
 
     !== add the time elapsed since the last call to the accumulator tacc
     SUBROUTINE Lap( tacc )
-        INTEGER(8), INTENT(INOUT) :: tacc
-        INTEGER(8) :: tnow
+        INTEGER(i64), INTENT(INOUT) :: tacc
+        INTEGER(i64) :: tnow
         CALL SYSTEM_CLOCK( tnow )
         tacc = tacc + (tnow - t1)
         t1 = tnow

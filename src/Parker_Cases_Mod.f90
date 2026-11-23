@@ -25,7 +25,7 @@
 !   start-up (Newton) and used for the initial phases.
 !================================================
 MODULE Parker_Cases_Mod
-    USE Kinds_Mod, ONLY: wp, dp
+    USE Kinds_Mod, ONLY: wp, dp, i64
     USE Case_Mod, ONLY: AMR_Case
     IMPLICIT NONE
     PRIVATE
@@ -192,11 +192,11 @@ END SUBROUTINE Coexistence
 PURE FUNCTION Hash_Noise( i, j ) RESULT( r )
     INTEGER, INTENT(IN) :: i, j
     REAL(wp) :: r
-    INTEGER(8) :: h
+    INTEGER(i64) :: h
 
-    h = IEOR( INT(i,8)*73856093_8, INT(j,8)*19349663_8 )
-    h = IEOR( h, ISHFT(h, -13) ) * 1274126177_8
-    h = IAND( IEOR( h, ISHFT(h, -16) ), 2147483647_8 )
+    h = IEOR( INT(i,i64)*73856093_i64, INT(j,i64)*19349663_i64 )
+    h = IEOR( h, ISHFT(h, -13) ) * 1274126177_i64
+    h = IAND( IEOR( h, ISHFT(h, -16) ), 2147483647_i64 )
     r = 2._wp*REAL( h, wp )/2147483647._wp - 1._wp
 
 END FUNCTION Hash_Noise
