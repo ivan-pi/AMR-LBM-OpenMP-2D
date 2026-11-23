@@ -9,6 +9,7 @@ project(AMR_LBM_2D
 #
 #   cmake -B build                                   # defaults (Release, double)
 #   cmake -B build -DCMAKE_Fortran_COMPILER=ifx      # Intel ifx
+#   cmake -B build -DCMAKE_Fortran_COMPILER=nagfor   # NAG Fortran
 #   cmake -B build -DAMR_PRECISION=4                 # single precision
 #   cmake -B build -DAMR_L0=1024 -DAMR_MIN_LEVEL=5   # bigger case
 #   cmake -B build -DAMR_BLOCK_SIZE=16               # 16x16-cell blocks
@@ -72,6 +73,22 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   set(AMR_FLAGS_RELEASE -O3)
   set(AMR_FLAGS_DEBUG   -O0 -g -check all -traceback -warn all)
   set(AMR_FLAG_NATIVE   -xHost)
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NAG")
+  set(AMR_FLAGS_RELEASE -O4)
+  set(AMR_FLAGS_DEBUG   -O0 -g -gline -C=all)
+  set(AMR_FLAG_NATIVE   -target=native)
+endif()
+
+# OpenMP. For NAG, FindOpenMP's imported target lists nagfor's thread-safe
+# runtime objects but omits -openmp at link time, so nagfor also links its
+# serial runtime and the link fails with duplicate symbols; let the nagfor
+# driver add the OpenMP runtime itself.
+add_library(amr_openmp INTERFACE)
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "NAG")
+  target_compile_options(amr_openmp INTERFACE ${OpenMP_Fortran_FLAGS})
+  target_link_options(amr_openmp INTERFACE ${OpenMP_Fortran_FLAGS})
+else()
+  target_link_libraries(amr_openmp INTERFACE OpenMP::OpenMP_Fortran)
 endif()
 
 add_library(amr_options INTERFACE)
@@ -119,7 +136,7 @@ add_library(amr_core OBJECT
 target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
                                             AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT}
                                             $<$<BOOL:${AMR_PERIODIC_Y}>:AMR_PERIODIC_Y>)
-target_link_libraries(amr_core PUBLIC amr_options OpenMP::OpenMP_Fortran)
+target_link_libraries(amr_core PUBLIC amr_options amr_openmp)
 set_target_properties(amr_core PROPERTIES
   Fortran_PREPROCESS ON
   Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)

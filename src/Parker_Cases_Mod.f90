@@ -25,7 +25,7 @@
 !   start-up (Newton) and used for the initial phases.
 !================================================
 MODULE Parker_Cases_Mod
-    USE Kinds_Mod, ONLY: wp, dp
+    USE Kinds_Mod, ONLY: wp, dp, i64
     USE Case_Mod, ONLY: AMR_Case
     IMPLICIT NONE
     PRIVATE
@@ -189,14 +189,22 @@ END SUBROUTINE Coexistence
 !******************************************************************************
 
 !== a reproducible pseudo-random number in [-1, 1] of the integer position (i, j)
+!   The multiplication by 1274126177 is meant modulo 2**64, but signed
+!   overflow is not defined in Fortran. Only bits 0..46 of the product
+!   reach the result (bits 0..30 after the 16-bit shift), so they are
+!   formed exactly from 24- and 23-bit pieces of h, without overflow.
 PURE FUNCTION Hash_Noise( i, j ) RESULT( r )
     INTEGER, INTENT(IN) :: i, j
     REAL(wp) :: r
-    INTEGER(8) :: h
+    INTEGER(i64), PARAMETER :: mult = 1274126177_i64
+    INTEGER(i64) :: h, lo, hi
 
-    h = IEOR( INT(i,8)*73856093_8, INT(j,8)*19349663_8 )
-    h = IEOR( h, ISHFT(h, -13) ) * 1274126177_8
-    h = IAND( IEOR( h, ISHFT(h, -16) ), 2147483647_8 )
+    h  = IEOR( INT(i,i64)*73856093_i64, INT(j,i64)*19349663_i64 )
+    h  = IEOR( h, ISHFT(h, -13) )
+    lo = IBITS( h, 0, 24 )
+    hi = IBITS( h, 24, 23 )
+    h  = IAND( lo*mult + ISHFT( IBITS(hi*mult, 0, 23), 24 ), 140737488355327_i64 )   ! 2**47 - 1
+    h  = IAND( IEOR( h, ISHFT(h, -16) ), 2147483647_i64 )
     r = 2._wp*REAL( h, wp )/2147483647._wp - 1._wp
 
 END FUNCTION Hash_Noise

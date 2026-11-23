@@ -3,6 +3,7 @@
 !   neighbour table
 !================================================
 MODULE Mesh_Mod
+    USE Kinds_Mod, ONLY: i64
     USE Blocks_Mod, ONLY: Block_t, Blk, Nblks
     IMPLICIT NONE
     PRIVATE
@@ -10,7 +11,7 @@ MODULE Mesh_Mod
     PUBLIC :: t_nbr_table, n_nbr_rebuilds
 
     !== time spent in Rebuild_Neighbor_Table (SYSTEM_CLOCK ticks) and number of calls
-    INTEGER(8) :: t_nbr_table = 0
+    INTEGER(i64) :: t_nbr_table = 0
     INTEGER    :: n_nbr_rebuilds = 0
 
 CONTAINS
@@ -154,7 +155,7 @@ SUBROUTINE Rebuild_Neighbor_Table
     INTEGER, SAVE :: at(MaxBlks) = 0
 
     INTEGER :: n, k, L, I, J, b
-    INTEGER(8) :: t0, t1
+    INTEGER(i64) :: t0, t1
 
     CALL SYSTEM_CLOCK( t0 )
 

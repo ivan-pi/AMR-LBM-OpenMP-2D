@@ -59,7 +59,7 @@ python3 tools/plot_rise.py jcp/bubble_rise.dat:JCP2016 pre/bubble_rise.dat:PRE20
 ## Building and running
 
 The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
-(tested with gfortran 13 and Intel ifx 2026.1):
+(tested with gfortran 13, Intel ifx 2026.1 and NAG Fortran 7.2):
 
 ```
 cmake -B build                                  # Release, double precision
@@ -86,7 +86,7 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 
 | option | default | meaning |
 |---|---|---|
-| `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx` |
+| `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx`, `nagfor` |
 | `CMAKE_BUILD_TYPE` | `Release` | `Debug` adds bounds checking and warnings |
 | `AMR_PRECISION` | `8` | working precision `wp`: `8` (real64) or `4` (real32) |
 | `AMR_L0` | `256` | base block width in finest lattice units |
