@@ -94,10 +94,6 @@ SUBROUTINE KERNEL_NAME( inv_dx, C, P, Ux, Uy, h, g )
     wd12    = 12._wp*wd
 
     DO j = 1, ny
-!$OMP SIMD PRIVATE( C0, C3, eC2, eC3, eC6, eC7, B2, B3, B4, B5, B6, B7, B8, B9, t68, t79, &
-!$OMP   DcDx, DcDy, DmDx, DmDy, g2, rn, ni, nj, xmu, vx, vy, vxx, vyy, base0, uDc, D0, &
-!$OMP   Rho, rho3, hF, Pc, Pr, amu, cH, tCH, t, km, m8, m9, r0, rp, rm, Q, &
-!$OMP   v, Gs, Ga, Gp, Gm, sq, Pw, S0, Sx, Sy, rRho )
     DO i = 1, nx
         C0 = C(i,j)
 

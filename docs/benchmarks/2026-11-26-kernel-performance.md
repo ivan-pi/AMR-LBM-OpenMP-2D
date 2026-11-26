@@ -77,7 +77,7 @@ twice in `Model_JCP2016_Mod`). The kernel alone became 1.3-1.5 times faster.
   vector length; `COLLAPSE(2)` or a flat index makes ifx and flang emit
   gathers, at half the speed), default lower bounds and sequence association
   (identical code), the `!$OMP SIMD` directive (all compilers vectorize the
-  loop anyway; kept as documentation). Run-time block sizes cost 6-20 %.
+  loop anyway, so the kernel carries none). Run-time block sizes cost 6-20 %.
 * The three divisions and the square root per cell cost 2-3 % with 256-bit
   vectors. They are needed in every cell and stay exact.
 

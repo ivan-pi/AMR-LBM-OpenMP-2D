@@ -11,8 +11,6 @@
 !   number of layers and so every strip shape fixed at compile time the fill
 !   is 2.3-3.4 times faster than with one set of routines for any ng
 !   (docs/benchmarks/2026-11-26-kernel-performance.md).
-!   Pushing the copies from the streaming loop, as for h and
-!   g, gains nothing more on 8x8 blocks and is not done.
 !================================================
 MODULE Ghost_C_Mod
     USE Kinds_Mod, ONLY: wp
