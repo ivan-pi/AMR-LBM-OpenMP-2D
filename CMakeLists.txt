@@ -13,7 +13,6 @@ project(AMR_LBM_2D
 #   cmake -B build -DAMR_PRECISION=4                 # single precision
 #   cmake -B build -DAMR_L0=1024 -DAMR_MIN_LEVEL=5   # bigger case
 #   cmake -B build -DAMR_BLOCK_SIZE=16               # 16x16-cell blocks
-#   cmake -B build -DAMR_COARSE_STENCIL=9            # 9-point streaming on coarse levels
 #   cmake -B build -DAMR_DOMAIN_HEIGHT=4             # L0 x 4*L0 domain (Rayleigh-Taylor)
 #   cmake -B build -DAMR_WITH_FVTKHDF=ON -DCMAKE_PREFIX_PATH=<fvtkhdf prefix>
 #   cmake -B build -DAMR_BUILD_OFFLOAD=ON            # GPU prototype (ifx only)
@@ -25,8 +24,6 @@ set(AMR_L0 256 CACHE STRING "Domain width in finest-level lattice units (domain 
 set(AMR_DOMAIN_HEIGHT 3 CACHE STRING "Domain height in base blocks of L0 x L0 (rising bubble: 3, Rayleigh-Taylor: 4)")
 set(AMR_MIN_LEVEL 1 CACHE STRING "Minimum refinement level (uniform background refinement)")
 set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of two dividing AMR_L0)")
-set(AMR_COARSE_STENCIL 3 CACHE STRING "Lax-Wendroff streaming on the levels below the finest: 3 points along the direction, or 9 (tensor product)")
-set_property(CACHE AMR_COARSE_STENCIL PROPERTY STRINGS 3 9)
 option(AMR_PERIODIC_Y "Periodic in y as well (default: walls at the bottom and top)" OFF)
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
@@ -34,9 +31,6 @@ option(AMR_NATIVE "Optimize for the build machine (-march=native / -xHost)" ON)
 
 if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
-endif()
-if(NOT AMR_COARSE_STENCIL MATCHES "^(3|9)$")
-  message(FATAL_ERROR "AMR_COARSE_STENCIL must be 3 or 9")
 endif()
 
 # The finest level is the L with AMR_BLOCK_SIZE * 2**L == AMR_L0 (none: L0 is
@@ -116,7 +110,7 @@ find_program(FYPP_EXECUTABLE fypp REQUIRED
 # every configuration option is passed to Fypp under its CMake name
 # (the switches as 0 / 1)
 set(AMR_FYPP_FLAGS)
-foreach(_opt AMR_BLOCK_SIZE AMR_L0 AMR_MIN_LEVEL AMR_DOMAIN_HEIGHT AMR_PRECISION AMR_COARSE_STENCIL)
+foreach(_opt AMR_BLOCK_SIZE AMR_L0 AMR_MIN_LEVEL AMR_DOMAIN_HEIGHT AMR_PRECISION)
   list(APPEND AMR_FYPP_FLAGS -D${_opt}=${${_opt}})
 endforeach()
 foreach(_opt AMR_PERIODIC_Y AMR_WITH_FVTKHDF)
@@ -215,5 +209,5 @@ if(AMR_BUILD_OFFLOAD)
 endif()
 
 message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, periodic y=${AMR_PERIODIC_Y}, "
-               "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, coarse stencil=${AMR_COARSE_STENCIL}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
+               "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
                "offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")

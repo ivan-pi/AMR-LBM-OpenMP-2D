@@ -33,9 +33,9 @@
 !================================================
 #:include "Biquadratic.fypp"
 #!  numbers of directions a strip is interpolated for from a coarser block: all 8, or
-#!  those a streaming reads (Lax-Wendroff, exact shift)
+#!  those a streaming reads (Lax-Wendroff with 3 points; at a corner 4 with 9 points; exact shift)
 #:set SIDE_NK = [ 8, 6, 3 ]
-#:set CORNER_NK = [ 8, 4 if AMR_COARSE_STENCIL == 9 else 2, 1 ]
+#:set CORNER_NK = [ 8, 4, 2, 1 ]
 #!  suffix of the routine for nk directions: none for all 8
 #:set SUFFIX = lambda nk: '' if nk == 8 else str( nk )
 MODULE Ghost_hg_Mod
@@ -43,28 +43,26 @@ MODULE Ghost_hg_Mod
     USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, di, dj, facing
     USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
+    USE LBM_Common_Mod, ONLY: coarseStencil     ! 3 or 9 points on the coarser levels
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Fill_Ghost_Cells_hg, Push_Same_Level
 
     !== directions read from the ghost cells in direction k by the streaming:
     !   all moving ones, those of the exact shift, those of Lax-Wendroff on
-    !   the coarser levels (3-point or 9-point stencil, Config_Mod)
+    !   the coarser levels with 3 points and with 9 (coarseStencil)
     INTEGER, PARAMETER :: all_dirs(8) = [ 2, 3, 4, 5, 6, 7, 8, 9 ]
     INTEGER, PARAMETER :: kopp(8) = [ 2, 1, 4, 3, 8, 7, 6, 5 ]      ! the opposite neighbour direction
     INTEGER, PARAMETER :: nShift(8) = [ 3, 3, 3, 3, 1, 1, 1, 1 ]
     INTEGER, PARAMETER :: shift_dirs(3,8) = RESHAPE( [ 2,6,9, 4,7,8, 3,6,7, 5,8,9, &
                                                        6,0,0, 9,0,0, 7,0,0, 8,0,0 ], [3,8] )
-#:if AMR_COARSE_STENCIL == 9
-    !== the tensor-product stencil reads all four diagonal directions at a corner
-    INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 4, 4, 4, 4 ]
-    INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
-                                                    6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0 ], [6,8] )
-#:else
     INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 2, 2, 2, 2 ]
     INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
                                                     6,8,0,0,0,0, 7,9,0,0,0,0, 7,9,0,0,0,0, 6,8,0,0,0,0 ], [6,8] )
-#:endif
+    !== the 9-point stencil reads all four diagonal directions at a corner
+    INTEGER, PARAMETER :: nLW9(8) = [ 6, 6, 6, 6, 4, 4, 4, 4 ]
+    INTEGER, PARAMETER :: lw9_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
+                                                     6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0 ], [6,8] )
 
 CONTAINS
 
@@ -134,20 +132,22 @@ SUBROUTINE Fill_Ghost_Cells_hg
                     CALL Fill_From_Coarse( n, nb, k, 8, all_dirs )
                 ELSEIF( L == maxLevels ) THEN
                     CALL Fill_From_Coarse( n, nb, k, nShift(k), shift_dirs(1:nShift(k),k) )
+                ELSEIF( coarseStencil == 9 ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, nLW9(k), lw9_dirs(1:nLW9(k),k) )
                 ELSE
                     CALL Fill_From_Coarse( n, nb, k, nLW(k), lw_dirs(1:nLW(k),k) )
                 END IF
             END DO
-#:if AMR_COARSE_STENCIL == 9
 
             !== the 9-point stencil also reads the wall values of the end columns,
             !   which copy the ghost cells of a side interpolated just now
-            DO k = 1, 2
-                nb = Blk(n)%nbr(k)
-                IF( nb <= 0 ) CYCLE
-                IF( Blk(nb)%Level < L ) CALL Walls( n, MERGE( 0, nx+1, k == 1 ), MERGE( 0, nx+1, k == 1 ) )
-            END DO
-#:endif
+            IF( coarseStencil == 9 .AND. L < maxLevels ) THEN
+                DO k = 1, 2
+                    nb = Blk(n)%nbr(k)
+                    IF( nb <= 0 ) CYCLE
+                    IF( Blk(nb)%Level < L ) CALL Walls( n, MERGE( 0, nx+1, k == 1 ), MERGE( 0, nx+1, k == 1 ) )
+                END DO
+            END IF
 
         END DO
 !$OMP END DO NOWAIT
@@ -189,6 +189,8 @@ SUBROUTINE Push_Same_Level( n )
             CALL Copy_All  ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
         ELSEIF( Blk(nb)%Level == maxLevels ) THEN
             CALL Copy_Shift( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSEIF( coarseStencil == 9 ) THEN
+            CALL Copy_LW9  ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
         ELSE
             CALL Copy_LW   ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
         END IF
@@ -200,14 +202,14 @@ END SUBROUTINE Push_Same_Level
 
 !== Copy of the edge of a same-level block hb, gb into the ghost cells hn, gn
 !   of its neighbour in direction k (seen from hn), generated (Fypp) for the
-!   three lists of directions: all moving ones, those read by the exact shift,
-!   those read by Lax-Wendroff. k is selected outside the loops and the blocks
+!   lists of directions: all moving ones, those read by the exact shift,
+!   those read by Lax-Wendroff with 3 and with 9 points. k is selected outside the loops and the blocks
 !   are explicit-shape dummy arguments, so in every branch the directions and
 !   all sections are constants (5-30 % faster than one routine with the list
 !   as an argument and SELECT CASE inside the loop).
 #!  per list: routine, number of directions and q-th direction for the ghost cells in direction k
 #:set COPY_LISTS = [ ( 'Copy_All', '8', 'all_dirs(q)' ), ( 'Copy_Shift', 'nShift({k})', 'shift_dirs(q,{k})' ), &
-                   & ( 'Copy_LW', 'nLW({k})', 'lw_dirs(q,{k})' ) ]
+                   & ( 'Copy_LW', 'nLW({k})', 'lw_dirs(q,{k})' ), ( 'Copy_LW9', 'nLW9({k})', 'lw9_dirs(q,{k})' ) ]
 #!  per direction k: ghost index and source index in x and in y (None: the whole edge)
 #:set EDGES = [ ( 1, '0', None, 'nx', None ), ( 2, 'nx+1', None, '1', None ), ( 3, None, '0', None, 'ny' ), &
               & ( 4, None, 'ny+1', None, '1' ), ( 5, '0', '0', 'nx', 'ny' ), ( 6, '0', 'ny+1', 'nx', '1' ), &

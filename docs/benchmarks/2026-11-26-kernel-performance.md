@@ -88,7 +88,9 @@ bitwise identical. gfortran 15 had compiled the single copy into several
 hundred shuffles, 2.4 times slower than gfortran 14. Unrolling the loop over
 the directions by directive, linear indexing and flat loops gained nothing.
 
-**9-point streaming as an option** (`-DAMR_COARSE_STENCIL=9`, default 3). On
+**9-point streaming as an option** (environment variable
+`AMR_COARSE_STENCIL=9` at run time, default 3;
+`Streaming_LaxWendroff9Pt_AMR`, selected through a procedure pointer). On
 the levels below the finest the diagonal directions can use the tensor
 product of the 1-D Lax-Wendroff schemes in x and y (all nine neighbours)
 instead of three points along the direction; the axis directions are the

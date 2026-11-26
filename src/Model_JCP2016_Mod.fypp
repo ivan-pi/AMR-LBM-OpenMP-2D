@@ -295,6 +295,7 @@ SUBROUTINE ${NAME}$( inv_dx, C, P, Ux, Uy, h, g )
         Uy(i,j) = vy
         P (i,j) = Pc
 #:else
+        !== pressure and velocity from the existing fields
         vx = Ux(i,j)
         vy = Uy(i,j)
         Pc = P(i,j)

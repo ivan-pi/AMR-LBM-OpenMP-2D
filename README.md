@@ -83,6 +83,11 @@ written, so the operating system commits only those pages. The environment
 variable `AMR_BLOCK_CAPACITY` sets a smaller start capacity; the pool then
 doubles whenever a refinement needs more blocks.
 
+The environment variable `AMR_COARSE_STENCIL` selects the Lax-Wendroff
+streaming on the levels below the finest: `3` (default) for three points
+along each direction, `9` for the tensor product of the 1-D schemes in x and
+y for the diagonal directions (nine points, at the same cost).
+
 Configuration options (`cmake -B build -D<option>=<value>`):
 
 | option | default | meaning |
@@ -90,7 +95,6 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 | `CMAKE_Fortran_COMPILER` | system default | e.g. `ifx`, `nagfor` |
 | `CMAKE_BUILD_TYPE` | `Release` | `Debug` adds bounds checking and warnings |
 | `AMR_PRECISION` | `8` | working precision `wp`: `8` (real64) or `4` (real32) |
-| `AMR_COARSE_STENCIL` | `3` | Lax-Wendroff streaming on the levels below the finest: `3` points along the direction, or `9` (tensor product of the 1-D schemes for the diagonal directions) |
 | `AMR_L0` | `256` | base block width in finest lattice units |
 | `AMR_DOMAIN_HEIGHT` | `3` | domain height in base blocks (domain `L0 x AMR_DOMAIN_HEIGHT*L0`; 4 for the Rayleigh–Taylor paper case) |
 | `AMR_MIN_LEVEL` | `1` | minimum (uniform background) refinement level |

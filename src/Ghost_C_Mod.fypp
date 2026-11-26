@@ -100,11 +100,11 @@ CONTAINS
                 IF( Blk(nb)%IsLeaf .AND. .NOT. second ) THEN        ! same-level leaf
                     CALL Copy_${NG}$( k, C(:,:,n), C(:,:,nb) )
                 ELSEIF( k <= 2 ) THEN
-                    CALL Side_X_${NG}$( n, nb, di(k), C )
+                    CALL Fill_Side_X_${NG}$( n, nb, di(k), C )
                 ELSEIF( k <= 4 ) THEN
-                    CALL Side_Y_${NG}$( n, nb, dj(k), C )
+                    CALL Fill_Side_Y_${NG}$( n, nb, dj(k), C )
                 ELSE
-                    CALL Corner_${NG}$( n, k, C )
+                    CALL Fill_Corner_${NG}$( n, k, C )
                 END IF
   #:endfor
             END SELECT
@@ -160,7 +160,7 @@ END SUBROUTINE Copy_${NG}$
 
 !== the ghost columns of block n towards its refined or coarser left (s = -1)
 !   or right (s = +1) neighbour nb
-SUBROUTINE Side_X_${NG}$( n, nb, s, Blk_C )
+SUBROUTINE Fill_Side_X_${NG}$( n, nb, s, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s
     REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
@@ -198,13 +198,13 @@ CONTAINS
 @:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2+${NG}$, j2 = 2*ny, x2 = ${NG}$, y2 = ny, nk = 1 )
 
 @:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = 3, j2 = ny/2+2, x2 = ${NG}$, y2 = ny, nk = 1 )
-END SUBROUTINE Side_X_${NG}$
+END SUBROUTINE Fill_Side_X_${NG}$
 
 !******************************************************************************
 
 !== the ghost rows of block n towards its refined or coarser bottom (s = -1)
 !   or top (s = +1) neighbour nb
-SUBROUTINE Side_Y_${NG}$( n, nb, s, Blk_C )
+SUBROUTINE Fill_Side_Y_${NG}$( n, nb, s, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s
     REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
@@ -242,13 +242,13 @@ CONTAINS
 @:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2*nx, j2 = 2+${NG}$, x2 = nx, y2 = ${NG}$, nk = 1 )
 
 @:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = nx/2+2, j2 = 3, x2 = nx, y2 = ${NG}$, nk = 1 )
-END SUBROUTINE Side_Y_${NG}$
+END SUBROUTINE Fill_Side_Y_${NG}$
 
 !******************************************************************************
 
 !== the ghost corner of block n towards its refined or coarser neighbour in
 !   direction k = 5..8
-SUBROUTINE Corner_${NG}$( n, k, Blk_C )
+SUBROUTINE Fill_Corner_${NG}$( n, k, Blk_C )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, k
     REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
@@ -296,7 +296,7 @@ CONTAINS
 @:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2+${NG}$, j2 = 2+${NG}$, x2 = ${NG}$, y2 = ${NG}$, nk = 1 )
 
 @:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = 3, j2 = 3, x2 = ${NG}$, y2 = ${NG}$, nk = 1 )
-END SUBROUTINE Corner_${NG}$
+END SUBROUTINE Fill_Corner_${NG}$
 
 !******************************************************************************
 
