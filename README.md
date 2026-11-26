@@ -380,6 +380,13 @@ thread and 1.22-1.32 times on four (gfortran 14.2 and 15.2, ifx 2026.2, 8x8
 and 16x16 blocks; numbers in `bench/overall_before_after.csv`), with results
 equal to round-off.
 
+![Leaf blocks per level, coarse/fine neighbours and speed over a run](docs/mesh_and_speed_drift.svg)
+
+MLUPS counts every leaf cell once per step, so it drifts with the mesh: over
+the full run (t* = 8) the leaves on the finest level grow from 192 to 328 and
+the share of coarse/fine neighbour directions from 18.5 to 21.5 %, and the
+speed falls by about 5 % (the whole run: 88.6 s before, 64.6 s after).
+
 One time step, starting from h, g and C after streaming:
 
 1. fill the ghost layers of C (as many as the model's collision reads: two for
