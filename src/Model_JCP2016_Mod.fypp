@@ -142,44 +142,53 @@ END SUBROUTINE Initialize_Block
 !   gfortran (three times slower), hence the two instances.
 !
 !   Everything a cell needs is computed in the one loop body, the chemical
-!   potential and (WITH_MOMENTS) the moments included: the differences of C
-!   are shared, no work array is passed between loops, and h, g are loaded
-!   once. (+30-65 % over three separate passes; measurements in
-!   docs/benchmarks/2026-11-26-kernel-performance.md.)
+!   potential and the moments included: the differences of C are shared, no
+!   work array is passed between loops, and h, g are loaded once (+30-65 %
+!   over three separate passes; docs/benchmarks/2026-11-26-kernel-performance.md).
 !
-!   The directions come in opposite pairs (2,4), (3,5), (6,8), (7,9),
-!   e_k' = -e_k, with weight w and e.u = +-v. Per pair
+!   h relaxes to its equilibrium with rate wc (BGK). g is collided with the
+!   MRT operator of the paper and gets the forcing. The loop body does not
+!   follow the formulas of the paper term by term; it uses four symmetries:
 !
-!       Gamma+- = Gs +- Ga,   Gs = w (base0 + 4.5 v^2),   Ga = 3 w v
-!       A+-     = Gamma+- amu - w dRho/3        (amu = mu + dRho/3)
-!       f+-     = (+-ey - vy) Gamma+- Fb        (Fb: buoyancy)
-!       geq+-   = (Pc - rho/3) w + Gamma+- (rho/3 - f-coefficient/2)
-!                 - A+- (+-eC - u.grad C)/2
+!   1. Opposite directions. The eight moving directions are four pairs of
+!      opposite directions: (2,4) along x, (3,5) along y, (6,8) and (7,9)
+!      along the diagonals. The equilibrium weight Gamma of the two members
+!      of a pair is a common part Gs (even in the velocity) plus or minus a
+!      part Ga (odd in the velocity):
 !
-!   h: BGK relaxation to C (Gamma + sharpening term) with rate wc.
+!          Gamma(k) = Gs + Ga        Gamma(opposite of k) = Gs - Ga
 !
-!   g: MRT g <- g - M^-1 S M (g - geq) with S = diag(1,...,1,s9,s9), plus the
-!   forcing of the mixed differences eM. All moments but the two stresses
-!   relax with rate 1, so
+!      so a pair needs Gs and Ga once (Gp, Gm in the code).
 !
-!       g+- = geq+- + A+- (eM+- - u.grad_m C) + f+-  +- m
-!           = Pw + Gamma+- r+- + A+- (B+- + D0)      +- m
+!   2. Only two moments keep a memory. The MRT operator sets every moment of
+!      g to its equilibrium (rate 1) except the two stress moments
 !
-!   with  B+- = eM+- -+ eC/2 = (4 C(x+-e) - 3 C(x) - C(x+-2e))/(4 dx)
-!         D0  = u.grad C/2 - u.grad_m C,   r+- = rho/3 + (+-ey - vy) Fb/2,
-!         Pw  = (Pc - rho/3) w
-!   and m = +-m8 for the straight pairs, +-m9 for the diagonal ones: (1-s9)/4
-!   times the stress moments of g - geq,
+!          m8 = (g2 + g4) - (g3 + g5)        normal stress difference
+!          m9 = (g6 + g8) - (g7 + g9)        shear stress
 !
-!       m8 ~ (dg2 + dg4) - (dg3 + dg5),     m9 ~ (dg6 + dg8) - (dg7 + dg9).
+!      which relax with the rate s9 of the viscosity. After the collision a
+!      direction therefore is: equilibrium, plus forcing, plus or minus
+!      (1 - s9)/4 times the non-equilibrium part of m8 (+ for 2 and 4, - for
+!      3 and 5) or of m9 (+ for 6 and 8, - for 7 and 9).
 !
-!   Only the sums of geq over a pair enter them. In these the odd parts
-!   cancel, and so do Pw and the constant part of Gs between the two pairs,
-!   which leaves closed expressions in u, grad C and the buoyancy (below).
-!   The individual geq_k and g_k - geq_k are never formed: about a quarter
-!   fewer operations than relaxing every direction against its geq, and each
-!   g is stored as soon as it is computed (no values held to the end of the
-!   body). The results differ from that form by round-off only (1e-14).
+!   3. The stress moments only see pair sums. m8 and m9 contain each pair as
+!      the sum of its two members. In the sum of the two equilibria of a pair
+!      every odd term cancels, and in the difference of the two pairs of a
+!      moment the pressure term and the constant part of Gs cancel as well.
+!      What is left is a short expression in the velocity, the gradient of C
+!      and the buoyancy (the two statements for m8 and m9 below). The
+!      equilibrium of a single direction, and g minus it, are never formed.
+!
+!   4. One difference of C per direction. The forcing of the paper uses a
+!      central and a mixed difference of C along every direction. Per
+!      direction they only occur as mixed minus half the central one, which
+!      is the one-sided difference
+!
+!          B(k) = ( 4 C(x + e_k) - 3 C(x) - C(x + 2 e_k) ) / (4 dx)
+!
+!   Together: about a quarter fewer operations than relaxing every direction
+!   against its own equilibrium, and every g is stored as soon as it is
+!   computed. The results differ from that form by round-off only (1e-14).
 #:for NAME, MOMENTS in [ ( 'Collision_h_g_AMR', False ), ( 'Moments_Collision_h_g_AMR', True ) ]
 SUBROUTINE ${NAME}$( inv_dx, C, P, Ux, Uy, h, g )
     IMPLICIT NONE
@@ -404,7 +413,6 @@ SUBROUTINE Macroscopic_Values_g_AMR( inv_dx, g, C, mu, P, Ux, Uy )
     CALL Gradient_AMR( inv_dx, C, DcDx, DcDy )
 
     DO j = 1, ny
-!$OMP SIMD PRIVATE( S0, Sx, Sy, Rho, rRho, Fx, Fy )
     DO i = 1, nx
         S0 = g(i,j,1) + ( (g(i,j,2) + g(i,j,3)) + (g(i,j,4) + g(i,j,5)) ) &
                       + ( (g(i,j,6) + g(i,j,7)) + (g(i,j,8) + g(i,j,9)) )

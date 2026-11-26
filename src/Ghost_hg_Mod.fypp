@@ -32,6 +32,12 @@
 !   sides, corners; the interpolations have that shape fixed at compile time.
 !================================================
 #:include "Biquadratic.fypp"
+#!  numbers of directions a strip is interpolated for from a coarser block: all 8, or
+#!  those a streaming reads (Lax-Wendroff, exact shift)
+#:set SIDE_NK = [ 8, 6, 3 ]
+#:set CORNER_NK = [ 8, 4 if AMR_COARSE_STENCIL == 9 else 2, 1 ]
+#!  suffix of the routine for nk directions: none for all 8
+#:set SUFFIX = lambda nk: '' if nk == 8 else str( nk )
 MODULE Ghost_hg_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
@@ -42,34 +48,44 @@ MODULE Ghost_hg_Mod
     PUBLIC :: Fill_Ghost_Cells_hg, Push_Same_Level
 
     !== directions read from the ghost cells in direction k by the streaming:
-    !   all moving ones, those of the exact shift, those of Lax-Wendroff
+    !   all moving ones, those of the exact shift, those of Lax-Wendroff on
+    !   the coarser levels (3-point or 9-point stencil, Config_Mod)
     INTEGER, PARAMETER :: all_dirs(8) = [ 2, 3, 4, 5, 6, 7, 8, 9 ]
     INTEGER, PARAMETER :: kopp(8) = [ 2, 1, 4, 3, 8, 7, 6, 5 ]      ! the opposite neighbour direction
     INTEGER, PARAMETER :: nShift(8) = [ 3, 3, 3, 3, 1, 1, 1, 1 ]
     INTEGER, PARAMETER :: shift_dirs(3,8) = RESHAPE( [ 2,6,9, 4,7,8, 3,6,7, 5,8,9, &
                                                        6,0,0, 9,0,0, 7,0,0, 8,0,0 ], [3,8] )
+#:if AMR_COARSE_STENCIL == 9
+    !== the tensor-product stencil reads all four diagonal directions at a corner
+    INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 4, 4, 4, 4 ]
+    INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
+                                                    6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0 ], [6,8] )
+#:else
     INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 2, 2, 2, 2 ]
     INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
                                                     6,8,0,0,0,0, 7,9,0,0,0,0, 7,9,0,0,0,0, 6,8,0,0,0,0 ], [6,8] )
+#:endif
 
 CONTAINS
 
 
-!== one ghost layer of h and g on all leaf blocks, after the same-level
-!   copies (Push_Same_Level, with the collision), in two passes over the
-!   levels. The first does the restrictions of refined neighbours, which read
-!   interior cells only, and the wall conditions. The second interpolates from coarser neighbours,
-!   which also reads ghost cells of the coarser block: by the 2:1 balance
-!   (diagonal neighbours included) those lie towards blocks of the
-!   interpolating block's level or the coarser one, filled by the first
-!   pass. So the levels need no barrier between them (NOWAIT), the passes
-!   one. The wall conditions run in the first pass only: their values that
-!   come from a side ghost cell still to be interpolated (end columns,
-!   directions with ex*ey /= 0 pointing out of the block) are read neither
-!   by the streaming nor by finer neighbours, which read the wall row on
-!   their own side (restricted in the first pass). The static
-!   schedules per level are those of the collision and streaming loops:
-!   each block stays with one thread.
+!== One ghost layer of h and g on all leaf blocks, apart from the same-level
+!   copies (Push_Same_Level, called with the collision). Two passes over the
+!   levels:
+!
+!   1. Restriction of refined neighbours, then the wall conditions. Reads
+!      interior cells only.
+!   2. Interpolation from coarser neighbours. Also reads ghost cells of the
+!      coarser block; by the 2:1 balance these were filled by pass 1 or by
+!      the copies.
+!
+!   - Barriers: none between the levels of a pass (NOWAIT), one between the
+!     passes.
+!   - Walls run in pass 1. Wall values that depend on a side still to be
+!     interpolated (end columns) are read only by the 9-point stencil of the
+!     coarse-level streaming; for it they are redone after pass 2.
+!   - The static schedule per level is that of the collision and streaming
+!     loops, so each block stays with one thread.
 SUBROUTINE Fill_Ghost_Cells_hg
     USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
     IMPLICIT NONE
@@ -122,6 +138,16 @@ SUBROUTINE Fill_Ghost_Cells_hg
                     CALL Fill_From_Coarse( n, nb, k, nLW(k), lw_dirs(1:nLW(k),k) )
                 END IF
             END DO
+#:if AMR_COARSE_STENCIL == 9
+
+            !== the 9-point stencil also reads the wall values of the end columns,
+            !   which copy the ghost cells of a side interpolated just now
+            DO k = 1, 2
+                nb = Blk(n)%nbr(k)
+                IF( nb <= 0 ) CYCLE
+                IF( Blk(nb)%Level < L ) CALL Walls( n, MERGE( 0, nx+1, k == 1 ), MERGE( 0, nx+1, k == 1 ) )
+            END DO
+#:endif
 
         END DO
 !$OMP END DO NOWAIT
@@ -361,15 +387,11 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
             END DO
         END DO
         SELECT CASE( nd )
-        CASE( 3 )
-            CALL From_Coarse_LR3( hx, hbx )
-            CALL From_Coarse_LR3( gx, gbx )
-        CASE( 6 )
-            CALL From_Coarse_LR6( hx, hbx )
-            CALL From_Coarse_LR6( gx, gbx )
-        CASE DEFAULT
-            CALL From_Coarse_LR( hx, hbx )
-            CALL From_Coarse_LR( gx, gbx )
+      #:for NK in SIDE_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_LR${SUFFIX( NK )}$( hx, hbx )
+            CALL From_Coarse_LR${SUFFIX( NK )}$( gx, gbx )
+      #:endfor
         END SELECT
         DO q = 1, nd
             d = dirs(q)
@@ -393,15 +415,11 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
             END DO
         END DO
         SELECT CASE( nd )
-        CASE( 3 )
-            CALL From_Coarse_BT3( hy, hby )
-            CALL From_Coarse_BT3( gy, gby )
-        CASE( 6 )
-            CALL From_Coarse_BT6( hy, hby )
-            CALL From_Coarse_BT6( gy, gby )
-        CASE DEFAULT
-            CALL From_Coarse_BT( hy, hby )
-            CALL From_Coarse_BT( gy, gby )
+      #:for NK in SIDE_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_BT${SUFFIX( NK )}$( hy, hby )
+            CALL From_Coarse_BT${SUFFIX( NK )}$( gy, gby )
+      #:endfor
         END SELECT
         DO q = 1, nd
             d = dirs(q)
@@ -426,15 +444,11 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
             END DO
         END DO
         SELECT CASE( nd )
-        CASE( 1 )
-            CALL From_Coarse_Corner1( hc, hbc )
-            CALL From_Coarse_Corner1( gc, gbc )
-        CASE( 2 )
-            CALL From_Coarse_Corner2( hc, hbc )
-            CALL From_Coarse_Corner2( gc, gbc )
-        CASE DEFAULT
-            CALL From_Coarse_Corner( hc, hbc )
-            CALL From_Coarse_Corner( gc, gbc )
+      #:for NK in CORNER_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_Corner${SUFFIX( NK )}$( hc, hbc )
+            CALL From_Coarse_Corner${SUFFIX( NK )}$( gc, gbc )
+      #:endfor
         END SELECT
         DO q = 1, nd
             Blk_h(ig,jg,dirs(q), n) = hbc(1,1,q)
@@ -446,25 +460,30 @@ END SUBROUTINE Fill_From_Coarse
 
 !******************************************************************************
 
-!== The strip interpolations for the three strip shapes, generated (Fypp
-!   macros of Biquadratic.fypp) with the shape fixed at compile time:
-!   left/right edges (LR), bottom/top edges (BT) and corners, for all 8 moving
-!   directions and, from a coarser block, for the 6 / 3 (corner: 2 / 1)
-!   directions a streaming reads. With fixed shapes the compiler unrolls the
-!   short loops: ~27% less time in the ghost cells of h and g than with the
-!   sizes as arguments.
-#!  per strip: suffix, shape of the fine and of the coarse strip, the reduced numbers of directions
-#:set STRIPS = [ ( 'LR', 'i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny', 'i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny', [ 6, 3 ] ), &
-               & ( 'BT', 'i2 = 2*nx, j2 = 3, x2 = nx, y2 = 1', 'i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1', [ 6, 3 ] ), &
-               & ( 'Corner', 'i2 = 3, j2 = 3, x2 = 1, y2 = 1', 'i2 = 3, j2 = 3, x2 = 1, y2 = 1', [ 2, 1 ] ) ]
-#:for STRIP, FINE, COARSE, FEWER in STRIPS
-$:BIQUADRATIC_FROM_FINE( 'From_Fine_' + STRIP, FINE + ', nk = 8' )
+!== The strip interpolations (macros of Biquadratic.fypp), one routine per
+!   strip shape: left/right edges (LR), bottom/top edges (BT), corners. With
+!   the shape fixed at compile time the compiler unrolls the short loops:
+!   ~27% less time in the ghost cells of h and g than with the sizes as
+!   arguments.
 
-$:BIQUADRATIC_FROM_COARSE( 'From_Coarse_' + STRIP, COARSE + ', nk = 8' )
+!== restriction of the facing fine cells (3 deep), all 8 directions
+@:BIQUADRATIC_FROM_FINE( From_Fine_LR,     i2 = 3,    j2 = 2*ny, x2 = 1,  y2 = ny, nk = 8 )
 
-  #:for NK in FEWER
-$:BIQUADRATIC_FROM_COARSE( 'From_Coarse_%s%d' % ( STRIP, NK ), COARSE + ', nk = %d' % NK )
+@:BIQUADRATIC_FROM_FINE( From_Fine_BT,     i2 = 2*nx, j2 = 3,    x2 = nx, y2 = 1,  nk = 8 )
 
-  #:endfor
+@:BIQUADRATIC_FROM_FINE( From_Fine_Corner, i2 = 3,    j2 = 3,    x2 = 1,  y2 = 1,  nk = 8 )
+
+!== interpolation from the coarse cells (3 deep), for 8 directions or for those
+!   a streaming reads: From_Coarse_LR, _LR6, _LR3, and the same for BT
+#:for NK in SIDE_NK
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_LR${SUFFIX( NK )}$, i2 = 3,      j2 = ny/2+2, x2 = 1,  y2 = ny, nk = ${NK}$ )
+
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_BT${SUFFIX( NK )}$, i2 = nx/2+2, j2 = 3,      x2 = nx, y2 = 1,  nk = ${NK}$ )
+
+#:endfor
+!== ... and for a corner: From_Coarse_Corner, and one per reduced number of directions
+#:for NK in CORNER_NK
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_Corner${SUFFIX( NK )}$, i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = ${NK}$ )
+
 #:endfor
 END MODULE Ghost_hg_Mod

@@ -15,6 +15,11 @@
 #:include "Biquadratic.fypp"
 #!  the numbers of ghost layers the strip routines are generated for
 #:set LAYERS = [ 1, 2 ]
+#!  the neighbour directions k with their offsets sx, sy (di, dj of Blocks_Mod)
+#:set NEIGHBOURS = [ ( 1, -1, 0 ), ( 2, 1, 0 ), ( 3, 0, -1 ), ( 4, 0, 1 ), ( 5, -1, -1 ), ( 6, -1, 1 ), ( 7, 1, -1 ), ( 8, 1, 1 ) ]
+#!  across an edge at the low (-1) or high (+1) end of an axis with n cells: index of ghost
+#!  layer l; index of the neighbour's layer l; loop over the layers ( {0}: n, {1}: l )
+#:set ACROSS = { -1: '-{1};{0}-{1};{1} = 0, ng-1', 1: '{0}+1+{1};1+{1};{1} = 0, ng-1' }
 MODULE Ghost_C_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny
@@ -134,55 +139,19 @@ SUBROUTINE Copy_${NG}$( k, Cn, Cb )
     INTEGER, PARAMETER :: ng = ${NG}$
     INTEGER :: i, j, l, m
 
+    !== along an edge: all cells; across it: layer l (m) of the ghost cells
+    !   from layer l (m) of the neighbour's cells at the edge
     SELECT CASE( k )
-    CASE( 1 )
-        DO j = 1, ny
-        DO l = 0, ng-1
-            Cn(-l,j) = Cb(nx-l,j)
+  #:for K, SX, SY in NEIGHBOURS
+    #:set TO_X, FROM_X, LOOP_X = ACROSS[SX].format( 'nx', 'l' ).split( ';' ) if SX else ( 'i', 'i', 'i = 1, nx' )
+    #:set TO_Y, FROM_Y, LOOP_Y = ACROSS[SY].format( 'ny', 'm' ).split( ';' ) if SY else ( 'j', 'j', 'j = 1, ny' )
+    CASE( ${K}$ )
+        DO ${LOOP_Y}$
+        DO ${LOOP_X}$
+            Cn(${TO_X}$,${TO_Y}$) = Cb(${FROM_X}$,${FROM_Y}$)
         END DO
         END DO
-    CASE( 2 )
-        DO j = 1, ny
-        DO l = 0, ng-1
-            Cn(nx+1+l,j) = Cb(1+l,j)
-        END DO
-        END DO
-    CASE( 3 )
-        DO l = 0, ng-1
-        DO i = 1, nx
-            Cn(i,-l) = Cb(i,ny-l)
-        END DO
-        END DO
-    CASE( 4 )
-        DO l = 0, ng-1
-        DO i = 1, nx
-            Cn(i,ny+1+l) = Cb(i,1+l)
-        END DO
-        END DO
-    CASE( 5 )
-        DO m = 0, ng-1
-        DO l = 0, ng-1
-            Cn(-l,-m) = Cb(nx-l,ny-m)
-        END DO
-        END DO
-    CASE( 6 )
-        DO m = 0, ng-1
-        DO l = 0, ng-1
-            Cn(-l,ny+1+m) = Cb(nx-l,1+m)
-        END DO
-        END DO
-    CASE( 7 )
-        DO m = 0, ng-1
-        DO l = 0, ng-1
-            Cn(nx+1+l,-m) = Cb(1+l,ny-m)
-        END DO
-        END DO
-    CASE( 8 )
-        DO m = 0, ng-1
-        DO l = 0, ng-1
-            Cn(nx+1+l,ny+1+m) = Cb(1+l,1+m)
-        END DO
-        END DO
+  #:endfor
     END SELECT
 
 END SUBROUTINE Copy_${NG}$
@@ -226,9 +195,9 @@ SUBROUTINE Side_X_${NG}$( n, nb, s, Blk_C )
     END DO
 
 CONTAINS
-$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2+{0}, j2 = 2*ny, x2 = {0}, y2 = ny, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2+${NG}$, j2 = 2*ny, x2 = ${NG}$, y2 = ny, nk = 1 )
 
-$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = 3, j2 = ny/2+2, x2 = {0}, y2 = ny, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = 3, j2 = ny/2+2, x2 = ${NG}$, y2 = ny, nk = 1 )
 END SUBROUTINE Side_X_${NG}$
 
 !******************************************************************************
@@ -270,9 +239,9 @@ SUBROUTINE Side_Y_${NG}$( n, nb, s, Blk_C )
     END DO
 
 CONTAINS
-$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2*nx, j2 = 2+{0}, x2 = nx, y2 = {0}, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2*nx, j2 = 2+${NG}$, x2 = nx, y2 = ${NG}$, nk = 1 )
 
-$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = nx/2+2, j2 = 3, x2 = nx, y2 = {0}, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = nx/2+2, j2 = 3, x2 = nx, y2 = ${NG}$, nk = 1 )
 END SUBROUTINE Side_Y_${NG}$
 
 !******************************************************************************
@@ -324,9 +293,9 @@ SUBROUTINE Corner_${NG}$( n, k, Blk_C )
     END DO
 
 CONTAINS
-$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2+{0}, j2 = 2+{0}, x2 = {0}, y2 = {0}, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_FINE( From_Fine, i2 = 2+${NG}$, j2 = 2+${NG}$, x2 = ${NG}$, y2 = ${NG}$, nk = 1 )
 
-$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = 3, j2 = 3, x2 = {0}, y2 = {0}, nk = 1'.format( NG ) )
+@:BIQUADRATIC_FROM_COARSE( From_Coarse, i2 = 3, j2 = 3, x2 = ${NG}$, y2 = ${NG}$, nk = 1 )
 END SUBROUTINE Corner_${NG}$
 
 !******************************************************************************

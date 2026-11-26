@@ -3,21 +3,22 @@
 #!   last) from a fine to a coarse level (BIQUADRATIC_FROM_FINE) and from a
 #!   coarse to a fine level (BIQUADRATIC_FROM_COARSE).
 #!
-#!     name    name of the generated subroutine
-#!     shape   the strip shape as named constants, e.g.
-#!             'i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8':
-#!             input i2 x j2 values per component, output x2 x y2
+#!     name      name of the generated subroutine
+#!     i2, j2    size of the input strip, per component
+#!     x2, y2    size of the output strip
+#!     nk        number of components
 #!
-#!   The shape is fixed at compile time, which lets the compiler unroll the
-#!   short loops. Used by Ghost_hg_Mod and Ghost_C_Mod:
+#!   The sizes become named constants of the routine, so the strip shape is
+#!   fixed at compile time and the compiler unrolls the short loops. Used by
+#!   Ghost_hg_Mod and Ghost_C_Mod:
 #!
 #!     #:include "Biquadratic.fypp"
-#!     $:BIQUADRATIC_FROM_FINE( 'From_Fine_LR', 'i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8' )
+#!     @:BIQUADRATIC_FROM_FINE( From_Fine_LR, i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8 )
 #!================================================
-#:def BIQUADRATIC_FROM_FINE( name, shape )
+#:def BIQUADRATIC_FROM_FINE( name, i2, j2, x2, y2, nk )
 SUBROUTINE ${name}$( fin_F, fout_C )
     IMPLICIT NONE
-    INTEGER, PARAMETER :: ${shape}$
+    INTEGER, PARAMETER :: i2 = ${i2}$, j2 = ${j2}$, x2 = ${x2}$, y2 = ${y2}$, nk = ${nk}$
     REAL(wp), INTENT(IN ) :: fin_F (i2,j2,nk)
     REAL(wp), INTENT(OUT) :: fout_C(x2,y2,nk)
 
@@ -52,10 +53,10 @@ SUBROUTINE ${name}$( fin_F, fout_C )
 END SUBROUTINE ${name}$
 #:enddef BIQUADRATIC_FROM_FINE
 
-#:def BIQUADRATIC_FROM_COARSE( name, shape )
+#:def BIQUADRATIC_FROM_COARSE( name, i2, j2, x2, y2, nk )
 SUBROUTINE ${name}$( fin_C, fout_F )
     IMPLICIT NONE
-    INTEGER, PARAMETER :: ${shape}$
+    INTEGER, PARAMETER :: i2 = ${i2}$, j2 = ${j2}$, x2 = ${x2}$, y2 = ${y2}$, nk = ${nk}$
     REAL(wp), INTENT(IN ) :: fin_C (i2,j2,nk)
     REAL(wp), INTENT(OUT) :: fout_F(x2,y2,nk)
 

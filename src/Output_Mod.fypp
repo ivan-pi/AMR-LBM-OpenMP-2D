@@ -12,7 +12,7 @@
 MODULE Output_Mod
     USE Kinds_Mod, ONLY: wp
     USE VTK_Output_Mod, ONLY: Write_VTU_Step
-#:if defined('USE_FVTKHDF')
+#:if AMR_WITH_FVTKHDF
     USE VTK_Output_Mod, ONLY: Write_VTKHDF_Step, Close_VTKHDF
 #:endif
     USE TecPlot_Mod, ONLY: TecPlot_CellCenter
@@ -50,7 +50,7 @@ CONTAINS
         CASE( 'vtk' )
             Writer => Write_VTU_Step
         CASE( 'vtkhdf' )
-#:if defined('USE_FVTKHDF')
+#:if AMR_WITH_FVTKHDF
             Writer => Write_VTKHDF_Step
             Closer => Close_VTKHDF
 #:else
