@@ -371,6 +371,15 @@ blocks, so it drifts as the mesh adapts.
 
 ## Time step and OpenMP
 
+![Time per cell update before and after the kernel studies](docs/performance_before_after.svg)
+
+The kernels of a time step were studied one by one (`bench/collision`,
+`bench/ghost`). Whole runs of the rising bubble (L0 = 512, background level
+3, 3000 steps; before: commit 209db98) became 1.33-1.48 times faster on one
+thread and 1.22-1.32 times on four (gfortran 14.2 and 15.2, ifx 2026.2, 8x8
+and 16x16 blocks; numbers in `bench/overall_before_after.csv`), with results
+equal to round-off.
+
 One time step, starting from h, g and C after streaming:
 
 1. fill the ghost layers of C (as many as the model's collision reads: two for
