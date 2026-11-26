@@ -17,3 +17,4 @@ __pycache__/
 # raw benchmark output (the tables of the study are kept in results/study/)
 bench/collision/results/*.txt
 bench/collision/results/build.log
+bench/ghost/results/*.txt

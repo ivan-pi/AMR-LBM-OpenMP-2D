@@ -1,0 +1,89 @@
+[
+ [
+  "ref",
+  [
+   "GH_COPY 0"
+  ]
+ ],
+ [
+  "copy_k",
+  [
+   "GH_COPY 1"
+  ]
+ ],
+ [
+  "copy_spec",
+  [
+   "GH_COPY 2"
+  ]
+ ],
+ [
+  "copy_cell",
+  [
+   "GH_COPY 3"
+  ]
+ ],
+ [
+  "push",
+  [
+   "GH_COPY 4"
+  ]
+ ],
+ [
+  "cfdirs",
+  [
+   "GH_COPY 0",
+   "GH_CFDIRS"
+  ]
+ ],
+ [
+  "spec_cfdirs",
+  [
+   "GH_COPY 2",
+   "GH_CFDIRS"
+  ]
+ ],
+ [
+  "x_nocopy",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOCOPY"
+  ]
+ ],
+ [
+  "x_nocopy_cfdirs",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOCOPY",
+   "GH_CFDIRS"
+  ]
+ ],
+ [
+  "x_nocf",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOCF"
+  ]
+ ],
+ [
+  "x_nocoarse",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOCOARSE"
+  ]
+ ],
+ [
+  "x_nofine",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOFINE"
+  ]
+ ],
+ [
+  "x_nowall",
+  [
+   "GH_COPY 0",
+   "GH_PROBE_NOWALL"
+  ]
+ ]
+]

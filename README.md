@@ -181,7 +181,8 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
 `bench/collision/` holds the benchmark and the performance study of the JCP 2016
-collision kernel.
+collision kernel and of the streaming, `bench/ghost/` those of the ghost cells
+of h and g.
 
 Every file holds one module of the same name, so all calls are checked against
 explicit interfaces at compile time. Modules are `PRIVATE` by default and list
@@ -379,7 +380,9 @@ One time step, starting from h, g and C after streaming:
 3. on output steps, compute the moments of g first and write the state
 4. in one parallel region: moments of g and collision in one block loop
    (sharing the chemical potential, and for PRE 2017 the gradient of C),
-   ghost cells of h and g, then streaming together with C = sum(h)
+   each block then writing its edges into the ghost cells of h and g of its
+   same-level neighbours; the remaining ghost cells of h and g (coarse/fine
+   interpolation, walls); then streaming together with C = sum(h)
 
 The stages of step 4 share work with orphaned `!$OMP DO` constructs whose
 implicit barriers order the stages. Leaf blocks are kept sorted by level, so
@@ -408,7 +411,12 @@ intrinsics) with gfortran, ifx and flang, documented with all measurements in
 of g and collision" became 1.3-1.5 times faster, with results equal to
 round-off. The same study covers streaming (section 12 there): both streaming
 kernels use one plane temporary per direction, 13 % faster with gfortran 14
-and ifx and 1.9 times with gfortran 15, results unchanged.
+and ifx and 1.9 times with gfortran 15, results unchanged. The ghost cells of
+h and g were studied the same way ([`bench/ghost/README.md`](bench/ghost/README.md)):
+the same-level copies are pushed by each block right after its collision,
+while it is in the cache, and the interpolation from a coarser block covers
+only the directions that are read; collision plus ghost cells became
+1.15-1.3 times faster.
 
 The ghost cells of h and g are interpolated from coarser and finer
 neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is

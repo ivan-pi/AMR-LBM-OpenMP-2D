@@ -7,13 +7,20 @@
 !   at a corner), Lax-Wendroff the 6 crossing a side (2 at a corner). All 8
 !   are needed only where finer blocks interpolate from the ghost cells
 !   (rows and corners included), i.e. next to a refined neighbour
-!   (Blk%Finer); elsewhere the same-level copies fill only the read ones.
+!   (Blk%Finer); elsewhere the same-level copies and the interpolations from
+!   a coarser neighbour fill only the read ones.
 !   The wall conditions stay consistent: the values they compute from
 !   unfilled directions are never read.
 !
 !   The ghost cells of a block in direction k come from the neighbour there:
 !   a copy from a same-level leaf, the restriction of the facing children of
-!   a refined one, or the interpolation of a coarser one. For the latter two
+!   a refined one, or the interpolation of a coarser one. The copies are
+!   pushed: Push_Same_Level( n ) writes the edges of block n into the ghost
+!   cells of its same-level leaf neighbours and is called right after the
+!   collision of n, while the block is in the cache (the collision of a
+!   neighbour does not touch its ghost cells). Fill_Ghost_Cells_hg then does
+!   the rest. (bench/ghost: collision + ghost cells 15-40 % faster than with
+!   all copies pulled in the fill.) For the other two
 !   the strips across an edge are gathered into small contiguous buffers ordered from the edge
 !   outwards: along an axis with direction component s = -1 or +1 they start
 !     ghost cells         at 0 (s = -1) or n+1 (s = +1)
@@ -31,11 +38,12 @@ MODULE Ghost_hg_Mod
     USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Fill_Ghost_Cells_hg
+    PUBLIC :: Fill_Ghost_Cells_hg, Push_Same_Level
 
     !== directions read from the ghost cells in direction k by the streaming:
     !   all moving ones, those of the exact shift, those of Lax-Wendroff
     INTEGER, PARAMETER :: all_dirs(8) = [ 2, 3, 4, 5, 6, 7, 8, 9 ]
+    INTEGER, PARAMETER :: kopp(8) = [ 2, 1, 4, 3, 8, 7, 6, 5 ]      ! the opposite neighbour direction
     INTEGER, PARAMETER :: nShift(8) = [ 3, 3, 3, 3, 1, 1, 1, 1 ]
     INTEGER, PARAMETER :: shift_dirs(3,8) = RESHAPE( [ 2,6,9, 4,7,8, 3,6,7, 5,8,9, &
                                                        6,0,0, 9,0,0, 7,0,0, 8,0,0 ], [3,8] )
@@ -46,10 +54,10 @@ MODULE Ghost_hg_Mod
 CONTAINS
 
 
-!== one ghost layer of h and g on all leaf blocks, in two passes over the
-!   levels. The first does the copies from same-level leaves and the
-!   restrictions of refined neighbours, which read interior cells only, and
-!   the wall conditions. The second interpolates from coarser neighbours,
+!== one ghost layer of h and g on all leaf blocks, after the same-level
+!   copies (Push_Same_Level, with the collision), in two passes over the
+!   levels. The first does the restrictions of refined neighbours, which read
+!   interior cells only, and the wall conditions. The second interpolates from coarser neighbours,
 !   which also reads ghost cells of the coarser block: by the 2:1 balance
 !   (diagonal neighbours included) those lie towards blocks of the
 !   interpolating block's level or the coarser one, filled by the first
@@ -76,15 +84,8 @@ SUBROUTINE Fill_Ghost_Cells_hg
                 nb = Blk(n)%nbr(k)
                 IF( nb <= 0 ) CYCLE
                 IF( Blk(nb)%Level < L ) CYCLE                 ! second pass
-                IF( Blk(nb)%IsLeaf ) THEN
-                    IF( Blk(n)%Finer ) THEN
-                        CALL Copy_Same_Level( n, nb, k, all_dirs )
-                    ELSEIF( L == maxLevels ) THEN
-                        CALL Copy_Same_Level( n, nb, k, shift_dirs(1:nShift(k),k) )
-                    ELSE
-                        CALL Copy_Same_Level( n, nb, k, lw_dirs(1:nLW(k),k) )
-                    END IF
-                ELSEIF( k <= 2 ) THEN
+                IF( Blk(nb)%IsLeaf ) CYCLE                    ! pushed by the neighbour
+                IF( k <= 2 ) THEN
                     CALL Fill_Side_X( n, nb, di(k) )
                 ELSEIF( k <= 4 ) THEN
                     CALL Fill_Side_Y( n, nb, dj(k) )
@@ -110,12 +111,14 @@ SUBROUTINE Fill_Ghost_Cells_hg
                 nb = Blk(n)%nbr(k)
                 IF( nb <= 0 ) CYCLE
                 IF( Blk(nb)%Level == L ) CYCLE                ! first pass
-                IF( k <= 2 ) THEN
-                    CALL Fill_Side_X( n, nb, di(k) )
-                ELSEIF( k <= 4 ) THEN
-                    CALL Fill_Side_Y( n, nb, dj(k) )
+                !== only the directions the block's streaming reads, unless finer
+                !   blocks interpolate from its ghost cells
+                IF( Blk(n)%Finer ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, 8, all_dirs )
+                ELSEIF( L == maxLevels ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, nShift(k), shift_dirs(1:nShift(k),k) )
                 ELSE
-                    CALL Fill_Corner( n, k )
+                    CALL Fill_From_Coarse( n, nb, k, nLW(k), lw_dirs(1:nLW(k),k) )
                 END IF
             END DO
 
@@ -143,91 +146,73 @@ END SUBROUTINE Fill_Ghost_Cells_hg
 
 !******************************************************************************
 
-!== the directions dirs of the ghost cells of block n from its same-level leaf
-!   neighbour nb in direction k: written out with constant sections, the hot
-!   path (with computed ones the compiler cannot rule out an overlap of the
-!   two sections of the same pool array and copies through a temporary)
-SUBROUTINE Copy_Same_Level( n, nb, k, dirs )
+!== the edges of leaf block n into the ghost cells of its same-level leaf
+!   neighbours, for the directions each neighbour reads
+SUBROUTINE Push_Same_Level( n )
     IMPLICIT NONE
-    INTEGER, INTENT(IN) :: n, nb, k, dirs(:)
+    INTEGER, INTENT(IN) :: n
 
-    INTEGER :: q, d
+    INTEGER :: k, nb
 
-    DO q = 1, SIZE(dirs)
-        d = dirs(q)
-        SELECT CASE( k )
-        CASE( 1 )
-            Blk_h(0,   1:ny,d, n) = Blk_h(nx,1:ny,d, nb)
-            Blk_g(0,   1:ny,d, n) = Blk_g(nx,1:ny,d, nb)
-        CASE( 2 )
-            Blk_h(nx+1,1:ny,d, n) = Blk_h(1, 1:ny,d, nb)
-            Blk_g(nx+1,1:ny,d, n) = Blk_g(1, 1:ny,d, nb)
-        CASE( 3 )
-            Blk_h(1:nx,0,   d, n) = Blk_h(1:nx,ny,d, nb)
-            Blk_g(1:nx,0,   d, n) = Blk_g(1:nx,ny,d, nb)
-        CASE( 4 )
-            Blk_h(1:nx,ny+1,d, n) = Blk_h(1:nx,1, d, nb)
-            Blk_g(1:nx,ny+1,d, n) = Blk_g(1:nx,1, d, nb)
-        CASE( 5 )
-            Blk_h(0,   0,   d, n) = Blk_h(nx,ny,d, nb)
-            Blk_g(0,   0,   d, n) = Blk_g(nx,ny,d, nb)
-        CASE( 6 )
-            Blk_h(0,   ny+1,d, n) = Blk_h(nx,1, d, nb)
-            Blk_g(0,   ny+1,d, n) = Blk_g(nx,1, d, nb)
-        CASE( 7 )
-            Blk_h(nx+1,0,   d, n) = Blk_h(1, ny,d, nb)
-            Blk_g(nx+1,0,   d, n) = Blk_g(1, ny,d, nb)
-        CASE( 8 )
-            Blk_h(nx+1,ny+1,d, n) = Blk_h(1, 1, d, nb)
-            Blk_g(nx+1,ny+1,d, n) = Blk_g(1, 1, d, nb)
-        END SELECT
+    DO k = 1, 8
+        nb = Blk(n)%nbr(k)
+        IF( nb <= 0 ) CYCLE
+        IF( .NOT. Blk(nb)%IsLeaf .OR. Blk(nb)%Level /= Blk(n)%Level ) CYCLE
+        IF( Blk(nb)%Finer ) THEN
+            CALL Copy_All  ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSEIF( Blk(nb)%Level == maxLevels ) THEN
+            CALL Copy_Shift( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSE
+            CALL Copy_LW   ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        END IF
     END DO
 
-END SUBROUTINE Copy_Same_Level
+END SUBROUTINE Push_Same_Level
 
 !******************************************************************************
 
-!== the ghost column of block n from its refined (same level) or coarser
-!   left (s = -1) or right (s = +1) neighbour nb
+!== the copies for the three lists of directions (Ghost_Copy.inc)
+#define COPY_NAME Copy_All
+#define COPY_ND   8
+#define COPY_DIR  all_dirs(q)
+#include "Ghost_Copy.inc"
+
+#define COPY_NAME Copy_Shift
+#define COPY_ND   nShift(COPY_K)
+#define COPY_DIR  shift_dirs(q,COPY_K)
+#include "Ghost_Copy.inc"
+
+#define COPY_NAME Copy_LW
+#define COPY_ND   nLW(COPY_K)
+#define COPY_DIR  lw_dirs(q,COPY_K)
+#include "Ghost_Copy.inc"
+
+!******************************************************************************
+
+!== the ghost column of block n from its refined left (s = -1) or right
+!   (s = +1) neighbour nb: restriction of the facing children, all directions
 SUBROUTINE Fill_Side_X( n, nb, s )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s
 
-    INTEGER  :: ig, i0, c, l, j, q, Y
-    REAL(wp) :: hf(3,2*ny,2:9), gf(3,2*ny,2:9), hc(3,ny/2+2,2:9), gc(3,ny/2+2,2:9)
-    REAL(wp) :: hb(1,ny,2:9), gb(1,ny,2:9)
+    INTEGER  :: ig, i0, c, l, j, q
+    REAL(wp) :: hf(3,2*ny,2:9), gf(3,2*ny,2:9), hb(1,ny,2:9), gb(1,ny,2:9)
 
     ig = MERGE( 0, nx+1, s < 0 )
-
-    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
-        i0 = MERGE( nx+1, 0, s < 0 )
-        Y  = (ny/2) * MOD(Blk(n)%J,2)
-        DO q = 2, 9
-        DO j = 1, ny/2+2
-        DO l = 0, 2
-            hc(l+1,j,q) = Blk_h(i0+s*l,Y+j-1,q, nb)
-            gc(l+1,j,q) = Blk_g(i0+s*l,Y+j-1,q, nb)
-        END DO
-        END DO
-        END DO
-        CALL From_Coarse_LR( hc, hb )
-        CALL From_Coarse_LR( gc, gb )
-    ELSE
-        i0 = MERGE( nx, 1, s < 0 )
-        c = Blk(nb)%child + MERGE( 1, 0, s < 0 )      ! the facing children c, c+2
-        DO q = 2, 9
-        DO j = 1, ny
-        DO l = 0, 2
-            hf(l+1,   j,q) = Blk_h(i0+s*l,j,q, c  )
-            hf(l+1,ny+j,q) = Blk_h(i0+s*l,j,q, c+2)
-            gf(l+1,   j,q) = Blk_g(i0+s*l,j,q, c  )
-            gf(l+1,ny+j,q) = Blk_g(i0+s*l,j,q, c+2)
-        END DO
-        END DO
-        END DO
-        CALL From_Fine_LR( hf, hb )
-        CALL From_Fine_LR( gf, gb )
-    END IF
+    i0 = MERGE( nx, 1, s < 0 )
+    c = Blk(nb)%child + MERGE( 1, 0, s < 0 )      ! the facing children c, c+2
+    DO q = 2, 9
+    DO j = 1, ny
+    DO l = 0, 2
+        hf(l+1,   j,q) = Blk_h(i0+s*l,j,q, c  )
+        hf(l+1,ny+j,q) = Blk_h(i0+s*l,j,q, c+2)
+        gf(l+1,   j,q) = Blk_g(i0+s*l,j,q, c  )
+        gf(l+1,ny+j,q) = Blk_g(i0+s*l,j,q, c+2)
+    END DO
+    END DO
+    END DO
+    CALL From_Fine_LR( hf, hb )
+    CALL From_Fine_LR( gf, gb )
 
     DO q = 2, 9
     DO j = 1, ny
@@ -240,39 +225,26 @@ END SUBROUTINE Fill_Side_X
 
 !******************************************************************************
 
-!== the ghost row of block n from its refined or coarser bottom (s = -1) or
-!   top (s = +1) neighbour nb
+!== the ghost row of block n from its refined bottom (s = -1) or top
+!   (s = +1) neighbour nb
 SUBROUTINE Fill_Side_Y( n, nb, s )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, nb, s
 
-    INTEGER  :: jg, j0, c, l, i, q, X
-    REAL(wp) :: hf(2*nx,3,2:9), gf(2*nx,3,2:9), hc(nx/2+2,3,2:9), gc(nx/2+2,3,2:9)
-    REAL(wp) :: hb(nx,1,2:9), gb(nx,1,2:9)
+    INTEGER  :: jg, j0, c, l, i, q
+    REAL(wp) :: hf(2*nx,3,2:9), gf(2*nx,3,2:9), hb(nx,1,2:9), gb(nx,1,2:9)
 
     jg = MERGE( 0, ny+1, s < 0 )
-
-    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
-        j0 = MERGE( ny+1, 0, s < 0 )
-        X  = (nx/2) * MOD(Blk(n)%I,2)
-        DO l = 0, 2
-            hc(:,l+1,:) = Blk_h(X:X+nx/2+1,j0+s*l,2:9, nb)
-            gc(:,l+1,:) = Blk_g(X:X+nx/2+1,j0+s*l,2:9, nb)
-        END DO
-        CALL From_Coarse_BT( hc, hb )
-        CALL From_Coarse_BT( gc, gb )
-    ELSE
-        j0 = MERGE( ny, 1, s < 0 )
-        c = Blk(nb)%child + MERGE( 2, 0, s < 0 )      ! the facing children c, c+1
-        DO l = 0, 2
-            hf(   1:  nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c  )
-            hf(nx+1:2*nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c+1)
-            gf(   1:  nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c  )
-            gf(nx+1:2*nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c+1)
-        END DO
-        CALL From_Fine_BT( hf, hb )
-        CALL From_Fine_BT( gf, gb )
-    END IF
+    j0 = MERGE( ny, 1, s < 0 )
+    c = Blk(nb)%child + MERGE( 2, 0, s < 0 )      ! the facing children c, c+1
+    DO l = 0, 2
+        hf(   1:  nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c  )
+        hf(nx+1:2*nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c+1)
+        gf(   1:  nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c  )
+        gf(nx+1:2*nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c+1)
+    END DO
+    CALL From_Fine_BT( hf, hb )
+    CALL From_Fine_BT( gf, gb )
 
     DO q = 2, 9
     DO i = 1, nx
@@ -285,51 +257,31 @@ END SUBROUTINE Fill_Side_Y
 
 !******************************************************************************
 
-!== the ghost corner of block n from its refined or coarser neighbour in
-!   direction k = 5..8
+!== the ghost corner of block n from its refined neighbour in direction k = 5..8
 SUBROUTINE Fill_Corner( n, k )
     IMPLICIT NONE
     INTEGER, INTENT(IN) :: n, k
 
-    INTEGER  :: nb, sx, sy, ig, jg, i0, j0, px, py, c, l, m, q
+    INTEGER  :: sx, sy, ig, jg, i0, j0, c, l, m, q
     REAL(wp) :: hf(3,3,2:9), gf(3,3,2:9), hb(1,1,2:9), gb(1,1,2:9)
 
-    nb = Blk(n)%nbr(k)
     sx = di(k)
     sy = dj(k)
     ig = MERGE( 0, nx+1, sx < 0 )
     jg = MERGE( 0, ny+1, sy < 0 )
-
-    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
-        px = MOD(Blk(n)%I,2)
-        py = MOD(Blk(n)%J,2)
-        i0 = MERGE( nx+1-(nx/2)*px, (nx/2)*(1-px), sx < 0 )
-        j0 = MERGE( ny+1-(ny/2)*py, (ny/2)*(1-py), sy < 0 )
-        DO q = 2, 9
-        DO m = 0, 2
-        DO l = 0, 2
-            hf(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,q, nb)
-            gf(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,q, nb)
-        END DO
-        END DO
-        END DO
-        CALL From_Coarse_Corner( hf, hb )
-        CALL From_Coarse_Corner( gf, gb )
-    ELSE
-        i0 = MERGE( nx, 1, sx < 0 )
-        j0 = MERGE( ny, 1, sy < 0 )
-        c  = Blk(nb)%child + facing(1,k)             ! the facing child
-        DO q = 2, 9
-        DO m = 0, 2
-        DO l = 0, 2
-            hf(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,q, c)
-            gf(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,q, c)
-        END DO
-        END DO
-        END DO
-        CALL From_Fine_Corner( hf, hb )
-        CALL From_Fine_Corner( gf, gb )
-    END IF
+    i0 = MERGE( nx, 1, sx < 0 )
+    j0 = MERGE( ny, 1, sy < 0 )
+    c  = Blk(Blk(n)%nbr(k))%child + facing(1,k)      ! the facing child
+    DO q = 2, 9
+    DO m = 0, 2
+    DO l = 0, 2
+        hf(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,q, c)
+        gf(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,q, c)
+    END DO
+    END DO
+    END DO
+    CALL From_Fine_Corner( hf, hb )
+    CALL From_Fine_Corner( gf, gb )
 
     Blk_h(ig,jg,2:9, n) = hb(1,1,:)
     Blk_g(ig,jg,2:9, n) = gb(1,1,:)
@@ -338,10 +290,119 @@ END SUBROUTINE Fill_Corner
 
 !******************************************************************************
 
-!== the strip interpolations for the three strip shapes of the 8 moving
-!   directions, with the shape fixed at compile time (from Biquadratic.inc):
-!   left/right edges (LR), bottom/top edges (BT) and corners. With fixed
-!   shapes the compiler unrolls the short loops: ~27% less time in the
+!== the ghost cells of block n in direction k from its coarser neighbour nb,
+!   for the nd directions dirs: 8, 6 or 3 on a side, 8, 2 or 1 at a corner.
+!   The strip is gathered direction by direction and interpolated by the
+!   routine for that number of directions.
+SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, k, nd, dirs(nd)
+
+    INTEGER  :: sx, sy, ig, jg, i0, j0, px, py, X, Y, l, m, i, j, q, d
+    REAL(wp) :: hx(3,ny/2+2,8), gx(3,ny/2+2,8), hbx(1,ny,8), gbx(1,ny,8)
+    REAL(wp) :: hy(nx/2+2,3,8), gy(nx/2+2,3,8), hby(nx,1,8), gby(nx,1,8)
+    REAL(wp) :: hc(3,3,8), gc(3,3,8), hbc(1,1,8), gbc(1,1,8)
+
+    sx = di(k)
+    sy = dj(k)
+    px = MOD(Blk(n)%I,2)
+    py = MOD(Blk(n)%J,2)
+
+    IF( k <= 2 ) THEN                           ! left / right side
+        ig = MERGE( 0, nx+1, sx < 0 )
+        i0 = MERGE( nx+1, 0, sx < 0 )
+        Y  = (ny/2)*py
+        DO q = 1, nd
+            d = dirs(q)
+            DO j = 1, ny/2+2
+            DO l = 0, 2
+                hx(l+1,j,q) = Blk_h(i0+sx*l,Y+j-1,d, nb)
+                gx(l+1,j,q) = Blk_g(i0+sx*l,Y+j-1,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+        CASE( 3 )
+            CALL From_Coarse_LR3( hx, hbx );  CALL From_Coarse_LR3( gx, gbx )
+        CASE( 6 )
+            CALL From_Coarse_LR6( hx, hbx );  CALL From_Coarse_LR6( gx, gbx )
+        CASE DEFAULT
+            CALL From_Coarse_LR ( hx, hbx );  CALL From_Coarse_LR ( gx, gbx )
+        END SELECT
+        DO q = 1, nd
+            d = dirs(q)
+            DO j = 1, ny
+                Blk_h(ig,j,d, n) = hbx(1,j,q)
+                Blk_g(ig,j,d, n) = gbx(1,j,q)
+            END DO
+        END DO
+
+    ELSEIF( k <= 4 ) THEN                       ! bottom / top side
+        jg = MERGE( 0, ny+1, sy < 0 )
+        j0 = MERGE( ny+1, 0, sy < 0 )
+        X  = (nx/2)*px
+        DO q = 1, nd
+            d = dirs(q)
+            DO l = 0, 2
+            DO i = 1, nx/2+2
+                hy(i,l+1,q) = Blk_h(X+i-1,j0+sy*l,d, nb)
+                gy(i,l+1,q) = Blk_g(X+i-1,j0+sy*l,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+        CASE( 3 )
+            CALL From_Coarse_BT3( hy, hby );  CALL From_Coarse_BT3( gy, gby )
+        CASE( 6 )
+            CALL From_Coarse_BT6( hy, hby );  CALL From_Coarse_BT6( gy, gby )
+        CASE DEFAULT
+            CALL From_Coarse_BT ( hy, hby );  CALL From_Coarse_BT ( gy, gby )
+        END SELECT
+        DO q = 1, nd
+            d = dirs(q)
+            DO i = 1, nx
+                Blk_h(i,jg,d, n) = hby(i,1,q)
+                Blk_g(i,jg,d, n) = gby(i,1,q)
+            END DO
+        END DO
+
+    ELSE                                        ! corner
+        ig = MERGE( 0, nx+1, sx < 0 )
+        jg = MERGE( 0, ny+1, sy < 0 )
+        i0 = MERGE( nx+1-(nx/2)*px, (nx/2)*(1-px), sx < 0 )
+        j0 = MERGE( ny+1-(ny/2)*py, (ny/2)*(1-py), sy < 0 )
+        DO q = 1, nd
+            d = dirs(q)
+            DO m = 0, 2
+            DO l = 0, 2
+                hc(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,d, nb)
+                gc(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+        CASE( 1 )
+            CALL From_Coarse_Corner1( hc, hbc );  CALL From_Coarse_Corner1( gc, gbc )
+        CASE( 2 )
+            CALL From_Coarse_Corner2( hc, hbc );  CALL From_Coarse_Corner2( gc, gbc )
+        CASE DEFAULT
+            CALL From_Coarse_Corner ( hc, hbc );  CALL From_Coarse_Corner ( gc, gbc )
+        END SELECT
+        DO q = 1, nd
+            Blk_h(ig,jg,dirs(q), n) = hbc(1,1,q)
+            Blk_g(ig,jg,dirs(q), n) = gbc(1,1,q)
+        END DO
+    END IF
+
+END SUBROUTINE Fill_From_Coarse
+
+!******************************************************************************
+
+!== the strip interpolations for the three strip shapes, with the shape fixed
+!   at compile time (from Biquadratic.inc): left/right edges (LR), bottom/top
+!   edges (BT) and corners, for all 8 moving directions and, from a coarser
+!   block, for the 6 / 3 (corner: 2 / 1) directions a streaming reads. With
+!   fixed shapes the compiler unrolls the short loops: ~27% less time in the
 !   ghost cells of h and g than with the sizes as arguments.
 #define FINE_NAME    From_Fine_LR
 #define COARSE_NAME  From_Coarse_LR
@@ -350,8 +411,6 @@ END SUBROUTINE Fill_Corner
 #define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 8
 #include "Biquadratic.inc"
 
-!******************************************************************************
-
 #define FINE_NAME    From_Fine_BT
 #define COARSE_NAME  From_Coarse_BT
 #define SIZE_ARGS
@@ -359,13 +418,47 @@ END SUBROUTINE Fill_Corner
 #define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 8
 #include "Biquadratic.inc"
 
-!******************************************************************************
-
 #define FINE_NAME    From_Fine_Corner
 #define COARSE_NAME  From_Coarse_Corner
 #define SIZE_ARGS
 #define FINE_SIZES   INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
 #define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_LR6
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 6
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_LR3
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 3
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_BT6
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 6
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_BT3
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 3
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_Corner2
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 2
+#include "Biquadratic.inc"
+
+#define COARSE_ONLY
+#define COARSE_NAME  From_Coarse_Corner1
+#define SIZE_ARGS
+#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 1
 #include "Biquadratic.inc"
 
 END MODULE Ghost_hg_Mod

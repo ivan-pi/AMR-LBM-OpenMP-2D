@@ -12,7 +12,7 @@ MODULE Solver_Mod
     USE Model_Mod, ONLY: LBM_Model
     USE Case_Mod, ONLY: AMR_Case
     USE Ghost_C_Mod, ONLY: Fill_Ghost_Cells_C
-    USE Ghost_hg_Mod, ONLY: Fill_Ghost_Cells_hg
+    USE Ghost_hg_Mod, ONLY: Fill_Ghost_Cells_hg, Push_Same_Level
     USE Output_Mod, ONLY: Select_Writer, Write_Output, Close_Output
     IMPLICIT NONE
     PRIVATE
@@ -217,7 +217,8 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 !$OMP   model, moments_done, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
-        !== pressure and velocity from g, then the collision, block by block.
+        !== pressure and velocity from g, then the collision, block by block,
+        !   and the same-level part of the ghost cells of h and g.
         !   This loop and the streaming loop run level by level over LeafByLevel
         !   with the same static schedule as Fill_Ghost_Cells_hg, so each block
         !   is collided, ghost-filled and streamed by the same thread (OpenMP
@@ -232,6 +233,9 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
             ELSE
                 CALL model%Moments_and_Collide( n )
             END IF
+            !== the edges of the block into the ghost cells of h and g of its
+            !   same-level neighbours, while it is in the cache
+            CALL Push_Same_Level( n )
         END DO
 !$OMP END DO NOWAIT
         END DO
@@ -279,10 +283,10 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 
     PRINT '(/A)', '------------------------------'
     PRINT '(A,F12.3)',   ' t_Output:        ', DBLE(t_Output   )/Rate
-    PRINT '(A,F12.3,A)', ' t_collision:     ', DBLE(t_collision)/Rate, '   (moments of g and collision)'
+    PRINT '(A,F12.3,A)', ' t_collision:     ', DBLE(t_collision)/Rate, '   (moments of g, collision, same-level ghost cells of h, g)'
     PRINT '(A,F12.3,A)', ' t_advection:     ', DBLE(t_advection)/Rate, '   (streaming and C)'
     PRINT '(A,F12.3)',   ' t_Ghost_C :      ', DBLE(t_Ghost_C  )/Rate
-    PRINT '(A,F12.3)',   ' t_Ghost_hg:      ', DBLE(t_Ghost_hg )/Rate
+    PRINT '(A,F12.3,A)', ' t_Ghost_hg:      ', DBLE(t_Ghost_hg )/Rate, '   (coarse/fine ghost cells of h, g, walls)'
     PRINT '(A,F12.3)',   ' t_refine:        ', DBLE(t_refine   )/Rate
     PRINT '(A,F12.3,A,I0,A,F0.2,A)', ' t_nbr_table:     ', DBLE(t_nbr_table)/Rate, &
         '   (in t_refine; ', n_nbr_rebuilds, ' rebuilds, ', &
