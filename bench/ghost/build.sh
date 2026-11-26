@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build bench_ghost:  ./build.sh <tag> <block size> <compiler> <flags...>
+# Build bench_ghost and bench_ghost_c:  ./build.sh <tag> <block size> <compiler> <flags...>
 #   ./build.sh gf14_8 8 gfortran-14 -O3 -fstack-arrays -march=native
 # Mesh: rising bubble with L0 = 64*block size (four levels), background level 3 (override: L0=, MINLEV=)
 set -e
@@ -20,5 +20,9 @@ done
 $fc $pp $omp $defs "$@" -I$here -I$src -c $here/Ghost_Variants.F90
 $fc $pp $omp $defs "$@" -I$here -I$src -S -o variants.s $here/Ghost_Variants.F90
 $fc $pp $omp $defs "$@" -I$here -c $here/bench_ghost.F90
-$fc $omp "$@" -o bench_ghost *.o ${GCC_XPACK:+-Wl,-rpath,$GCC_XPACK/lib64}
-echo "built $b/bench_ghost"
+$fc $omp "$@" -o bench_ghost $(ls *.o | grep -v Ghost_C_Variants.o) ${GCC_XPACK:+-Wl,-rpath,$GCC_XPACK/lib64}
+# the ghost cells of C
+$fc $pp $omp $defs "$@" -I$here -I$src -c $here/Ghost_C_Variants.F90
+$fc $pp $omp $defs "$@" -I$here -c -o main_c.obj $here/bench_ghost_c.F90
+$fc $omp "$@" -o bench_ghost_c main_c.obj $(ls *.o | grep -v bench_ghost.o) ${GCC_XPACK:+-Wl,-rpath,$GCC_XPACK/lib64}
+echo "built $b/bench_ghost and bench_ghost_c"

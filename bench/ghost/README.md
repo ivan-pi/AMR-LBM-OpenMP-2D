@@ -1,4 +1,4 @@
-# Performance study of the ghost cells of h and g
+# Performance study of the ghost cells of h and g, and of C
 
 `Fill_Ghost_Cells_hg` (`src/Ghost_hg_Mod.f90`) was the most expensive stage
 of a time step once the collision and the streaming had been dealt with
@@ -132,3 +132,64 @@ What remains in the fill is the coarse/fine part: restriction of finer
 blocks (all 8 directions are needed there, as the finer blocks interpolate
 from these ghost cells) and the interpolation from coarser ones, 3 to 8 ns
 per leaf cell on this mesh.
+
+# The ghost layers of C
+
+`Fill_Ghost_Cells_C` (`src/Ghost_C_Mod.f90`; two layers for the JCP 2016
+model, one for the others) was studied the same way with `bench_ghost_c`:
+the same mesh; before every fill `C = sum(h)` is computed for all blocks,
+as the streaming loop does; the check compares C of all leaf blocks with all
+ghost layers, starting from invalid ghost values.
+
+```bash
+EXE=bench_ghost_c ./run.sh gf14_8 ifx8
+```
+
+**Result in the solver** (same runs as above; seconds in `t_Ghost_C`):
+
+| build | before | after | |
+|---|---|---|---|
+| gfortran 14.2, 8x8, 1 thread | 0.465 | 0.185 | 2.5 |
+| gfortran 14.2, 8x8, 4 threads | 0.189 | 0.110 | 1.7 |
+| gfortran 15.2, 8x8, 1 thread | 0.368 | 0.185 | 2.0 |
+| ifx 2026.2, 8x8, 1 thread | 0.480 | 0.204 | 2.4 |
+| gfortran 14.2, 16x16, 1 thread | 0.329 | 0.182 | 1.8 |
+| PRE 2017 model (one layer), 1500 steps | 0.162 | 0.082 | 2.0 |
+| Parker 2009 model (two scalars), 1500 steps | 0.210 | 0.092 | 2.3 |
+
+The diagnostics agree to the last printed digits (1e-6; 5e-12 for the Parker
+case): the interpolation is the same arithmetic compiled for fixed shapes, and
+a fill differs by 4e-16.
+
+Fill MLUPS | C = sum(h) + fill MLUPS, 1 thread:
+
+| 8x8 | gf14 | gf15 | ifx | flang |
+|---|---|---|---|---|
+| `ref`: one set of routines, layers and strip sizes at run time | 287 / 134 | 273 / 132 | 217 / 114 | 203 / 111 |
+| `ng2`: the number of layers a compile-time constant | 426 / 163 | 398 / 158 | 294 / 136 | 300 / 133 |
+| `fixed`: and the interpolations instantiated for the strip shapes | 566 / 179 | 577 / 176 | 433 / 157 | 492 / 165 |
+| `src` (now): as `fixed`, interpolations internal to the strip routines, copies apart | 697 / 184 | 720 / 190 | 647 / 178 | 749 / 185 |
+| `fused_push`: copies pushed right after C = sum(h) of the block | 1055 / 188 | 1043 / 189 | 1022 / 185 | 1162 / 190 |
+
+16x16 (gf14 / ifx): `ref` 752 | 203, 575 | 189; `src` 1442 | 234, 1301 | 231;
+`fused_push` 2670 | 251, 2403 | 235. 4 threads, 8x8, gf14: `ref` 701 | 519,
+`src` 1258 | 773, `fused_push` 1929 | 767.
+
+* Where the time went (`ref`, gf14): same-level copies 44 %, coarse/fine fills
+  38 %, walls ~0, the rest dispatch.
+* **Compile-time sizes are the lever here** (the same one as for the block
+  size in the kernels): the routines took the number of layers and the strip
+  sizes as arguments and the interpolation was the general routine with five
+  size arguments. Fixing the layers gives 1.4 times, fixed-shape
+  interpolations 2.0-2.3, and with the interpolations as internal procedures
+  of each strip routine (inlined) and the copies in a routine of their own
+  2.4-3.7 times. `Ghost_C_Strips.inc` is instantiated for one and two layers.
+* **Fusion does not pay here.** Pushing the copies from the streaming loop
+  makes the fill itself another 1.5 times faster, but it moves that work into
+  the streaming stage: the sum of the two is the same on 8x8 blocks (within
+  3 %) and 2-7 % better on 16x16. A block of C is 1.1 kB against 14 kB for h
+  and g, so the copies are not bound by cache misses the way those of h and g
+  are. Not adopted: it would need a second mode of the fill for the first
+  step and after every mesh change.
+* The run-time-size interpolation routines of `Interpolations_Mod` have no
+  caller left and were removed (the benchmark keeps a copy for `ref`).

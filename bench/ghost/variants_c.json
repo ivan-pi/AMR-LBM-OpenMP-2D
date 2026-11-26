@@ -1,0 +1,45 @@
+[
+ [
+  "ref",
+  []
+ ],
+ [
+  "ng2",
+  [
+   "GC_NG 2"
+  ]
+ ],
+ [
+  "fixed",
+  [
+   "GC_NG 2",
+   "GC_FIXED"
+  ]
+ ],
+ [
+  "push",
+  [
+   "GC_NG 2",
+   "GC_FIXED",
+   "GC_PUSH"
+  ]
+ ],
+ [
+  "x_nocopy",
+  [
+   "GC_PROBE_NOCOPY"
+  ]
+ ],
+ [
+  "x_nocf",
+  [
+   "GC_PROBE_NOCF"
+  ]
+ ],
+ [
+  "x_nowall",
+  [
+   "GC_PROBE_NOWALL"
+  ]
+ ]
+]

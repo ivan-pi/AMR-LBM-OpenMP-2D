@@ -416,14 +416,16 @@ h and g were studied the same way ([`bench/ghost/README.md`](bench/ghost/README.
 the same-level copies are pushed by each block right after its collision,
 while it is in the cache, and the interpolation from a coarser block covers
 only the directions that are read; collision plus ghost cells became
-1.15-1.3 times faster.
+1.15-1.3 times faster. The ghost layers of C are filled by strip routines
+instantiated for one and for two layers (`Ghost_C_Strips.inc`), 2-2.5 times
+faster than with the sizes at run time.
 
 The ghost cells of h and g are interpolated from coarser and finer
 neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is
 written once, as a template (`src/Biquadratic.inc`), and instantiated with
 the strip shape fixed at compile time for the three shapes used by
-`Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and with
-run-time sizes for the ghost cells of C. Both ghost modules have one routine
+`Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and for those
+of one and two ghost layers of C (`Ghost_C_Mod`). Both ghost modules have one routine
 per strip shape for the restriction and interpolation, with the side as a
 sign (the strips across an edge run outwards from a fixed start with that
 stride); the same-level copies of h and g, the hot path, are written out per
