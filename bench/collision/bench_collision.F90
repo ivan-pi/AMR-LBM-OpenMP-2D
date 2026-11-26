@@ -5,6 +5,10 @@
 !
 !     bench_collision [pool_MiB [sweeps [trials]]]
 !
+!   Kinds of kernels: collide (chemical potential + collision), mom+col (mc_*:
+!   with the moments of g, the path of a normal step), moments (mg_*: the
+!   moments of g alone, steps with diagnostics).
+!
 !   pool_MiB : field data of all blocks (default 12: beyond L2, within L3)
 !   sweeps   : collisions of all blocks per timed sample (default 20)
 !   trials   : timed samples per variant, interleaved (default 15)
@@ -31,7 +35,7 @@ PROGRAM Bench_Collision
 
     TYPE :: Variant_t
         CHARACTER(len=20) :: name = ''
-        LOGICAL :: mc = .FALSE.             ! moments of g + collision
+        INTEGER :: kind = 1                 ! 1 collision, 2 moments of g + collision, 3 moments of g
         LOGICAL :: al = .FALSE.             ! works on the padded, aligned copy of the fields
         LOGICAL :: active = .TRUE.
         PROCEDURE(Block_Kernel), POINTER, NOPASS :: run => NULL()
@@ -41,11 +45,12 @@ PROGRAM Bench_Collision
 #include "variant_table.inc"
 
     REAL(wp), ALLOCATABLE :: h0(:,:,:,:), g0(:,:,:,:), P0(:,:,:), Ux0(:,:,:), Uy0(:,:,:)
-    REAL(wp), ALLOCATABLE :: href(:,:,:,:,:), gref(:,:,:,:,:), mref(:,:,:,:)
+    REAL(wp), ALLOCATABLE :: href(:,:,:,:,:), gref(:,:,:,:,:), mref(:,:,:,:,:)
     REAL(dp) :: pool_MiB, bytes
     INTEGER  :: nblk, sweeps, trials, v, t, s, n, length, stat, ir
     INTEGER(i64) :: t1, t2, Rate
     CHARACTER(len=512) :: arg, only
+    CHARACTER(len=7), PARAMETER :: kinds(3) = [ 'collide', 'mom+col', 'moments' ]
 
     pool_MiB = 12
     sweeps   = 20
@@ -69,7 +74,7 @@ PROGRAM Bench_Collision
     IF( stat == 0 .AND. length > 0 ) THEN
         DO v = 1, nVar
             var(v)%active = INDEX( ','//TRIM(only)//',', ','//TRIM(var(v)%name)//',' ) > 0 &
-                            .OR. var(v)%name == 'model' .OR. var(v)%name == 'mc_model'
+                            .OR. var(v)%name == 'model' .OR. var(v)%name == 'mc_model' .OR. var(v)%name == 'mg_model'
         END DO
     END IF
 
@@ -91,7 +96,7 @@ PROGRAM Bench_Collision
     CALL Initial_State
 
     ALLOCATE( h0(0:nx+1,0:ny+1,9,nblk), g0(0:nx+1,0:ny+1,9,nblk), P0(nx,ny,nblk), Ux0(nx,ny,nblk), Uy0(nx,ny,nblk) )
-    ALLOCATE( href(nx,ny,9,nblk,2), gref(nx,ny,9,nblk,2), mref(nx,ny,3,nblk) )
+    ALLOCATE( href(nx,ny,9,nblk,3), gref(nx,ny,9,nblk,3), mref(nx,ny,3,nblk,3) )
 !$OMP PARALLEL DO SCHEDULE(STATIC)
     DO n = 1, nblk
         h0(:,:,:,n) = Blk_h(:,:,:,n)
@@ -108,16 +113,14 @@ PROGRAM Bench_Collision
 
     !== reference results: the kernels of the model
     DO v = 1, nVar
-        IF( var(v)%name /= 'model' .AND. var(v)%name /= 'mc_model' ) CYCLE
-        ir = MERGE( 2, 1, var(v)%mc )
+        IF( var(v)%name /= 'model' .AND. var(v)%name /= 'mc_model' .AND. var(v)%name /= 'mg_model' ) CYCLE
+        ir = var(v)%kind
         CALL Restore( .FALSE. )
         CALL Sweep( var(v)%run )
         DO n = 1, nblk
             href(:,:,:,n,ir) = Blk_h(1:nx,1:ny,:,n)
             gref(:,:,:,n,ir) = Blk_g(1:nx,1:ny,:,n)
-            IF( var(v)%mc ) THEN
-                mref(:,:,1,n) = Blk_P(:,:,n);  mref(:,:,2,n) = Blk_Ux(:,:,n);  mref(:,:,3,n) = Blk_Uy(:,:,n)
-            END IF
+            mref(:,:,1,n,ir) = Blk_P(:,:,n);  mref(:,:,2,n,ir) = Blk_Ux(:,:,n);  mref(:,:,3,n,ir) = Blk_Uy(:,:,n)
         END DO
     END DO
     DO v = 1, nVar
@@ -130,7 +133,7 @@ PROGRAM Bench_Collision
                 CALL Al_Get( n )
             END DO
         END IF
-        var(v)%err = Difference( MERGE( 2, 1, var(v)%mc ), var(v)%mc )
+        var(v)%err = Difference( var(v)%kind )
     END DO
 
     CALL SYSTEM_CLOCK( t1, Rate )
@@ -151,7 +154,7 @@ PROGRAM Bench_Collision
     DO v = 1, nVar
         IF( .NOT. var(v)%active ) CYCLE
         CALL Sort( var(v)%mlups )
-        PRINT '(A,A22,A8,2F14.2,ES12.2)', 'R ', var(v)%name, MERGE( 'mom+col', 'collide', var(v)%mc ), &
+        PRINT '(A,A22,A8,2F14.2,ES12.2)', 'R ', var(v)%name, kinds(var(v)%kind), &
             var(v)%mlups(trials), var(v)%mlups((trials+1)/2), var(v)%err
     END DO
 
@@ -252,17 +255,16 @@ CONTAINS
 !$OMP END PARALLEL DO
     END SUBROUTINE Sweep
 
-    FUNCTION Difference( ir, mc ) RESULT( err )
+    FUNCTION Difference( ir ) RESULT( err )
         INTEGER, INTENT(IN) :: ir
-        LOGICAL, INTENT(IN) :: mc
         REAL(dp) :: err
         INTEGER :: k
         err = MAX( MAXVAL( ABS( Blk_h(1:nx,1:ny,:,1:nblk) - href(:,:,:,:,ir) ) )/MAXVAL( ABS( href(:,:,:,:,ir) ) ), &
                    MAXVAL( ABS( Blk_g(1:nx,1:ny,:,1:nblk) - gref(:,:,:,:,ir) ) )/MAXVAL( ABS( gref(:,:,:,:,ir) ) ) )
-        IF( mc ) THEN
-            err = MAX( err, MAXVAL( ABS( Blk_P (:,:,1:nblk) - mref(:,:,1,:) ) )/MAXVAL( ABS( mref(:,:,1,:) ) ), &
-                            MAXVAL( ABS( Blk_Ux(:,:,1:nblk) - mref(:,:,2,:) ) )/MAXVAL( ABS( mref(:,:,2,:) ) ), &
-                            MAXVAL( ABS( Blk_Uy(:,:,1:nblk) - mref(:,:,3,:) ) )/MAXVAL( ABS( mref(:,:,3,:) ) ) )
+        IF( ir >= 2 ) THEN
+            err = MAX( err, MAXVAL( ABS( Blk_P (:,:,1:nblk) - mref(:,:,1,:,ir) ) )/MAXVAL( ABS( mref(:,:,1,:,ir) ) ), &
+                            MAXVAL( ABS( Blk_Ux(:,:,1:nblk) - mref(:,:,2,:,ir) ) )/MAXVAL( ABS( mref(:,:,2,:,ir) ) ), &
+                            MAXVAL( ABS( Blk_Uy(:,:,1:nblk) - mref(:,:,3,:,ir) ) )/MAXVAL( ABS( mref(:,:,3,:,ir) ) ) )
         END IF
         k = 0
     END FUNCTION Difference

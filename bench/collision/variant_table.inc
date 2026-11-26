@@ -1,2 +1,2 @@
-    INTEGER, PARAMETER :: nVar = 40
+    INTEGER, PARAMETER :: nVar = 47
     TYPE(Variant_t) :: var(nVar)

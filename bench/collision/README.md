@@ -280,6 +280,40 @@ The intrinsics kernel stays in the benchmark; the solver uses the Fortran one.
 186.2 -> 257.9, ifx 206.4 -> 283.5. The gain of the new kernel holds
 (1.35-1.6 in L2, 1.37-1.4 beyond), scaling is 3.5-3.7 on 4 cores.
 
+### 11. The moments kernel on its own (`Macroscopic_Values_g_AMR`)
+
+Since the moments are fused into the collision loop, this kernel is off the
+hot path: `Moments_g_Block` only runs on the steps with diagnostics (about 4 %
+of the block updates) and for newly refined blocks. In the 3000-step run above
+it takes 0.024 s of 5.1 s (0.5 %); before, it ran in every step. The same
+levers applied to it (kind `moments`, variants `mg_*`, MLUPS, 1 thread):
+
+| | gf14 | gf14_512 | gf15 | ifx | ifx_512 | flang |
+|---|---|---|---|---|---|---|
+| 8x8, 1 MiB: `mg_model` (mu pass, gradient pass, moments loop) | 235.5 | 260.8 | 293.0 | 237.6 | 239.6 | 213.2 |
+| `mg_fuse_grad`: gradient in the loop | 265.6 | 293.0 | 303.5 | 301.6 | 397.9 | 286.1 |
+| `mg_fused`: mu and gradient in the loop, one pass | 342.7 | 326.5 | 343.0 | 296.6 | 512.0 | 406.2 |
+| `mg_fused_nosimd` | 340.1 | 330.7 | 344.2 | 331.3 | 413.9 | 409.2 |
+| `mg_fused_sym`: pair sums and differences shared | 337.3 | 331.2 | 334.8 | 300.3 | 507.6 | 413.4 |
+| `mg_x_nodiv`: no division (wrong results) | 341.0 | 328.1 | 340.3 | 307.1 | 405.3 | 403.8 |
+| 8x8, 12 MiB: `mg_model` | 182.6 | 185.2 | 168.3 | 143.9 | 160.0 | 144.0 |
+| `mg_fused` | 194.1 | 190.7 | 195.1 | 176.1 | 193.2 | 189.7 |
+
+16x16, 12 MiB: `mg_model` 161.4 (gf14), 190.0 (ifx); `mg_fused` 229.9, 229.8.
+
+* Fusion is again the only lever: one pass instead of three is 1.2-2.1 times
+  faster in L2 and 1.05-1.3 times (8x8) to 1.2-1.4 times (16x16) from L3.
+* Everything else is neutral: the directive, the shared pair sums (the
+  compilers find the common subexpressions themselves), the division (the
+  no-division probe is not faster), 512-bit vectors once the data comes from
+  L3. The loop has no spills (about 40 vector operations per pass).
+* From L3 all fused forms and all compilers end at 175-195 MLUPS for 8x8
+  blocks: the kernel reads 9 directions of g and C and writes three fields,
+  and that data movement is the cost. There is nothing left in the arithmetic.
+
+The one-pass form is not adopted in `src/`: on the 0.5 % of the run it would
+save about 0.1 %.
+
 ## What the compilers get right and wrong
 
 * **Is gfortran the fastest?** No. On the final kernel (`mc_new`, 8x8, L2):
@@ -321,6 +355,7 @@ block size as constants (1.-3.), exact divisions (8.). `Moments_g_Block`
 | `bench_collision.F90` | the benchmark driver |
 | `gen_variants.py`, `*.inc` | generator and fragments of the Fortran variants -> `Collision_Variants_Mod.F90`, `variant_*.inc` |
 | `Model_JCP2016_Ref_Mod.f90` | the model before the study (reference results and baseline) |
+| `moments_variants.inc`, `moments_kernel.inc` | the variants of the moments kernel (11.) |
 | `collision_avx512.c` | the kernel with AVX-512 intrinsics |
 | `build.sh`, `build_all.sh`, `run.sh` | build one / all configurations, run and tabulate |
 | `asmstat.py` | instruction statistics per routine from the assembly |

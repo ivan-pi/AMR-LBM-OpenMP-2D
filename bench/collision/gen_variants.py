@@ -162,12 +162,13 @@ A('END MODULE Collision_Variants_Mod\n')
 open('Collision_Variants_Mod.F90', 'w').write(''.join(out))
 
 # the table of variants for the driver
-names = ['model', 'rt_size'] + names + ['new', 'c512', 'c512_rcp', 'x_c512_nodiv', 'mc_model', 'mc_new', 'mc_c512', 'mc_c512_rcp', 'mc_x_c512_nodiv']
+names = ['model', 'rt_size'] + names + ['new', 'c512', 'c512_rcp', 'x_c512_nodiv', 'mc_model', 'mc_new', 'mc_c512', 'mc_c512_rcp', 'mc_x_c512_nodiv',
+                                      'mg_model', 'mg_new', 'mg_fuse_grad', 'mg_fused', 'mg_fused_nosimd', 'mg_fused_sym', 'mg_x_nodiv']
 with open('variant_table.inc', 'w') as f:
     f.write('    INTEGER, PARAMETER :: nVar = %d\n' % len(names))
     f.write('    TYPE(Variant_t) :: var(nVar)\n')
     f.write('#define SETVAR(k,nm,pr) var(k)%name = nm ; var(k)%run => pr\n') if False else None
 with open('variant_set.inc', 'w') as f:
     for k, n in enumerate(names, 1):
-        f.write("    var(%d)%%name = '%s'\n    var(%d)%%run => V_%s\n    var(%d)%%mc = %s\n    var(%d)%%al = %s\n"
-                % (k, n, k, n, k, '.TRUE.' if n.startswith('mc_') else '.FALSE.', k, '.TRUE.' if n.startswith(('al_', 'mc_al_')) else '.FALSE.'))
+        f.write("    var(%d)%%name = '%s'\n    var(%d)%%run => V_%s\n    var(%d)%%kind = %d\n    var(%d)%%al = %s\n"
+                % (k, n, k, n, k, 2 if n.startswith('mc_') else 3 if n.startswith('mg_') else 1, k, '.TRUE.' if n.startswith(('al_', 'mc_al_')) else '.FALSE.'))

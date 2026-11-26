@@ -1,0 +1,8 @@
+pool 12 MiB, 1 thr    gf14_16      ifx16   max err
+mg_model                161.4      190.0   0.0e+00
+mg_new                  168.1      192.0   0.0e+00
+mg_fuse_grad            215.6      217.3   3.9e-16
+mg_fused                229.9      229.8   3.9e-16
+mg_fused_nosimd         227.9      228.2   3.9e-16
+mg_fused_sym            228.4      229.8   1.8e-15
+mg_x_nodiv              230.8      231.8   1.0e+00

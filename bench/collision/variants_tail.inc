@@ -170,3 +170,4 @@ C512_WRAP( V_mc_x_c512_nodiv, moments_collision_jcp2016_avx512_nodiv )
 SUBROUTINE C512_Setup
     c512_par = [ Rhol, Rhoh, Gy, taul, tauh, M0, W, wc, Beta, kappa, grad2_min ]
 END SUBROUTINE C512_Setup
+#include "moments_variants.inc"
