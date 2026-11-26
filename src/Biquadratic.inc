@@ -5,9 +5,11 @@
 !   as dummy arguments (any strip) or as PARAMETERs (one fixed strip shape,
 !   which lets the compiler unroll the short loops); see Interpolations_Mod
 !   and Ghost_hg_Mod. Input i2 x j2 values per component, output x2 x y2.
+!   With COARSE_ONLY defined only the coarse-to-fine routine is generated.
 !   The macros are undefined at the end, ready for the next instantiation.
 !================================================
 
+#ifndef COARSE_ONLY
 SUBROUTINE FINE_NAME( SIZE_ARGS fin_F, fout_C )
     IMPLICIT NONE
     FINE_SIZES
@@ -45,6 +47,7 @@ SUBROUTINE FINE_NAME( SIZE_ARGS fin_F, fout_C )
 END SUBROUTINE FINE_NAME
 
 !******************************************************************************
+#endif
 
 SUBROUTINE COARSE_NAME( SIZE_ARGS fin_C, fout_F )
     IMPLICIT NONE
@@ -85,3 +88,4 @@ END SUBROUTINE COARSE_NAME
 #undef SIZE_ARGS
 #undef FINE_SIZES
 #undef COARSE_SIZES
+#undef COARSE_ONLY
