@@ -10,8 +10,7 @@
 !   Ghost_C_Strips.inc, instantiated for one and for two layers: with the
 !   number of layers and so every strip shape fixed at compile time the fill
 !   is 2.3-3.4 times faster than with one set of routines for any ng
-!   (bench/ghost). Pushing the copies from the streaming loop, as for h and
-!   g, gains nothing more on 8x8 blocks and is not done.
+!   (bench/ghost).
 !================================================
 MODULE Ghost_C_Mod
     USE Kinds_Mod, ONLY: wp
