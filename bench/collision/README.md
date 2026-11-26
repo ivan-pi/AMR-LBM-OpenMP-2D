@@ -314,6 +314,90 @@ levers applied to it (kind `moments`, variants `mg_*`, MLUPS, 1 thread):
 The one-pass form is not adopted in `src/`: on the 0.5 % of the run it would
 save about 0.1 %.
 
+### 12. Streaming: perfect shift, Lax-Wendroff, 9-point stencils
+
+Kind `stream` (variants `st_*`): streaming of h and g of a block, MLUPS, 1
+thread; the interpolating schemes with the CFL number 0.5 of a coarse level.
+`before` is the solver's kernel as it was: all eight directions into one
+temporary `fnew(nx,ny,2:9)` and one array assignment `f(1:nx,1:ny,2:9) = fnew`.
+
+| 8x8 | gf14 | gf14_512 | gf15 | ifx | ifx_512 | flang |
+|---|---|---|---|---|---|---|
+| **1 MiB** perfect shift, before | 202.6 | 221.5 | 78.0 | 150.1 | 189.2 | 168.1 |
+| perfect shift, one plane temporary per direction (`st_shift`, now in `src/`) | 252.2 | 266.6 | 257.9 | 213.8 | 224.6 | 176.4 |
+| Lax-Wendroff, before | 166.9 | 193.1 | 68.7 | 153.3 | 172.9 | 64.4 |
+| Lax-Wendroff, plane temporary (`st_lw`, now in `src/`) | 222.5 | 224.3 | 153.0 | 201.2 | 217.3 | 61.5 |
+| `st_9pt_tp`: 9 points, 9 weights, all 8 directions | 82.1 | 94.5 | 47.3 | 85.1 | 136.0 | 49.6 |
+| `st_9pt_ax3`: 9 points for the diagonals, 3 for the axes | 104.3 | 122.8 | 54.4 | 118.1 | 138.2 | 56.6 |
+| `st_sep_tp`: tensor-product stencil as an x pass and a y pass | 180.3 | 248.3 | 127.8 | 143.0 | 155.1 | 36.5 |
+| **12 MiB** perfect shift, before | 111.7 | 116.7 | 61.8 | 90.0 | 98.9 | 106.4 |
+| perfect shift, now | 121.5 | 121.5 | 119.2 | 118.4 | 117.2 | 116.9 |
+| Lax-Wendroff, before | 116.5 | 112.3 | 57.6 | 101.3 | 104.9 | 59.2 |
+| Lax-Wendroff, now | 118.1 | 111.7 | 113.8 | 112.6 | 111.2 | 56.7 |
+| `st_9pt_tp` | 72.6 | 78.8 | 43.0 | 73.8 | 98.7 | 46.2 |
+| `st_9pt_ax3` | 86.1 | 93.0 | 47.1 | 85.8 | 92.9 | 53.7 |
+| `st_sep_tp` | 121.9 | 113.5 | 102.0 | 114.4 | 110.1 | 34.0 |
+
+16x16, 12 MiB (gf14 / gf15 / ifx): shift 111.8 / 105.0 / 107.1 -> 146.9 /
+138.1 / 137.4; Lax-Wendroff 107.1 / 106.3 / 104.1 -> 129.2 / 127.1 / 133.1;
+`st_9pt_tp` 77.7 / 76.5 / 76.4.
+
+**Shift against Lax-Wendroff.** In L2 the three-point Lax-Wendroff costs
+1.1-1.2 times the shift (two multiply-adds per value on top of the moves);
+once the data comes from L3 the two cost the same (within 5 %; 10-15 % for
+16x16 blocks): both read and write the same planes, and that is the cost.
+
+**A full 9-point stencil for all 8 directions** (9 run-time weights per
+direction, e.g. the tensor product of the 1-D Lax-Wendroff weights) costs
+2.0-2.7 times the three-point scheme in L2 and 1.5-1.6 times from L3
+(gfortran, ifx at 256 bits; `st_9pt_lw` with the three-point weights and six
+zeros reproduces `st_lw` to 2e-16). Restricting the 9 points to the diagonal
+directions, where a tensor product has 9 non-zero weights (48 instead of 72
+terms), brings that to 1.3-1.4 times from L3. If the stencil is a tensor
+product, two 1-D passes (x into a plane with two extra rows, then y) give the
+same result (2e-16) at the cost of the three-point scheme from L3 and 1.0-1.4
+times in L2: a 9-point tensor-product scheme is essentially free, a general
+9-point one is not. (flang does not vectorize the separable form, nor the
+nested Lax-Wendroff loop.)
+
+**One plane temporary per direction** (adopted in `src/LBM_Common_Mod.f90`,
+results bitwise identical): 1.2-1.4 times faster in L2 for gfortran 14 and
+ifx, up to 1.1 (8x8) and 1.2-1.3 times (16x16) from L3. gfortran 15 gains a
+factor 2-3: it compiled the single copy of all directions into several
+hundred `vpermt2pd` shuffles (vectorizing across the direction index), which
+made its streaming 2.4 times slower than gfortran 14's. In the solver
+(3000 steps, 8x8) the stage "streaming and C" went from 1.03 to 0.90 s with
+gfortran 14, 1.02 to 0.88 s with ifx and 1.76 to 0.92 s with gfortran 15
+(16x16: 2.70 -> 2.29 s and 2.88 -> 2.22 s).
+
+**Unrolling the loop over the directions** by directive (`!GCC$ unroll 8`,
+`!DIR$ UNROLL(8)`; `st_lw_unroll`) or forbidding it (`!GCC$ unroll 0`,
+`!DIR$ NOUNROLL`; `st_lw_nounroll`) changes nothing beyond the noise (L2,
+old form: gf14 160 / 166 against 164 plain, gf14_512 201 / 196 / 193, ifx
+149 / 164 / 149, flang 66 / 65 / 65; identical from L3). The time is in the
+vectorized plane loops, not in the eight-trip loop around them.
+
+**Linear indexing and rank-1 sequence association** (`f((nx+2)*(ny+2),9)`,
+shift of a direction = one offset in the plane):
+
+| 8x8, 1 MiB / 12 MiB | gf14 | gf15 | ifx | flang |
+|---|---|---|---|---|
+| `st_shift` (rank 3, nested loops) | 252 / 122 | 258 / 119 | 214 / 118 | 176 / 117 |
+| `st_shift_lin`: linearized index, nested loops | 261 / 116 | 252 / 119 | 76 / 55 | 104 / 84 |
+| `st_shift_flat`: one loop over the plane, ghost columns included | 184 / 119 | 195 / 119 | 103 / 87 | 132 / 103 |
+| `st_shift_move`: flat, in place, no temporary | 215 / 116 | 217 / 120 | 164 / 101 | 208 / 118 |
+| `st_lw` | 223 / 118 | 153 / 114 | 201 / 113 | 62 / 57 |
+| `st_lw_lin` | 219 / 119 | 221 / 119 | 202 / 115 | 64 / 62 |
+| `st_lw_flat` | 129 / 98 | 128 / 103 | 111 / 91 | 166 / 109 |
+
+No: for gfortran the linearized form is the same code as the rank-3 one, and
+the flat loops are slower in L2 (25 % more values per plane, a run-time
+offset) and equal from L3. ifx is 2-3 times slower with the hand-linearized
+shift. The in-place move saves the temporary but not time. The one exception
+is flang, whose nested Lax-Wendroff loop is not vectorized and whose flat
+loop is (2.7 times faster); the flat forms overwrite the ghost columns of h
+and g, though, so they are not drop-in replacements.
+
 ## What the compilers get right and wrong
 
 * **Is gfortran the fastest?** No. On the final kernel (`mc_new`, 8x8, L2):
@@ -356,6 +440,7 @@ block size as constants (1.-3.), exact divisions (8.). `Moments_g_Block`
 | `gen_variants.py`, `*.inc` | generator and fragments of the Fortran variants -> `Collision_Variants_Mod.F90`, `variant_*.inc` |
 | `Model_JCP2016_Ref_Mod.f90` | the model before the study (reference results and baseline) |
 | `moments_variants.inc`, `moments_kernel.inc` | the variants of the moments kernel (11.) |
+| `streaming_variants.inc`, `streaming_*.inc` | the streaming variants (12.) |
 | `collision_avx512.c` | the kernel with AVX-512 intrinsics |
 | `build.sh`, `build_all.sh`, `run.sh` | build one / all configurations, run and tabulate |
 | `asmstat.py` | instruction statistics per routine from the assembly |

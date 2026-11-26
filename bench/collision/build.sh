@@ -17,7 +17,7 @@ esac
 cc=${CC_BENCH:-$cc}
 $cc -O3 -march=native -DAMR_BLOCK_SIZE=$bs -c $here/collision_avx512.c
 $cc -O3 -march=native -DAMR_BLOCK_SIZE=$bs -S -o c512.s $here/collision_avx512.c
-for f in Kinds_Mod Config_Mod Blocks_Mod D2Q9_Mod Physics_Mod Model_Mod Phase_Field_Mod Model_JCP2016_Mod; do
+for f in Kinds_Mod Config_Mod Blocks_Mod D2Q9_Mod Physics_Mod Model_Mod Phase_Field_Mod LBM_Common_Mod Model_JCP2016_Mod; do
   $fc $pp $omp $defs "$@" -I$src -c $src/$f.f90
 done
 $fc $pp $omp $defs "$@" -c $here/Model_JCP2016_Ref_Mod.f90

@@ -171,3 +171,4 @@ SUBROUTINE C512_Setup
     c512_par = [ Rhol, Rhoh, Gy, taul, tauh, M0, W, wc, Beta, kappa, grad2_min ]
 END SUBROUTINE C512_Setup
 #include "moments_variants.inc"
+#include "streaming_variants.inc"

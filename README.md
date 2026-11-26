@@ -406,7 +406,9 @@ fusion and fission, register pressure, block size, divisions, AVX-512
 intrinsics) with gfortran, ifx and flang, documented with all measurements in
 [`bench/collision/README.md`](bench/collision/README.md): the stage "moments
 of g and collision" became 1.3-1.5 times faster, with results equal to
-round-off.
+round-off. The same study covers streaming (section 12 there): both streaming
+kernels use one plane temporary per direction, 13 % faster with gfortran 14
+and ifx and 1.9 times with gfortran 15, results unchanged.
 
 The ghost cells of h and g are interpolated from coarser and finer
 neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is

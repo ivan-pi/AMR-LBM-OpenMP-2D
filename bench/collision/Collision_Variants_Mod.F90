@@ -13,6 +13,8 @@ MODULE Collision_Variants_Mod
     USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, grad2_min
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Model_Mod, ONLY: LBM_Model
+    USE D2Q9_Mod, ONLY: ex, ey
+    USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR
     USE, INTRINSIC :: ISO_C_BINDING, ONLY: C_INT, C_DOUBLE
     IMPLICIT NONE
     PUBLIC
@@ -29,6 +31,10 @@ MODULE Collision_Variants_Mod
     INTEGER, PARAMETER :: sz_h = ldp*(ny+2)*9, sz_C = ldp*(ny+4), sz_P = nx*ny
     REAL(wp), ALLOCATABLE, TARGET :: A_h(:), A_g(:), A_C(:), A_P(:), A_Ux(:), A_Uy(:)
     INTEGER :: o_h, o_g, o_C, o_P, o_Ux, o_Uy
+
+    !== streaming variants (st_*): CFL number of a coarse level, stencil weights
+    REAL(wp) :: st_cfl = 0.5_wp, st_w9(-1:1,-1:1,2:9), st_wx(-1:1,2:9), st_wy(-1:1,2:9)
+    INTEGER  :: st_tensor = 0      ! weights in st_w9: 0 not set, 1 Lax-Wendroff along e_k, 2 tensor product
 
     !== the AVX-512 intrinsics kernels (collision_avx512.c), double precision
     REAL(wp) :: c512_par(11)

@@ -7,7 +7,8 @@
 !
 !   Kinds of kernels: collide (chemical potential + collision), mom+col (mc_*:
 !   with the moments of g, the path of a normal step), moments (mg_*: the
-!   moments of g alone, steps with diagnostics).
+!   moments of g alone, steps with diagnostics), stream (st_*: streaming of h
+!   and g; compared with st_lw, st_shift or st_9pt_tp, whichever applies).
 !
 !   pool_MiB : field data of all blocks (default 12: beyond L2, within L3)
 !   sweeps   : collisions of all blocks per timed sample (default 20)
@@ -50,7 +51,9 @@ PROGRAM Bench_Collision
     INTEGER  :: nblk, sweeps, trials, v, t, s, n, length, stat, ir
     INTEGER(i64) :: t1, t2, Rate
     CHARACTER(len=512) :: arg, only
-    CHARACTER(len=7), PARAMETER :: kinds(3) = [ 'collide', 'mom+col', 'moments' ]
+    CHARACTER(len=7), PARAMETER :: kinds(6) = [ 'collide', 'mom+col', 'moments', 'stream ', 'stream ', 'stream ' ]
+    !== the reference variant of each kind
+    CHARACTER(len=9), PARAMETER :: refs(6) = [ 'model    ', 'mc_model ', 'mg_model ', 'st_lw    ', 'st_shift ', 'st_9pt_tp' ]
 
     pool_MiB = 12
     sweeps   = 20
@@ -74,7 +77,7 @@ PROGRAM Bench_Collision
     IF( stat == 0 .AND. length > 0 ) THEN
         DO v = 1, nVar
             var(v)%active = INDEX( ','//TRIM(only)//',', ','//TRIM(var(v)%name)//',' ) > 0 &
-                            .OR. var(v)%name == 'model' .OR. var(v)%name == 'mc_model' .OR. var(v)%name == 'mg_model'
+                            .OR. var(v)%name == refs(var(v)%kind)
         END DO
     END IF
 
@@ -96,7 +99,7 @@ PROGRAM Bench_Collision
     CALL Initial_State
 
     ALLOCATE( h0(0:nx+1,0:ny+1,9,nblk), g0(0:nx+1,0:ny+1,9,nblk), P0(nx,ny,nblk), Ux0(nx,ny,nblk), Uy0(nx,ny,nblk) )
-    ALLOCATE( href(nx,ny,9,nblk,3), gref(nx,ny,9,nblk,3), mref(nx,ny,3,nblk,3) )
+    ALLOCATE( href(nx,ny,9,nblk,6), gref(nx,ny,9,nblk,6), mref(nx,ny,3,nblk,6) )
 !$OMP PARALLEL DO SCHEDULE(STATIC)
     DO n = 1, nblk
         h0(:,:,:,n) = Blk_h(:,:,:,n)
@@ -113,7 +116,7 @@ PROGRAM Bench_Collision
 
     !== reference results: the kernels of the model
     DO v = 1, nVar
-        IF( var(v)%name /= 'model' .AND. var(v)%name /= 'mc_model' .AND. var(v)%name /= 'mg_model' ) CYCLE
+        IF( var(v)%name /= refs(var(v)%kind) ) CYCLE
         ir = var(v)%kind
         CALL Restore( .FALSE. )
         CALL Sweep( var(v)%run )
@@ -261,7 +264,7 @@ CONTAINS
         INTEGER :: k
         err = MAX( MAXVAL( ABS( Blk_h(1:nx,1:ny,:,1:nblk) - href(:,:,:,:,ir) ) )/MAXVAL( ABS( href(:,:,:,:,ir) ) ), &
                    MAXVAL( ABS( Blk_g(1:nx,1:ny,:,1:nblk) - gref(:,:,:,:,ir) ) )/MAXVAL( ABS( gref(:,:,:,:,ir) ) ) )
-        IF( ir >= 2 ) THEN
+        IF( ir == 2 .OR. ir == 3 ) THEN
             err = MAX( err, MAXVAL( ABS( Blk_P (:,:,1:nblk) - mref(:,:,1,:,ir) ) )/MAXVAL( ABS( mref(:,:,1,:,ir) ) ), &
                             MAXVAL( ABS( Blk_Ux(:,:,1:nblk) - mref(:,:,2,:,ir) ) )/MAXVAL( ABS( mref(:,:,2,:,ir) ) ), &
                             MAXVAL( ABS( Blk_Uy(:,:,1:nblk) - mref(:,:,3,:,ir) ) )/MAXVAL( ABS( mref(:,:,3,:,ir) ) ) )

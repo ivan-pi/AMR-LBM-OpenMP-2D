@@ -17,6 +17,8 @@ MODULE Collision_Variants_Mod
     USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, grad2_min
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     USE Model_Mod, ONLY: LBM_Model
+    USE D2Q9_Mod, ONLY: ex, ey
+    USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR
     USE, INTRINSIC :: ISO_C_BINDING, ONLY: C_INT, C_DOUBLE
     IMPLICIT NONE
     PUBLIC
@@ -33,6 +35,10 @@ MODULE Collision_Variants_Mod
     INTEGER, PARAMETER :: sz_h = ldp*(ny+2)*9, sz_C = ldp*(ny+4), sz_P = nx*ny
     REAL(wp), ALLOCATABLE, TARGET :: A_h(:), A_g(:), A_C(:), A_P(:), A_Ux(:), A_Uy(:)
     INTEGER :: o_h, o_g, o_C, o_P, o_Ux, o_Uy
+
+    !== streaming variants (st_*): CFL number of a coarse level, stencil weights
+    REAL(wp) :: st_cfl = 0.5_wp, st_w9(-1:1,-1:1,2:9), st_wx(-1:1,2:9), st_wy(-1:1,2:9)
+    INTEGER  :: st_tensor = 0      ! weights in st_w9: 0 not set, 1 Lax-Wendroff along e_k, 2 tensor product
 
     !== the AVX-512 intrinsics kernels (collision_avx512.c), double precision
     REAL(wp) :: c512_par(11)
@@ -161,9 +167,18 @@ A('#include "variants_tail.inc"\n')
 A('END MODULE Collision_Variants_Mod\n')
 open('Collision_Variants_Mod.F90', 'w').write(''.join(out))
 
+def KIND(n):
+    if n.startswith('mc_'): return 2
+    if n.startswith('mg_'): return 3
+    if n.startswith('st_lw') or n == 'st_9pt_lw': return 4
+    if n.startswith('st_shift'): return 5
+    if n.startswith('st_'): return 6
+    return 1
+
 # the table of variants for the driver
 names = ['model', 'rt_size'] + names + ['new', 'c512', 'c512_rcp', 'x_c512_nodiv', 'mc_model', 'mc_new', 'mc_c512', 'mc_c512_rcp', 'mc_x_c512_nodiv',
-                                      'mg_model', 'mg_new', 'mg_fuse_grad', 'mg_fused', 'mg_fused_nosimd', 'mg_fused_sym', 'mg_x_nodiv']
+                                      'mg_model', 'mg_new', 'mg_fuse_grad', 'mg_fused', 'mg_fused_nosimd', 'mg_fused_sym', 'mg_x_nodiv',
+                                      'st_shift', 'st_shift_2d', 'st_shift_lin', 'st_shift_flat', 'st_shift_move', 'st_lw', 'st_lw_2d', 'st_lw_lin', 'st_lw_flat', 'st_lw_plain', 'st_lw_unroll', 'st_lw_nounroll', 'st_9pt_lw', 'st_9pt_tp', 'st_9pt_ax3', 'st_sep_tp']
 with open('variant_table.inc', 'w') as f:
     f.write('    INTEGER, PARAMETER :: nVar = %d\n' % len(names))
     f.write('    TYPE(Variant_t) :: var(nVar)\n')
@@ -171,4 +186,4 @@ with open('variant_table.inc', 'w') as f:
 with open('variant_set.inc', 'w') as f:
     for k, n in enumerate(names, 1):
         f.write("    var(%d)%%name = '%s'\n    var(%d)%%run => V_%s\n    var(%d)%%kind = %d\n    var(%d)%%al = %s\n"
-                % (k, n, k, n, k, 2 if n.startswith('mc_') else 3 if n.startswith('mg_') else 1, k, '.TRUE.' if n.startswith(('al_', 'mc_al_')) else '.FALSE.'))
+                % (k, n, k, n, k, KIND(n), k, '.TRUE.' if n.startswith(('al_', 'mc_al_')) else '.FALSE.'))
