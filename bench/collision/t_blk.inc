@@ -1,0 +1,5 @@
+#define T_GX tgx(i,j)
+#define T_GY tgy(i,j)
+#define T_RN trn(i,j)
+#define T_KM tkm(i,j)
+#define T_RR trr(i,j)

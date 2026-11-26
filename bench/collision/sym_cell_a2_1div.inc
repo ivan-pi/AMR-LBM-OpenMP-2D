@@ -1,0 +1,12 @@
+        g2  = DcDx*DcDx + DcDy*DcDy
+        rn  = SQRT( MAX( g2, grad2_min ) )
+        Rho = Rhol + C0*dRho
+        t   = MIN( MAX( C0, 0._wp ), 1._wp ) * dInvTau + invTaul
+        km  = 2._wp + t
+        rRho = 1._wp/( rn*Rho*km )
+        S0   = rRho*km
+        km   = ( 0.5_wp - 0.25_wp*t )*( rRho*rn*Rho )
+        rRho = S0*rn
+        rn   = MERGE( S0*Rho, 0._wp, g2 > grad2_min )
+        ni = DcDx*rn
+        nj = DcDy*rn

@@ -1,0 +1,8 @@
+#define GS2 G_(2)
+#define GS3 G_(3)
+#define GS4 G_(4)
+#define GS5 G_(5)
+#define GS6 G_(6)
+#define GS7 G_(7)
+#define GS8 G_(8)
+#define GS9 G_(9)

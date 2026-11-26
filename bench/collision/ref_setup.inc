@@ -1,0 +1,14 @@
+    cC      = 0.5_wp *inv_dx
+    cM      = 0.25_wp*inv_dx
+    dRho    = Rhoh - Rhol
+    dRho3   = dRho*c13
+    dRho6   = dRho*c16
+    invTaul = 1._wp/taul
+    dInvTau = 1._wp/tauh - invTaul
+    cT      = 12._wp*M0/W
+    omwc    = 1._wp - wc
+    w0d     = w0*dRho3
+    wsd     = ws*dRho3
+    wdd     = wd*dRho3
+    c4B     = 4._wp*Beta
+    cK      = kappa*inv_dx*inv_dx/6._wp

@@ -1,0 +1,11 @@
+        C0 = C_(+0,+0)
+        eC2 = ( C_(+1,+0) - C_(-1,+0) )*cC
+        eC3 = ( C_(+0,+1) - C_(+0,-1) )*cC
+        eC6 = ( C_(+1,+1) - C_(-1,-1) )*cC
+        eC7 = ( C_(-1,+1) - C_(+1,-1) )*cC
+        DcDx = T_GX
+        DcDy = T_GY
+        ni = DcDx*T_RN
+        nj = DcDy*T_RN
+        km = T_KM
+        Rho = Rhol + C0*dRho

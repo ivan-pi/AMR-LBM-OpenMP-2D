@@ -171,7 +171,7 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
 | `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90`, `Parker_Cases_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble, the Rayleigh–Taylor instability, droplets and spinodal decomposition of the two-species model |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
-| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
+| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria; `Collision_JCP2016.inc` is the template of the JCP 2016 collision kernel |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
 | `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
 | `Blocks_Mod.f90`, `Mesh_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, the neighbour table (rebuilt from the block positions after every mesh change) |
@@ -180,6 +180,8 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
+`bench/collision/` holds the benchmark and the performance study of the JCP 2016
+collision kernel.
 
 Every file holds one module of the same name, so all calls are checked against
 explicit interfaces at compile time. Modules are `PRIVATE` by default and list
@@ -391,11 +393,20 @@ of the whole step). LTO (`-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON`) gives
 gfortran the same gain but nothing more, and makes the PRE 2017 collision
 slower with ifx, so it is not enabled. Three cell loops carry an `!$OMP SIMD`
 hint (with `PRIVATE` for their scalar temporaries): the two direction sums in
-PRE 2017's `Moments_g` and the per-cell and equilibrium loops of the JCP 2016
-collision. They make the ifx collision 14–20 % faster and do not change
-gfortran's results or speed; on the other kernels (streaming, finite
-differences, the other model loops) such hints were neutral or slower with
-one of the two compilers, so they are left out.
+PRE 2017's `Moments_g` and the cell loop of the JCP 2016 collision. On the
+other kernels (streaming, finite differences, the other model loops) such
+hints were neutral or slower with one of the compilers, so they are left out.
+
+The JCP 2016 collision (`src/Collision_JCP2016.inc`) computes the chemical
+potential, the moments of g and the collision of h and g in one pass over the
+cells, and relaxes the stress moments from closed expressions for the pair
+sums of the equilibrium instead of forming every g - geq. This form is the
+outcome of a study of the kernel (loop structure, bounds, SIMD, symmetry,
+fusion and fission, register pressure, block size, divisions, AVX-512
+intrinsics) with gfortran, ifx and flang, documented with all measurements in
+[`bench/collision/README.md`](bench/collision/README.md): the stage "moments
+of g and collision" became 1.3-1.5 times faster, with results equal to
+round-off.
 
 The ghost cells of h and g are interpolated from coarser and finer
 neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is

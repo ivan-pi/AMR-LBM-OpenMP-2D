@@ -1,0 +1,7 @@
+#define C_(a,b) C(i a,j b)
+#define H_(k)   h(i,j,k)
+#define G_(k)   g(i,j,k)
+#define MU_     mu(i,j)
+#define P_      P(i,j)
+#define UX_     Ux(i,j)
+#define UY_     Uy(i,j)

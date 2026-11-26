@@ -1,0 +1,7 @@
+#define C_(a,b) C(i+2 a + (nx+4)*(j+1 b))
+#define H_(k)   h(i+1 + (nx+2)*j + (nx+2)*(ny+2)*(k-1))
+#define G_(k)   g(i+1 + (nx+2)*j + (nx+2)*(ny+2)*(k-1))
+#define MU_     mu(i + nx*(j-1))
+#define P_      P(i + nx*(j-1))
+#define UX_     Ux(i + nx*(j-1))
+#define UY_     Uy(i + nx*(j-1))
