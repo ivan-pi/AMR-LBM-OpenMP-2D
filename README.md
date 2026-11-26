@@ -59,7 +59,8 @@ python3 tools/plot_rise.py jcp/bubble_rise.dat:JCP2016 pre/bubble_rise.dat:PRE20
 ## Building and running
 
 The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
-(tested with gfortran 13, Intel ifx 2026.1 and NAG Fortran 7.2):
+(tested with gfortran 13, Intel ifx 2026.1 and NAG Fortran 7.2) and the
+[Fypp](https://fypp.readthedocs.io) preprocessor (`pip install fypp`):
 
 ```
 cmake -B build                                  # Release, double precision
@@ -171,13 +172,13 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
 | `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90`, `Parker_Cases_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble, the Rayleigh–Taylor instability, droplets and spinodal decomposition of the two-species model |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
-| `Model_JCP2016_Mod.f90`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
+| `Model_JCP2016_Mod.fypp`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
-| `Kinds_Mod.f90`, `Config_Mod.f90`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
+| `Kinds_Mod.fypp`, `Config_Mod.fypp`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
 | `Blocks_Mod.f90`, `Mesh_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, the neighbour table (rebuilt from the block positions after every mesh change) |
 | `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement (optionally refining coarse islands enclosed by finer blocks); data transfer to children and parents |
-| `Ghost_C_Mod.f90`, `Ghost_hg_Mod.f90`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers; and of C2 for two-scalar models) and of h/g, wall conditions, coarse/fine interpolation |
-| `Output_Mod.f90`, `VTK_Output_Mod.f90`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
+| `Ghost_C_Mod.fypp`, `Ghost_hg_Mod.fypp`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers; and of C2 for two-scalar models) and of h/g, wall conditions, coarse/fine interpolation |
+| `Output_Mod.fypp`, `VTK_Output_Mod.fypp`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
 
@@ -199,9 +200,11 @@ and its time unit per lattice time step from `Setup`; the solver passes times in
 that unit to the output and to the case's diagnostics. The domain shape
 (`nBaseX` x `nBaseY` base blocks of `L0` x `L0`, `nBaseY` from
 `AMR_DOMAIN_HEIGHT`) is set in `Config_Mod`.
-All sources go through the preprocessor
-(CMake `Fortran_PREPROCESS`); the case size, precision and optional fVTKHDF
-support are set with the CMake options above.
+The modules with a `.fypp` extension go through [Fypp](https://fypp.readthedocs.io)
+(run by CMake, output in `<build>/fypp/`): it carries the configuration (case
+size, precision, optional fVTKHDF support, set with the CMake options above)
+and generates the routines that exist in several forms. No source uses the C
+preprocessor.
 
 ## Models
 
@@ -399,10 +402,10 @@ one of the two compilers, so they are left out.
 
 The ghost cells of h and g are interpolated from coarser and finer
 neighbours in small strips (3 x 8 cells, 8 directions). The interpolation is
-written once, as a template (`src/Biquadratic.inc`), and instantiated with
+written once, as Fypp macros (`src/Biquadratic.fypp`), and generated with
 the strip shape fixed at compile time for the three shapes used by
-`Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and with
-run-time sizes for the ghost cells of C. Both ghost modules have one routine
+`Ghost_hg_Mod` (left/right edges, bottom/top edges, corners) and for those
+of one and two ghost layers of C (`Ghost_C_Mod`). Both ghost modules have one routine
 per strip shape for the restriction and interpolation, with the side as a
 sign (the strips across an edge run outwards from a fixed start with that
 stride); the same-level copies of h and g, the hot path, are written out per

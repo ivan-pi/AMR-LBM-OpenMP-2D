@@ -31,6 +31,7 @@
 !   from (n/2)p). One routine per strip shape: left/right sides, bottom/top
 !   sides, corners; the interpolations have that shape fixed at compile time.
 !================================================
+#:include "Biquadratic.fypp"
 MODULE Ghost_hg_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
@@ -171,21 +172,59 @@ END SUBROUTINE Push_Same_Level
 
 !******************************************************************************
 
-!== the copies for the three lists of directions (Ghost_Copy.inc)
-#define COPY_NAME Copy_All
-#define COPY_ND   8
-#define COPY_DIR  all_dirs(q)
-#include "Ghost_Copy.inc"
+!== Copy of the edge of a same-level block hb, gb into the ghost cells hn, gn
+!   of its neighbour in direction k (seen from hn), generated (Fypp) for the
+!   three lists of directions: all moving ones, those read by the exact shift,
+!   those read by Lax-Wendroff. k is selected outside the loops and the blocks
+!   are explicit-shape dummy arguments, so in every branch the directions and
+!   all sections are constants (5-30 % faster than one routine with the list
+!   as an argument and SELECT CASE inside the loop).
+#!  per list: routine, number of directions and q-th direction for the ghost cells in direction k
+#:set COPY_LISTS = [ ( 'Copy_All', '8', 'all_dirs(q)' ), ( 'Copy_Shift', 'nShift({k})', 'shift_dirs(q,{k})' ), &
+                   & ( 'Copy_LW', 'nLW({k})', 'lw_dirs(q,{k})' ) ]
+#!  per direction k: ghost index and source index in x and in y (None: the whole edge)
+#:set EDGES = [ ( 1, '0', None, 'nx', None ), ( 2, 'nx+1', None, '1', None ), ( 3, None, '0', None, 'ny' ), &
+              & ( 4, None, 'ny+1', None, '1' ), ( 5, '0', '0', 'nx', 'ny' ), ( 6, '0', 'ny+1', 'nx', '1' ), &
+              & ( 7, 'nx+1', '0', '1', 'ny' ), ( 8, 'nx+1', 'ny+1', '1', '1' ) ]
+#:for NAME, ND, DIR in COPY_LISTS
+SUBROUTINE ${NAME}$( k, hn, hb, gn, gb )
+    IMPLICIT NONE
+    INTEGER,  INTENT(IN)    :: k
+    REAL(wp), INTENT(INOUT) :: hn(0:nx+1,0:ny+1,9), gn(0:nx+1,0:ny+1,9)
+    REAL(wp), INTENT(IN)    :: hb(0:nx+1,0:ny+1,9), gb(0:nx+1,0:ny+1,9)
 
-#define COPY_NAME Copy_Shift
-#define COPY_ND   nShift(COPY_K)
-#define COPY_DIR  shift_dirs(q,COPY_K)
-#include "Ghost_Copy.inc"
+    INTEGER :: q, d, i, j
 
-#define COPY_NAME Copy_LW
-#define COPY_ND   nLW(COPY_K)
-#define COPY_DIR  lw_dirs(q,COPY_K)
-#include "Ghost_Copy.inc"
+    SELECT CASE( k )
+  #:for K, IG, JG, I0, J0 in EDGES
+    CASE( ${K}$ )
+        DO q = 1, ${ND.format( k=K )}$
+            d = ${DIR.format( k=K )}$
+    #:if JG is None
+            DO j = 1, ny
+                hn(${IG}$,j,d) = hb(${I0}$,j,d)
+            END DO
+            DO j = 1, ny
+                gn(${IG}$,j,d) = gb(${I0}$,j,d)
+            END DO
+    #:elif IG is None
+            DO i = 1, nx
+                hn(i,${JG}$,d) = hb(i,${J0}$,d)
+            END DO
+            DO i = 1, nx
+                gn(i,${JG}$,d) = gb(i,${J0}$,d)
+            END DO
+    #:else
+            hn(${IG}$,${JG}$,d) = hb(${I0}$,${J0}$,d)
+            gn(${IG}$,${JG}$,d) = gb(${I0}$,${J0}$,d)
+    #:endif
+        END DO
+  #:endfor
+    END SELECT
+
+END SUBROUTINE ${NAME}$
+
+#:endfor
 
 !******************************************************************************
 
@@ -323,11 +362,14 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
         END DO
         SELECT CASE( nd )
         CASE( 3 )
-            CALL From_Coarse_LR3( hx, hbx );  CALL From_Coarse_LR3( gx, gbx )
+            CALL From_Coarse_LR3( hx, hbx )
+            CALL From_Coarse_LR3( gx, gbx )
         CASE( 6 )
-            CALL From_Coarse_LR6( hx, hbx );  CALL From_Coarse_LR6( gx, gbx )
+            CALL From_Coarse_LR6( hx, hbx )
+            CALL From_Coarse_LR6( gx, gbx )
         CASE DEFAULT
-            CALL From_Coarse_LR ( hx, hbx );  CALL From_Coarse_LR ( gx, gbx )
+            CALL From_Coarse_LR( hx, hbx )
+            CALL From_Coarse_LR( gx, gbx )
         END SELECT
         DO q = 1, nd
             d = dirs(q)
@@ -352,11 +394,14 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
         END DO
         SELECT CASE( nd )
         CASE( 3 )
-            CALL From_Coarse_BT3( hy, hby );  CALL From_Coarse_BT3( gy, gby )
+            CALL From_Coarse_BT3( hy, hby )
+            CALL From_Coarse_BT3( gy, gby )
         CASE( 6 )
-            CALL From_Coarse_BT6( hy, hby );  CALL From_Coarse_BT6( gy, gby )
+            CALL From_Coarse_BT6( hy, hby )
+            CALL From_Coarse_BT6( gy, gby )
         CASE DEFAULT
-            CALL From_Coarse_BT ( hy, hby );  CALL From_Coarse_BT ( gy, gby )
+            CALL From_Coarse_BT( hy, hby )
+            CALL From_Coarse_BT( gy, gby )
         END SELECT
         DO q = 1, nd
             d = dirs(q)
@@ -382,11 +427,14 @@ SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
         END DO
         SELECT CASE( nd )
         CASE( 1 )
-            CALL From_Coarse_Corner1( hc, hbc );  CALL From_Coarse_Corner1( gc, gbc )
+            CALL From_Coarse_Corner1( hc, hbc )
+            CALL From_Coarse_Corner1( gc, gbc )
         CASE( 2 )
-            CALL From_Coarse_Corner2( hc, hbc );  CALL From_Coarse_Corner2( gc, gbc )
+            CALL From_Coarse_Corner2( hc, hbc )
+            CALL From_Coarse_Corner2( gc, gbc )
         CASE DEFAULT
-            CALL From_Coarse_Corner ( hc, hbc );  CALL From_Coarse_Corner ( gc, gbc )
+            CALL From_Coarse_Corner( hc, hbc )
+            CALL From_Coarse_Corner( gc, gbc )
         END SELECT
         DO q = 1, nd
             Blk_h(ig,jg,dirs(q), n) = hbc(1,1,q)
@@ -398,67 +446,25 @@ END SUBROUTINE Fill_From_Coarse
 
 !******************************************************************************
 
-!== the strip interpolations for the three strip shapes, with the shape fixed
-!   at compile time (from Biquadratic.inc): left/right edges (LR), bottom/top
-!   edges (BT) and corners, for all 8 moving directions and, from a coarser
-!   block, for the 6 / 3 (corner: 2 / 1) directions a streaming reads. With
-!   fixed shapes the compiler unrolls the short loops: ~27% less time in the
-!   ghost cells of h and g than with the sizes as arguments.
-#define FINE_NAME    From_Fine_LR
-#define COARSE_NAME  From_Coarse_LR
-#define SIZE_ARGS
-#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 8
-#include "Biquadratic.inc"
+!== The strip interpolations for the three strip shapes, generated (Fypp
+!   macros of Biquadratic.fypp) with the shape fixed at compile time:
+!   left/right edges (LR), bottom/top edges (BT) and corners, for all 8 moving
+!   directions and, from a coarser block, for the 6 / 3 (corner: 2 / 1)
+!   directions a streaming reads. With fixed shapes the compiler unrolls the
+!   short loops: ~27% less time in the ghost cells of h and g than with the
+!   sizes as arguments.
+#!  per strip: suffix, shape of the fine and of the coarse strip, the reduced numbers of directions
+#:set STRIPS = [ ( 'LR', 'i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny', 'i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny', [ 6, 3 ] ), &
+               & ( 'BT', 'i2 = 2*nx, j2 = 3, x2 = nx, y2 = 1', 'i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1', [ 6, 3 ] ), &
+               & ( 'Corner', 'i2 = 3, j2 = 3, x2 = 1, y2 = 1', 'i2 = 3, j2 = 3, x2 = 1, y2 = 1', [ 2, 1 ] ) ]
+#:for STRIP, FINE, COARSE, FEWER in STRIPS
+$:BIQUADRATIC_FROM_FINE( 'From_Fine_' + STRIP, FINE + ', nk = 8' )
 
-#define FINE_NAME    From_Fine_BT
-#define COARSE_NAME  From_Coarse_BT
-#define SIZE_ARGS
-#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 2*nx, j2 = 3, x2 = nx, y2 = 1, nk = 8
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 8
-#include "Biquadratic.inc"
+$:BIQUADRATIC_FROM_COARSE( 'From_Coarse_' + STRIP, COARSE + ', nk = 8' )
 
-#define FINE_NAME    From_Fine_Corner
-#define COARSE_NAME  From_Coarse_Corner
-#define SIZE_ARGS
-#define FINE_SIZES   INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 8
-#include "Biquadratic.inc"
+  #:for NK in FEWER
+$:BIQUADRATIC_FROM_COARSE( 'From_Coarse_%s%d' % ( STRIP, NK ), COARSE + ', nk = %d' % NK )
 
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_LR6
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 6
-#include "Biquadratic.inc"
-
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_LR3
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = ny/2+2, x2 = 1, y2 = ny, nk = 3
-#include "Biquadratic.inc"
-
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_BT6
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 6
-#include "Biquadratic.inc"
-
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_BT3
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = nx/2+2, j2 = 3, x2 = nx, y2 = 1, nk = 3
-#include "Biquadratic.inc"
-
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_Corner2
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 2
-#include "Biquadratic.inc"
-
-#define COARSE_ONLY
-#define COARSE_NAME  From_Coarse_Corner1
-#define SIZE_ARGS
-#define COARSE_SIZES INTEGER, PARAMETER :: i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = 1
-#include "Biquadratic.inc"
-
+  #:endfor
+#:endfor
 END MODULE Ghost_hg_Mod

@@ -14,11 +14,11 @@ MODULE Kinds_Mod
     PRIVATE
     PUBLIC :: wp, dp, i64
 
-#ifdef WP_SINGLE
+#:if defined('WP_SINGLE')
     INTEGER, PARAMETER :: wp = REAL32
-#else
+#:else
     INTEGER, PARAMETER :: wp = REAL64
-#endif
+#:endif
     INTEGER, PARAMETER :: dp = REAL64
     INTEGER, PARAMETER :: i64 = INT64
 

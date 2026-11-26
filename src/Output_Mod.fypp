@@ -12,9 +12,9 @@
 MODULE Output_Mod
     USE Kinds_Mod, ONLY: wp
     USE VTK_Output_Mod, ONLY: Write_VTU_Step
-#ifdef USE_FVTKHDF
+#:if defined('USE_FVTKHDF')
     USE VTK_Output_Mod, ONLY: Write_VTKHDF_Step, Close_VTKHDF
-#endif
+#:endif
     USE TecPlot_Mod, ONLY: TecPlot_CellCenter
     IMPLICIT NONE
     PRIVATE
@@ -50,12 +50,12 @@ CONTAINS
         CASE( 'vtk' )
             Writer => Write_VTU_Step
         CASE( 'vtkhdf' )
-#ifdef USE_FVTKHDF
+#:if defined('USE_FVTKHDF')
             Writer => Write_VTKHDF_Step
             Closer => Close_VTKHDF
-#else
+#:else
             ERROR STOP 'AMR_OUTPUT=vtkhdf: built without fVTKHDF (configure with -DAMR_WITH_FVTKHDF=ON)'
-#endif
+#:endif
         CASE( 'tecplot' )
             Writer => TecPlot_CellCenter
         CASE( 'none' )

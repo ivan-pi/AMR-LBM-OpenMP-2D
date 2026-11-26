@@ -1,0 +1,335 @@
+!================================================
+!   Ghost cells of the phase field C (ng = 1 or 2 layers), and of the
+!   second scalar C2 of two-scalar models (Blocks_Mod nScalars = 2)
+!
+!   As for h and g (Ghost_hg_Mod, where the strip layout is described): a
+!   copy from a same-level leaf, the restriction of the facing children of a
+!   refined neighbour, or the interpolation of a coarser one, with one
+!   routine per strip shape. The strips across an edge are 2+ng fine or 3
+!   coarse cells deep. The strip routines are generated for one and for two
+!   layers: with the number of layers and so every strip shape fixed at
+!   compile time the fill is 2.3-3.4 times faster than with one set of
+!   routines for any ng
+!   (docs/benchmarks/2026-11-26-kernel-performance.md).
+!================================================
+#:include "Biquadratic.fypp"
+#!  the numbers of ghost layers the strip routines are generated for
+#:set LAYERS = [ 1, 2 ]
+MODULE Ghost_C_Mod
+    USE Kinds_Mod, ONLY: wp
+    USE Config_Mod, ONLY: nx, ny
+    USE Blocks_Mod, ONLY: Blk, Blk_C, Blk_C2, nScalars, di, dj, facing
+    USE BC_Mod, ONLY: Symmetric_C_3, Symmetric_C_4
+    IMPLICIT NONE
+    PRIVATE
+    PUBLIC :: Fill_Ghost_Cells_C
+
+CONTAINS
+
+
+!== fill ng (1 or 2) ghost layers of C on all leaf blocks, in two passes over
+!   the levels as for h and g (Fill_Ghost_Cells_hg): copies, restrictions and
+!   walls first, then the interpolations from coarser neighbours. The wall
+!   ghost cells in the end columns next to an interpolated side copy its
+!   ghost cells and are redone then; the collision stencils read them.
+SUBROUTINE Fill_Ghost_Cells_C( ng )
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: ng
+
+    INTEGER :: L, k, m, n, X1
+
+    IF( ng /= 1 .AND. ng /= 2 ) ERROR STOP 'Fill_Ghost_Cells_C: one or two ghost layers'
+
+    DO L = LevelMin, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+            CALL Fill( n, L, .FALSE., Blk_C )
+            CALL Walls( n, 1-ng, nx+ng, Blk_C )
+            IF( nScalars == 2 ) THEN
+                CALL Fill( n, L, .FALSE., Blk_C2 )
+                CALL Walls( n, 1-ng, nx+ng, Blk_C2 )
+            END IF
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+    DO L = LevelMin+1, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+            IF( .NOT. Blk(n)%Coarser ) CYCLE
+            CALL Fill( n, L, .TRUE., Blk_C )
+            IF( nScalars == 2 ) CALL Fill( n, L, .TRUE., Blk_C2 )
+            DO k = 1, 2
+                IF( Blk(n)%nbr(k) <= 0 ) CYCLE
+                IF( Blk(Blk(n)%nbr(k))%Level == L ) CYCLE
+                X1 = MERGE( 1-ng, nx+1, k == 1 )
+                CALL Walls( n, X1, X1+ng-1, Blk_C )
+                IF( nScalars == 2 ) CALL Walls( n, X1, X1+ng-1, Blk_C2 )
+            END DO
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+CONTAINS
+
+    !== the sides and corners of block n on level L of the scalar pool C from
+    !   same-level and refined neighbours (second = F) or from coarser ones
+    !   (second = T)
+    SUBROUTINE Fill( n, L, second, C )
+        INTEGER, INTENT(IN) :: n, L
+        LOGICAL, INTENT(IN) :: second
+        REAL(wp), INTENT(INOUT) :: C(-1:nx+2,-1:ny+2,*)
+        INTEGER :: k, nb
+        DO k = 1, 8
+            nb = Blk(n)%nbr(k)
+            IF( nb <= 0 ) CYCLE
+            IF( (Blk(nb)%Level < L) .NEQV. second ) CYCLE
+            SELECT CASE( ng )
+  #:for NG in LAYERS
+            CASE( ${NG}$ )
+                IF( Blk(nb)%IsLeaf .AND. .NOT. second ) THEN        ! same-level leaf
+                    CALL Copy_${NG}$( k, C(:,:,n), C(:,:,nb) )
+                ELSEIF( k <= 2 ) THEN
+                    CALL Side_X_${NG}$( n, nb, di(k), C )
+                ELSEIF( k <= 4 ) THEN
+                    CALL Side_Y_${NG}$( n, nb, dj(k), C )
+                ELSE
+                    CALL Corner_${NG}$( n, k, C )
+                END IF
+  #:endfor
+            END SELECT
+        END DO
+    END SUBROUTINE Fill
+
+    !== symmetry on the bottom and top walls, columns X1:X2, of the scalar pool C
+    SUBROUTINE Walls( n, X1, X2, C )
+        INTEGER, INTENT(IN) :: n, X1, X2
+        REAL(wp), INTENT(INOUT) :: C(-1:nx+2,-1:ny+2,*)
+        IF( Blk(n)%nbr(3) < 0 ) CALL Symmetric_C_3( ng, C(:,:,n), X1, X2 )
+        IF( Blk(n)%nbr(4) < 0 ) CALL Symmetric_C_4( ng, C(:,:,n), X1, X2 )
+    END SUBROUTINE Walls
+
+END SUBROUTINE Fill_Ghost_Cells_C
+
+!******************************************************************************
+
+!== The copies and strip fills, generated (Fypp) for one and for two ghost
+!   layers: with the number of layers a constant every strip has a fixed
+!   shape, and the interpolations (macros of Biquadratic.fypp, internal to
+!   each routine) are generated for it.
+#:for NG in LAYERS
+
+!== ghost layers of Cn in direction k from the edge of its same-level neighbour Cb
+SUBROUTINE Copy_${NG}$( k, Cn, Cb )
+    IMPLICIT NONE
+    INTEGER,  INTENT(IN)    :: k
+    REAL(wp), INTENT(INOUT) :: Cn(-1:nx+2,-1:ny+2)
+    REAL(wp), INTENT(IN)    :: Cb(-1:nx+2,-1:ny+2)
+
+    INTEGER, PARAMETER :: ng = ${NG}$
+    INTEGER :: i, j, l, m
+
+    SELECT CASE( k )
+    CASE( 1 )
+        DO j = 1, ny
+        DO l = 0, ng-1
+            Cn(-l,j) = Cb(nx-l,j)
+        END DO
+        END DO
+    CASE( 2 )
+        DO j = 1, ny
+        DO l = 0, ng-1
+            Cn(nx+1+l,j) = Cb(1+l,j)
+        END DO
+        END DO
+    CASE( 3 )
+        DO l = 0, ng-1
+        DO i = 1, nx
+            Cn(i,-l) = Cb(i,ny-l)
+        END DO
+        END DO
+    CASE( 4 )
+        DO l = 0, ng-1
+        DO i = 1, nx
+            Cn(i,ny+1+l) = Cb(i,1+l)
+        END DO
+        END DO
+    CASE( 5 )
+        DO m = 0, ng-1
+        DO l = 0, ng-1
+            Cn(-l,-m) = Cb(nx-l,ny-m)
+        END DO
+        END DO
+    CASE( 6 )
+        DO m = 0, ng-1
+        DO l = 0, ng-1
+            Cn(-l,ny+1+m) = Cb(nx-l,1+m)
+        END DO
+        END DO
+    CASE( 7 )
+        DO m = 0, ng-1
+        DO l = 0, ng-1
+            Cn(nx+1+l,-m) = Cb(1+l,ny-m)
+        END DO
+        END DO
+    CASE( 8 )
+        DO m = 0, ng-1
+        DO l = 0, ng-1
+            Cn(nx+1+l,ny+1+m) = Cb(1+l,1+m)
+        END DO
+        END DO
+    END SELECT
+
+END SUBROUTINE Copy_${NG}$
+
+!******************************************************************************
+
+!== the ghost columns of block n towards its refined or coarser left (s = -1)
+!   or right (s = +1) neighbour nb
+SUBROUTINE Side_X_${NG}$( n, nb, s, Blk_C )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, s
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
+
+    INTEGER, PARAMETER :: ng = ${NG}$
+    INTEGER  :: ig, i0, c, l, j, Y
+    REAL(wp) :: Cf(2+ng,2*ny), Cc(3,ny/2+2), Cg(ng,ny)
+
+    ig = MERGE( 0, nx+1, s < 0 )
+
+    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
+        i0 = MERGE( nx+1, 0, s < 0 )
+        Y  = (ny/2) * MOD(Blk(n)%J,2)
+        DO l = 0, 2
+            Cc(l+1,:) = Blk_C(i0+s*l,Y:Y+ny/2+1, nb)
+        END DO
+        CALL From_Coarse( Cc, Cg )
+    ELSE
+        i0 = MERGE( nx, 1, s < 0 )
+        c = Blk(nb)%child + MERGE( 1, 0, s < 0 )      ! the facing children c, c+2
+        DO l = 0, 1+ng
+            Cf(l+1,   1:  ny) = Blk_C(i0+s*l,1:ny, c  )
+            Cf(l+1,ny+1:2*ny) = Blk_C(i0+s*l,1:ny, c+2)
+        END DO
+        CALL From_Fine( Cf, Cg )
+    END IF
+
+    DO j = 1, ny
+    DO l = 0, ng-1
+        Blk_C(ig+s*l,j, n) = Cg(l+1,j)
+    END DO
+    END DO
+
+CONTAINS
+$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2+{0}, j2 = 2*ny, x2 = {0}, y2 = ny, nk = 1'.format( NG ) )
+
+$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = 3, j2 = ny/2+2, x2 = {0}, y2 = ny, nk = 1'.format( NG ) )
+END SUBROUTINE Side_X_${NG}$
+
+!******************************************************************************
+
+!== the ghost rows of block n towards its refined or coarser bottom (s = -1)
+!   or top (s = +1) neighbour nb
+SUBROUTINE Side_Y_${NG}$( n, nb, s, Blk_C )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, s
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
+
+    INTEGER, PARAMETER :: ng = ${NG}$
+    INTEGER  :: jg, j0, c, l, i, X
+    REAL(wp) :: Cf(2*nx,2+ng), Cc(nx/2+2,3), Cg(nx,ng)
+
+    jg = MERGE( 0, ny+1, s < 0 )
+
+    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
+        j0 = MERGE( ny+1, 0, s < 0 )
+        X  = (nx/2) * MOD(Blk(n)%I,2)
+        DO l = 0, 2
+            Cc(:,l+1) = Blk_C(X:X+nx/2+1,j0+s*l, nb)
+        END DO
+        CALL From_Coarse( Cc, Cg )
+    ELSE
+        j0 = MERGE( ny, 1, s < 0 )
+        c = Blk(nb)%child + MERGE( 2, 0, s < 0 )      ! the facing children c, c+1
+        DO l = 0, 1+ng
+            Cf(   1:  nx,l+1) = Blk_C(1:nx,j0+s*l, c  )
+            Cf(nx+1:2*nx,l+1) = Blk_C(1:nx,j0+s*l, c+1)
+        END DO
+        CALL From_Fine( Cf, Cg )
+    END IF
+
+    DO l = 0, ng-1
+    DO i = 1, nx
+        Blk_C(i,jg+s*l, n) = Cg(i,l+1)
+    END DO
+    END DO
+
+CONTAINS
+$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2*nx, j2 = 2+{0}, x2 = nx, y2 = {0}, nk = 1'.format( NG ) )
+
+$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = nx/2+2, j2 = 3, x2 = nx, y2 = {0}, nk = 1'.format( NG ) )
+END SUBROUTINE Side_Y_${NG}$
+
+!******************************************************************************
+
+!== the ghost corner of block n towards its refined or coarser neighbour in
+!   direction k = 5..8
+SUBROUTINE Corner_${NG}$( n, k, Blk_C )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, k
+    REAL(wp), INTENT(INOUT) :: Blk_C(-1:nx+2,-1:ny+2,*)     ! the scalar pool (C or C2)
+
+    INTEGER, PARAMETER :: ng = ${NG}$
+    INTEGER  :: nb, sx, sy, ig, jg, i0, j0, px, py, c, l, m
+    REAL(wp) :: Cf(2+ng,2+ng), Cc(3,3), Cg(ng,ng)
+
+    nb = Blk(n)%nbr(k)
+    sx = di(k)
+    sy = dj(k)
+    ig = MERGE( 0, nx+1, sx < 0 )
+    jg = MERGE( 0, ny+1, sy < 0 )
+
+    IF( Blk(nb)%Level < Blk(n)%Level ) THEN
+        px = MOD(Blk(n)%I,2)
+        py = MOD(Blk(n)%J,2)
+        i0 = MERGE( nx+1-(nx/2)*px, (nx/2)*(1-px), sx < 0 )
+        j0 = MERGE( ny+1-(ny/2)*py, (ny/2)*(1-py), sy < 0 )
+        DO m = 0, 2
+        DO l = 0, 2
+            Cc(l+1,m+1) = Blk_C(i0+sx*l,j0+sy*m, nb)
+        END DO
+        END DO
+        CALL From_Coarse( Cc, Cg )
+    ELSE
+        i0 = MERGE( nx, 1, sx < 0 )
+        j0 = MERGE( ny, 1, sy < 0 )
+        c  = Blk(nb)%child + facing(1,k)             ! the facing child
+        DO m = 0, 1+ng
+        DO l = 0, 1+ng
+            Cf(l+1,m+1) = Blk_C(i0+sx*l,j0+sy*m, c)
+        END DO
+        END DO
+        CALL From_Fine( Cf, Cg )
+    END IF
+
+    DO m = 0, ng-1
+    DO l = 0, ng-1
+        Blk_C(ig+sx*l,jg+sy*m, n) = Cg(l+1,m+1)
+    END DO
+    END DO
+
+CONTAINS
+$:BIQUADRATIC_FROM_FINE( 'From_Fine', 'i2 = 2+{0}, j2 = 2+{0}, x2 = {0}, y2 = {0}, nk = 1'.format( NG ) )
+
+$:BIQUADRATIC_FROM_COARSE( 'From_Coarse', 'i2 = 3, j2 = 3, x2 = {0}, y2 = {0}, nk = 1'.format( NG ) )
+END SUBROUTINE Corner_${NG}$
+
+!******************************************************************************
+
+#:endfor
+END MODULE Ghost_C_Mod

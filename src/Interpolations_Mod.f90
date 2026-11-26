@@ -1,7 +1,7 @@
 !================================================
 !   Bilinear interpolation of whole blocks from a coarse to a fine level,
 !   for the refinement (Bilinear_from_Coarse*). (The biquadratic strip
-!   interpolations of the ghost cells are instantiated from Biquadratic.inc
+!   interpolations of the ghost cells are generated from Biquadratic.fypp
 !   in Ghost_hg_Mod and Ghost_C_Mod.)
 !================================================
 MODULE Interpolations_Mod
