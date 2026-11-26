@@ -831,6 +831,96 @@ END SUBROUTINE K_mc_x_nodiv
 #undef VNAME
 #undef KNAME
 
+SUBROUTINE V_flag_one( n )
+    INTEGER, INTENT(IN) :: n
+    REAL(wp) :: mu(1,1)
+    CALL K_flag( .FALSE., inv_dx_level( Blk(n)%Level ), Blk_C(:,:,n), mu, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+END SUBROUTINE V_flag_one
+SUBROUTINE V_mc_flag_one( n )
+    INTEGER, INTENT(IN) :: n
+    REAL(wp) :: mu(1,1)
+    CALL K_flag( .TRUE., inv_dx_level( Blk(n)%Level ), Blk_C(:,:,n), mu, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+END SUBROUTINE V_mc_flag_one
+SUBROUTINE K_flag( with_moments, inv_dx, C, mu, P, Ux, Uy, h, g )
+    LOGICAL,  INTENT(IN)    :: with_moments
+    REAL(wp), INTENT(IN)    :: inv_dx
+    REAL(wp), INTENT(IN)    :: C(-1:nx+2,-1:ny+2), mu(1,1)
+    REAL(wp), INTENT(INOUT) :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
+    REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
+#include "sym_decl.inc"
+#include "sym_setup.inc"
+#include "acc_std.inc"
+#include "gs_early.inc"
+    DO j = 1, ny
+#include "sym_simd.inc"
+    DO i = 1, nx
+#include "sym_cell_a1.inc"
+#include "sym_cell_a1m.inc"
+#include "sym_cell_a2.inc"
+#include "state_flag.inc"
+#include "sym_cell_g0.inc"
+#include "sym_cell_h0.inc"
+#include "sym_cell_b.inc"
+    END DO
+    END DO
+#include "gs_undef.inc"
+#include "acc_undef.inc"
+END SUBROUTINE K_flag
+
+SUBROUTINE V_flag_proc( n )
+    INTEGER, INTENT(IN) :: n
+    REAL(wp) :: mu(1,1)
+    CALL K_flag_proc( .FALSE., inv_dx_level( Blk(n)%Level ), Blk_C(:,:,n), mu, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+END SUBROUTINE V_flag_proc
+SUBROUTINE V_mc_flag_proc( n )
+    INTEGER, INTENT(IN) :: n
+    REAL(wp) :: mu(1,1)
+    CALL K_flag_proc( .TRUE., inv_dx_level( Blk(n)%Level ), Blk_C(:,:,n), mu, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+END SUBROUTINE V_mc_flag_proc
+SUBROUTINE K_flag_proc( moments, inv_dx, C, mu, P, Ux, Uy, h, g )
+    LOGICAL,  INTENT(IN)    :: moments
+    REAL(wp), INTENT(IN)    :: inv_dx
+    REAL(wp), INTENT(IN)    :: C(-1:nx+2,-1:ny+2), mu(1,1)
+    REAL(wp), INTENT(INOUT) :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
+    REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
+    INTEGER :: i, j
+    REAL(wp) :: cC, cM, dRho, dRho3, dRho6, invTaul, dInvTau, cT, omwc, w0d, wsd, wdd, c4B, cK
+    REAL(wp) :: hGy, ws3, wd3, ws45, wd18, wd12, tws, twd
+#include "sym_setup.inc"
+    IF( moments ) THEN
+        DO j = 1, ny
+!$OMP SIMD
+        DO i = 1, nx
+            CALL Cell( i, j, .TRUE. )
+        END DO
+        END DO
+    ELSE
+        DO j = 1, ny
+!$OMP SIMD
+        DO i = 1, nx
+            CALL Cell( i, j, .FALSE. )
+        END DO
+        END DO
+    END IF
+CONTAINS
+    SUBROUTINE Cell( i, j, with_moments )
+        INTEGER, INTENT(IN) :: i, j
+        LOGICAL, INTENT(IN) :: with_moments
+#include "sym_decl_cell.inc"
+#include "acc_std.inc"
+#include "gs_early.inc"
+#include "sym_cell_a1.inc"
+#include "sym_cell_a1m.inc"
+#include "sym_cell_a2.inc"
+#include "state_flag.inc"
+#include "sym_cell_g0.inc"
+#include "sym_cell_h0.inc"
+#include "sym_cell_b.inc"
+#include "gs_undef.inc"
+#include "acc_undef.inc"
+    END SUBROUTINE Cell
+END SUBROUTINE K_flag_proc
+
 !**********************************************************************
 !== al_sym_fuse_mu
 #define VNAME V_al_sym_fuse_mu
