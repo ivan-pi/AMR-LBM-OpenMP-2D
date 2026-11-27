@@ -1,0 +1,430 @@
+!================================================
+!   Multicomponent LBM with chemical-potential driven diffusion
+!
+!   J. M. Parker, PhD thesis, Oregon State University (2008);
+!   J. M. Parker, G. N. Jovanovic, Chem. Biochem. Eng. Q. 23 (2009) 399-409.
+!   Analysis and the surface-tension relation: docs/parker_model/README.md
+!
+!   Two species on D2Q9: species 1 in h (C = sum h), species 2 in g
+!   (C2 = sum g). Each species relaxes towards the equilibrium of a fluid
+!   moving with u + u'_i, u the mixture velocity and
+!       u'_i = -D grad ln gamma_i  -  sum_j x_j (-D grad ln gamma_j)
+!   (mass-average reference), ln gamma_i from Margules' equation. The u'u'
+!   terms of the second moments are scaled by kappa: the mixture carries the
+!   capillary stress T = kappa sum_i c_i u'_i u'_i and the surface tension is
+!   sigma = kappa int sum_i c_i u'_(i,n)^2 dn.
+!
+!   Collision in central Hermite moments about u (Galilean invariant):
+!   a0 = c_i, a1 = c_i u'_i, a2 = kappa c_i u'_i u'_i, a3 = a4 = 0
+!   (Parker's equilibrium at rest); rates: a1, a3 omega_D, deviatoric a2
+!   omega_nu, trace of a2 and a4 omega_E. D = cs^2 (1/omega_D - 1/2),
+!   nu = cs^2 (1/omega_nu - 1/2).
+!
+!   Blk_P holds the pressure c cs^2, Blk_Ux/Uy the mixture velocity.
+!   Derivatives are scaled with the block spacing (finest-level units); all
+!   levels use the same time step, so D, nu and kappa are level-independent.
+!================================================
+MODULE Model_Parker2009_Mod
+    USE Kinds_Mod, ONLY: wp
+    USE Config_Mod, ONLY: nx, ny, inv_dx_level
+    USE D2Q9_Mod, ONLY: Wa, exr, eyr
+    USE Model_Mod, ONLY: LBM_Model
+    IMPLICIT NONE
+    PRIVATE
+    PUBLIC :: Parker2009_Model, Diff, kappa_s, nu, omega_E, A12, A21, Ln_Gamma, x_eps
+
+    !== parameters (lattice units), set by the case before the initialization
+    REAL(wp) :: Diff    = 0.2_wp        ! diffusivity D
+    REAL(wp) :: kappa_s = 1._wp         ! scaling of the u'u' terms (surface tension)
+    REAL(wp) :: nu      = 0.02_wp       ! kinematic viscosity
+    REAL(wp) :: omega_E = 1._wp         ! rate of the trace of the stress and of a4
+    REAL(wp) :: A12 = 2.7627_wp, A21 = 2.4474_wp    ! Margules (Parker's periodic.f90)
+
+    !== mole fractions are clamped to [x_eps, 1-x_eps] in ln gamma
+    REAL(wp), PARAMETER :: x_eps = 1.e-9_wp
+    REAL(wp), PARAMETER :: cs2 = 1._wp/3._wp, cs4 = 1._wp/9._wp
+    !== weights of the isotropic gradient: straight and diagonal neighbours
+    REAL(wp), PARAMETER :: g1 = 1._wp/3._wp, g2 = 1._wp/12._wp
+
+CONTAINS
+
+FUNCTION Parker2009_Model() RESULT( model )
+    TYPE(LBM_Model) :: model
+
+    model%name       =  'two-species LBM, chemical-potential diffusion (Parker & Jovanovic 2009)'
+    model%ghost_C    =  1
+    model%n_scalars  =  2
+    model%Initialize => Initialize_Block
+    model%Collide    => Collide_Block
+    model%Moments_g  => Moments_Block
+    model%Moments_and_Collide => Moments_and_Collide_Block
+    model%Refinement_Error    => Activity_Error
+    model%refine_tol =  0.02_wp
+    model%deref_tol  =  0.01_wp
+    model%max_island_blocks = 16    ! droplet interiors: no coarse/fine edges inside a phase
+
+END FUNCTION Parker2009_Model
+
+!**********************************************************************
+
+!== ln gamma_1, ln gamma_2 (Margules) of the mole fraction x1
+ELEMENTAL SUBROUTINE Ln_Gamma( x1, lg1, lg2 )
+    REAL(wp), INTENT(IN)  :: x1
+    REAL(wp), INTENT(OUT) :: lg1, lg2
+
+    REAL(wp) :: xa, xb
+
+    xa = MIN( MAX( x1, x_eps ), 1._wp - x_eps )
+    xb = 1._wp - xa
+    lg1 = ( A12 + 2._wp*(A21 - A12)*xa ) * xb*xb
+    lg2 = ( A21 + 2._wp*(A12 - A21)*xb ) * xa*xa
+
+END SUBROUTINE Ln_Gamma
+
+!**********************************************************************
+
+!== ln gamma of both species on the block with one ghost layer
+SUBROUTINE Block_Ln_Gamma( C1, C2, lg1, lg2 )
+    REAL(wp), INTENT(IN)  :: C1(-1:nx+2,-1:ny+2), C2(-1:nx+2,-1:ny+2)
+    REAL(wp), INTENT(OUT) :: lg1(0:nx+1,0:ny+1), lg2(0:nx+1,0:ny+1)
+
+    INTEGER :: i, j
+
+    DO j = 0, ny+1
+    DO i = 0, nx+1
+        CALL Ln_Gamma( C1(i,j) / ( C1(i,j) + C2(i,j) ), lg1(i,j), lg2(i,j) )
+    END DO
+    END DO
+
+END SUBROUTINE Block_Ln_Gamma
+
+!**********************************************************************
+
+!== refinement criterion: the largest |grad ln gamma_i| of block b (finest-level
+!   units). It is zero in the bulk phases and largest in the interfaces (at
+!   equilibrium it equals |grad ln x_i|); grad mu_i = grad ln a_i is not used,
+!   as it vanishes across an equilibrium interface.
+FUNCTION Activity_Error( b ) RESULT( err )
+    USE Blocks_Mod, ONLY: Blk, Blk_C, Blk_C2
+    INTEGER, INTENT(IN) :: b
+    REAL(wp) :: err
+
+    INTEGER  :: i, j
+    REAL(wp) :: inv_dx, ax, ay, bx, by
+    REAL(wp), DIMENSION(0:nx+1,0:ny+1) :: lg1, lg2
+
+    inv_dx = inv_dx_level( Blk(b)%Level )
+    CALL Block_Ln_Gamma( Blk_C(:,:,b), Blk_C2(:,:,b), lg1, lg2 )
+
+    err = 0
+    DO j = 1, ny
+!$OMP SIMD PRIVATE( ax, ay, bx, by ) REDUCTION( MAX: err )
+    DO i = 1, nx
+        CALL Gradient( lg1, i, j, ax, ay )
+        CALL Gradient( lg2, i, j, bx, by )
+        err = MAX( err, ax*ax + ay*ay, bx*bx + by*by )
+    END DO
+    END DO
+    err = SQRT( err )
+
+CONTAINS
+
+    !== isotropic gradient of q at cell (i,j), finest-level units. The cell
+    !   is an argument: inside the SIMD loop the loop index is private, and
+    !   the host's i is not the index of the iteration.
+    PURE SUBROUTINE Gradient( q, i, j, qx, qy )
+        REAL(wp), INTENT(IN)  :: q(0:nx+1,0:ny+1)
+        INTEGER,  INTENT(IN)  :: i, j
+        REAL(wp), INTENT(OUT) :: qx, qy
+
+        qx = inv_dx*( g1*( q(i+1,j) - q(i-1,j) ) &
+                    + g2*( q(i+1,j+1) + q(i+1,j-1) - q(i-1,j+1) - q(i-1,j-1) ) )
+        qy = inv_dx*( g1*( q(i,j+1) - q(i,j-1) ) &
+                    + g2*( q(i+1,j+1) + q(i-1,j+1) - q(i+1,j-1) - q(i-1,j-1) ) )
+
+    END SUBROUTINE Gradient
+
+END FUNCTION Activity_Error
+
+!**********************************************************************
+
+!== mixture velocity and pressure c cs^2 of block n
+SUBROUTINE Moments_Block( n )
+    USE Blocks_Mod, ONLY: Blk_h, Blk_g, Blk_C, Blk_C2, Blk_P, Blk_Ux, Blk_Uy
+    INTEGER, INTENT(IN) :: n
+
+    CALL Mixture_Moments( Blk_h(:,:,:,n), Blk_g(:,:,:,n), Blk_C(:,:,n), Blk_C2(:,:,n), &
+                          Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
+
+END SUBROUTINE Moments_Block
+
+SUBROUTINE Mixture_Moments( h, g, C1, C2, P, Ux, Uy )
+    REAL(wp), INTENT(IN)  :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
+    REAL(wp), INTENT(IN)  :: C1(-1:nx+2,-1:ny+2), C2(-1:nx+2,-1:ny+2)
+    REAL(wp), INTENT(OUT) :: P(nx,ny), Ux(nx,ny), Uy(nx,ny)
+
+    INTEGER  :: i, j
+    REAL(wp) :: c, rc, jx, jy
+
+    DO j = 1, ny
+    DO i = 1, nx
+        c  = C1(i,j) + C2(i,j)
+        rc = 1._wp/c
+        jx = ( h(i,j,2) - h(i,j,4) ) + ( (h(i,j,6) - h(i,j,8)) - (h(i,j,7) - h(i,j,9)) ) &
+           + ( g(i,j,2) - g(i,j,4) ) + ( (g(i,j,6) - g(i,j,8)) - (g(i,j,7) - g(i,j,9)) )
+        jy = ( h(i,j,3) - h(i,j,5) ) + ( (h(i,j,6) - h(i,j,8)) + (h(i,j,7) - h(i,j,9)) ) &
+           + ( g(i,j,3) - g(i,j,5) ) + ( (g(i,j,6) - g(i,j,8)) + (g(i,j,7) - g(i,j,9)) )
+        Ux(i,j) = jx*rc
+        Uy(i,j) = jy*rc
+        P (i,j) = c*cs2
+    END DO
+    END DO
+
+END SUBROUTINE Mixture_Moments
+
+!**********************************************************************
+
+SUBROUTINE Collide_Block( n )
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_C2, Blk_P, Blk_Ux, Blk_Uy
+    INTEGER, INTENT(IN) :: n
+
+    CALL Collision( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), Blk_C2(:,:,n), Blk_P(:,:,n), &
+                    Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+
+END SUBROUTINE Collide_Block
+
+!== moments and collision of one block in one pass over its cells
+SUBROUTINE Moments_and_Collide_Block( n )
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_C2, Blk_P, Blk_Ux, Blk_Uy
+    INTEGER, INTENT(IN) :: n
+
+    CALL Moments_Collision( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), Blk_C2(:,:,n), Blk_P(:,:,n), &
+                            Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+
+END SUBROUTINE Moments_and_Collide_Block
+
+!**********************************************************************
+
+!== Collision of both species of one block, cell by cell in a single pass,
+!   generated in two forms:
+!
+!     Collision            Ux, Uy are input
+!     Moments_Collision    the mixture velocity and the pressure are first
+!                          computed from h and g and stored
+!
+!   Before the loop, one pass over the block and its ghost layer stores
+!   1/(c1 + c2) and ln gamma_1 - ln gamma_2. The loop holds no division.
+!
+!   Diffusion velocities. With G = -D grad( ln gamma_1 - ln gamma_2 ), the
+!   velocities relative to the mass average are
+!       u'_1 = x2 G,   u'_2 = -x1 G
+!   so one gradient serves both species, and c1 u'_1 = -c2 u'_2.
+!
+!   Collision of one species (macro COLLIDE_SPECIES), in four steps:
+!     - Raw moments from the populations. Opposite directions enter only as
+!       their sum (even moments) or their difference (odd moments).
+!     - Central moments about u: a shift along x, then one along y, each of
+!       the form k1 = m1 - u m0, k2 = m2 - u (m1 + k1).
+!     - Relaxation of the central Hermite moments. Only the change of each
+!       moment is kept; the density is conserved, so its change is zero.
+!     - The changes are shifted back (along y, then x) and added to the
+!       populations, again pair by pair. The transformations are linear, so
+!       this equals transforming the relaxed moments, with fewer terms.
+!
+!   The first moments of the two species, summed, are the mixture momentum:
+!   the second form gets the velocity from them at no extra cost.
+#:def COLLIDE_SPECIES(f, c, px, py, cpx, cpy)
+        collide_${f}$: BLOCK
+            REAL(wp) :: s24, s35, s68, s79, d24, d35, d68, d79
+            REAL(wp) :: m10, m01, m20, m02, m11, m21, m12, m22
+            REAL(wp) :: k10, k01, k20, k02, k11, k21, k12, k22, t11, t21, t12, t22
+            REAL(wp) :: d10, d01, d20, d02, d11, d21, d12, d22, qxx, qyy, dtr, ddv, ev, od
+
+            !== raw moments: sums and differences of opposite directions
+            s24 = ${f}$(i,j,2) + ${f}$(i,j,4)
+            s35 = ${f}$(i,j,3) + ${f}$(i,j,5)
+            s68 = ${f}$(i,j,6) + ${f}$(i,j,8)
+            s79 = ${f}$(i,j,7) + ${f}$(i,j,9)
+            d24 = ${f}$(i,j,2) - ${f}$(i,j,4)
+            d35 = ${f}$(i,j,3) - ${f}$(i,j,5)
+            d68 = ${f}$(i,j,6) - ${f}$(i,j,8)
+            d79 = ${f}$(i,j,7) - ${f}$(i,j,9)
+            m22 = s68 + s79
+            m11 = s68 - s79
+            m21 = d68 + d79
+            m12 = d68 - d79
+            m20 = s24 + m22
+            m02 = s35 + m22
+            m10 = d24 + m12
+            m01 = d35 + m21
+
+            !== central moments about u: shift along x, then along y
+            k10 = m10 - vx*${c}$
+            k20 = m20 - vx*( m10 + k10 )
+            t11 = m11 - vx*m01
+            t21 = m21 - vx*( m11 + t11 )
+            t12 = m12 - vx*m02
+            t22 = m22 - vx*( m12 + t12 )
+            k01 = m01 - vy*${c}$
+            k02 = m02 - vy*( m01 + k01 )
+            k11 = t11 - vy*k10
+            k12 = t12 - vy*( t11 + k11 )
+            k21 = t21 - vy*k20
+            k22 = t22 - vy*( t21 + k21 )
+
+            !== changes of the central moments by the relaxation of the central
+            !   Hermite moments (a1, a3: wD; deviatoric a2: wV; trace of a2, a4: omega_E)
+            d10 = wD*( ${cpx}$ - k10 )
+            d01 = wD*( ${cpy}$ - k01 )
+            d11 = wV*( kappa_s*${cpx}$*${py}$ - k11 )
+            qxx = kappa_s*${cpx}$*${px}$
+            qyy = kappa_s*${cpy}$*${py}$
+            dtr = omega_E*( ( qxx + qyy ) - ( k20 + k02 - 2._wp*cs2*${c}$ ) )
+            ddv = wV*( ( qxx - qyy ) - ( k20 - k02 ) )
+            d20 = 0.5_wp*( dtr + ddv )
+            d02 = 0.5_wp*( dtr - ddv )
+            d21 = cs2*d01 - wD*( k21 - cs2*k01 )
+            d12 = cs2*d10 - wD*( k12 - cs2*k10 )
+            d22 = cs2*dtr - omega_E*( k22 - cs2*( k20 + k02 ) + cs4*${c}$ )
+
+            !== changes of the raw moments: shift back along y, then along x
+            d02 = d02 + 2._wp*vy*d01
+            t11 = d11 + vy*d10
+            d12 = d12 + vy*( d11 + t11 )
+            t21 = d21 + vy*d20
+            d22 = d22 + vy*( d21 + t21 )
+            d20 = d20 + 2._wp*vx*d10
+            d11 = t11 + vx*d01
+            d21 = t21 + vx*( t11 + d11 )
+            t12 = d12 + vx*d02
+            d22 = d22 + vx*( d12 + t12 )
+            d12 = t12
+
+            !== changes of the populations, pair by pair
+            ${f}$(i,j,1) = ${f}$(i,j,1) + ( d22 - d20 - d02 )
+            ev = 0.5_wp*( d20 - d22 )
+            od = 0.5_wp*( d10 - d12 )
+            ${f}$(i,j,2) = ${f}$(i,j,2) + ( ev + od )
+            ${f}$(i,j,4) = ${f}$(i,j,4) + ( ev - od )
+            ev = 0.5_wp*( d02 - d22 )
+            od = 0.5_wp*( d01 - d21 )
+            ${f}$(i,j,3) = ${f}$(i,j,3) + ( ev + od )
+            ${f}$(i,j,5) = ${f}$(i,j,5) + ( ev - od )
+            ev = 0.25_wp*( d22 + d11 )
+            od = 0.25_wp*( d21 + d12 )
+            ${f}$(i,j,6) = ${f}$(i,j,6) + ( ev + od )
+            ${f}$(i,j,8) = ${f}$(i,j,8) + ( ev - od )
+            ev = 0.25_wp*( d22 - d11 )
+            od = 0.25_wp*( d21 - d12 )
+            ${f}$(i,j,7) = ${f}$(i,j,7) + ( ev + od )
+            ${f}$(i,j,9) = ${f}$(i,j,9) + ( ev - od )
+        END BLOCK collide_${f}$
+#:enddef COLLIDE_SPECIES
+
+#:for NAME, MOMENTS in [ ( 'Collision', False ), ( 'Moments_Collision', True ) ]
+SUBROUTINE ${NAME}$( inv_dx, C1, C2, P, Ux, Uy, h, g )
+    REAL(wp), INTENT(IN)    :: inv_dx
+    REAL(wp), INTENT(IN)    :: C1(-1:nx+2,-1:ny+2), C2(-1:nx+2,-1:ny+2)
+#:if MOMENTS
+    REAL(wp), INTENT(OUT)   :: P(nx,ny), Ux(nx,ny), Uy(nx,ny)
+#:else
+    REAL(wp), INTENT(IN)    :: P(nx,ny), Ux(nx,ny), Uy(nx,ny)
+#:endif
+    REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
+
+    INTEGER  :: i, j
+    !== per block
+    REAL(wp) :: wD, wV, cg1, cg2, dA
+    REAL(wp), DIMENSION(0:nx+1,0:ny+1) :: rc, dlg     ! 1/(c1+c2), ln gamma_1 - ln gamma_2
+    !== per cell
+    REAL(wp) :: xa, xb, c1c, c2c, x1, x2, cc, gx, gy, vx, vy, p1x, p1y, p2x, p2y, c1px, c1py, c2px, c2py
+
+    wD  = 1._wp / ( Diff/cs2 + 0.5_wp )
+    wV  = 1._wp / ( nu/cs2 + 0.5_wp )
+    cg1 = -Diff*inv_dx*g1               ! G = -D grad( ln gamma_1 - ln gamma_2 )
+    cg2 = -Diff*inv_dx*g2
+    dA  = 2._wp*( A21 - A12 )
+
+    !== 1/(c1+c2) and ln gamma_1 - ln gamma_2 (Margules, as Ln_Gamma) with the ghost layer
+    DO j = 0, ny+1
+    DO i = 0, nx+1
+        rc(i,j) = 1._wp/( C1(i,j) + C2(i,j) )
+        xa = MIN( MAX( C1(i,j)*rc(i,j), x_eps ), 1._wp - x_eps )
+        xb = 1._wp - xa
+        dlg(i,j) = ( A12 + dA*xa )*xb*xb - ( A21 - dA*xb )*xa*xa
+    END DO
+    END DO
+
+    DO j = 1, ny
+    DO i = 1, nx
+        c1c = C1(i,j)
+        c2c = C2(i,j)
+        x1  = c1c*rc(i,j)
+        x2  = 1._wp - x1
+        cc  = c2c*x1                    ! c1 c2/(c1+c2) = c1 x2 = c2 x1
+
+        !== diffusion velocities u'_1 = x2 G, u'_2 = -x1 G; c1 u'_1 = -c2 u'_2 = cc G
+        gx = cg1*( dlg(i+1,j) - dlg(i-1,j) ) &
+           + cg2*( ( dlg(i+1,j+1) - dlg(i-1,j-1) ) + ( dlg(i+1,j-1) - dlg(i-1,j+1) ) )
+        gy = cg1*( dlg(i,j+1) - dlg(i,j-1) ) &
+           + cg2*( ( dlg(i+1,j+1) - dlg(i-1,j-1) ) - ( dlg(i+1,j-1) - dlg(i-1,j+1) ) )
+        p1x  =  x2*gx
+        p1y  =  x2*gy
+        p2x  = -x1*gx
+        p2y  = -x1*gy
+        c1px =  cc*gx
+        c1py =  cc*gy
+        c2px = -c1px
+        c2py = -c1py
+
+#:if MOMENTS
+        !== mixture velocity from the first moments of both species; pressure c cs^2
+        vx = ( ( h(i,j,2) - h(i,j,4) ) + ( (h(i,j,6) - h(i,j,8)) - (h(i,j,7) - h(i,j,9)) ) &
+             + ( g(i,j,2) - g(i,j,4) ) + ( (g(i,j,6) - g(i,j,8)) - (g(i,j,7) - g(i,j,9)) ) )*rc(i,j)
+        vy = ( ( h(i,j,3) - h(i,j,5) ) + ( (h(i,j,6) - h(i,j,8)) + (h(i,j,7) - h(i,j,9)) ) &
+             + ( g(i,j,3) - g(i,j,5) ) + ( (g(i,j,6) - g(i,j,8)) + (g(i,j,7) - g(i,j,9)) ) )*rc(i,j)
+        Ux(i,j) = vx
+        Uy(i,j) = vy
+        P (i,j) = ( c1c + c2c )*cs2
+#:else
+        vx = Ux(i,j)
+        vy = Uy(i,j)
+#:endif
+
+        !== species 1 (h)
+        @:COLLIDE_SPECIES( h, c1c, p1x, p1y, c1px, c1py )
+
+        !== species 2 (g)
+        @:COLLIDE_SPECIES( g, c2c, p2x, p2y, c2px, c2py )
+    END DO
+    END DO
+
+END SUBROUTINE ${NAME}$
+
+!**********************************************************************
+
+#:endfor
+!== h and g of block n: equilibria of both species for C, C2, Ux, Uy (u' = 0)
+SUBROUTINE Initialize_Block( n )
+    USE Blocks_Mod, ONLY: Blk_h, Blk_g, Blk_C, Blk_C2, Blk_P, Blk_Ux, Blk_Uy
+    INTEGER, INTENT(IN) :: n
+
+    INTEGER  :: i, j, k
+    REAL(wp) :: eu, uu, G
+
+    DO k = 1, 9
+        DO j = 1, ny
+        DO i = 1, nx
+            eu = exr(k)*Blk_Ux(i,j,n) + eyr(k)*Blk_Uy(i,j,n)
+            uu = Blk_Ux(i,j,n)**2 + Blk_Uy(i,j,n)**2
+            G  = Wa(k)*( 1._wp + 3._wp*eu + 4.5_wp*eu*eu - 1.5_wp*uu )
+            Blk_h(i,j,k,n) = Blk_C (i,j,n)*G
+            Blk_g(i,j,k,n) = Blk_C2(i,j,n)*G
+        END DO
+        END DO
+    END DO
+    Blk_P(:,:,n) = cs2*( Blk_C(1:nx,1:ny,n) + Blk_C2(1:nx,1:ny,n) )
+
+END SUBROUTINE Initialize_Block
+
+END MODULE Model_Parker2009_Mod

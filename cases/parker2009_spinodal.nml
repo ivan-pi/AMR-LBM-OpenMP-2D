@@ -1,0 +1,12 @@
+! Spinodal decomposition of the two-species model (Parker & Jovanovic 2009):
+! the middle L0 x L0 square starts as a mixture with noise and separates into
+! droplets that coarsen. About 40 % of the domain is on the finest level at
+! the start and the mesh changes throughout, so the case exercises the
+! refinement more than the default droplet. Used for the timings in
+! docs/benchmarks/2026-11-27-parker2009-performance.md:
+!   cmake -B build -DAMR_L0=256 -DAMR_MIN_LEVEL=2 && cmake --build build -j
+!   AMR_CASE=cases/parker2009_spinodal.nml AMR_OUTPUT=none ./build/amr_lbm_parker
+&parker
+  kind    = 'spinodal'
+  n_steps = 1000
+/
