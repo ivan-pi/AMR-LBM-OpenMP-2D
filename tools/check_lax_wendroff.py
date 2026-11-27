@@ -29,6 +29,14 @@ weights of the Fortran code:
    stay at 1 up to c = 1; the classic one is unstable above c = 0.35, i.e. on
    the level below the finest (c = 0.5).
 
+3. Angular expansion: the phase error (kappa^3) and the damping (kappa^4) of a
+   Fourier mode as a function of its direction of travel. Neither stencil is
+   isotropic. The error of the 3-point stencil depends only on the component
+   along the direction and reaches (sqrt 2)^3 times that of an axis
+   direction; the tensor stencil has the four-fold symmetry of the grid
+   (cos^3 + sin^3), stays within 0.71 and 1 of an axis direction, and damps
+   modes that the exact shift leaves unchanged, at fourth order.
+
 Exit status 0 if the Taylor check passes and the two stencils of the solver
 are stable at the CFL numbers of the levels."""
 import sys
@@ -134,5 +142,41 @@ for cfl in (0.125, 0.25, 0.35, 0.4, 0.5, 0.75, 1.0):
     stable = stable and max(g[:2]) < 1 + 1e-12
     print('    %-5g  %7.4f  %7.4f  %7.4f' % (cfl, *g))
 print('\n3-point and tensor stencils stable up to c = 1:', stable)
+
+
+# ---------------------------------------------------------------------------
+# angular expansion: relative error of the amplification factor of a Fourier
+# mode with wavenumber kappa (per cell) travelling at the angle theta to the
+# x axis, against the exact shift exp( -i c e.k ). The kappa^3 term is the
+# phase error, the kappa^4 term the damping. An isotropic error would depend
+# on theta only through e.k.
+
+kappa, theta = sp.symbols('kappa theta', positive=True)
+kx, ky = kappa*sp.cos(theta), kappa*sp.sin(theta)
+s1 = lambda a: cU*sp.exp(-sp.I*a) + c0 - cD*sp.exp(sp.I*a)        # the 1-D scheme, symbolic
+
+def relative_error(g, ex, ey, n):
+    e = sp.series(sp.expand(g/sp.exp(-sp.I*c*(ex*kx + ey*ky))) - 1, kappa, 0, n + 1).removeO()
+    return sp.trigsimp(sp.factor(e.coeff(kappa, n)))
+
+print()
+print('relative error of the amplification factor, mode ( kappa cos(theta), kappa sin(theta) ):')
+for label, ex, ey in (('axis (1,0)', 1, 0), ('diagonal (1,1)', 1, 1), ('diagonal (-1,1)', -1, 1)):
+    forms = [('3-point', s1(ex*kx + ey*ky))]
+    if ex and ey:
+        forms.append(('tensor', s1(ex*kx)*s1(ey*ky)))
+    for name, g in forms:
+        print('    %-16s %-8s kappa^3: %s' % (label, name, relative_error(g, ex, ey, 3)))
+        print('    %-16s %-8s kappa^4: %s' % ('', '', relative_error(g, ex, ey, 4)))
+
+print()
+print('direction (1,1): phase error in units of c (1 - c^2)/6, damping in units of c^2 (1 - c^2):')
+print('    theta    3-point  tensor     3-point  tensor')
+for deg in (-45, 0, 22.5, 45, 67.5, 90):
+    t = np.radians(deg)
+    cs, sn = np.cos(t), np.sin(t)
+    print('    %6.1f  %8.3f %7.3f    %8.4f %7.4f' % (deg, (cs + sn)**3, cs**3 + sn**3, (cs + sn)**4/8, (cs**4 + sn**4)/8))
+print('    (-45: wave fronts along the direction, the exact solution does not change;')
+print('      45: wave along the direction)')
 
 sys.exit(0 if ok and stable else 1)

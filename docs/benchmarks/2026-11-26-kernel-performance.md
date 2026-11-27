@@ -118,6 +118,11 @@ plus terms of third and fourth order.
   at most for every CFL number up to 1. The textbook 2-D Lax-Wendroff stencil
   (4-point cross derivative) differs from the tensor product at third order
   and is unstable at the CFL number 0.5 of the level below the finest.
+* Neither scheme is isotropic. For a diagonal direction the phase error of the
+  3-point scheme varies with the direction of a wave as `(cos + sin)^3`, up to
+  2.83 times that of an axis direction; the tensor product varies as
+  `cos^3 + sin^3`, between 0.71 and 1. The tensor product damps modes that
+  the exact shift leaves unchanged, at fourth order.
 * Known approximation: at a wall, the corner ghost cell of a block takes the
   bounce-back value from the end column instead of the neighbour's column
   (the clamp of `Bounce_Back_3/4`). The 3-point scheme never reads that
