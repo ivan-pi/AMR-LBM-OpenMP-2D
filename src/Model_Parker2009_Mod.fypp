@@ -88,7 +88,13 @@ SUBROUTINE Block_Ln_Gamma( C1, C2, lg1, lg2 )
     REAL(wp), INTENT(IN)  :: C1(-1:nx+2,-1:ny+2), C2(-1:nx+2,-1:ny+2)
     REAL(wp), INTENT(OUT) :: lg1(0:nx+1,0:ny+1), lg2(0:nx+1,0:ny+1)
 
-    CALL Ln_Gamma( C1(0:nx+1,0:ny+1) / ( C1(0:nx+1,0:ny+1) + C2(0:nx+1,0:ny+1) ), lg1, lg2 )
+    INTEGER :: i, j
+
+    DO j = 0, ny+1
+    DO i = 0, nx+1
+        CALL Ln_Gamma( C1(i,j) / ( C1(i,j) + C2(i,j) ), lg1(i,j), lg2(i,j) )
+    END DO
+    END DO
 
 END SUBROUTINE Block_Ln_Gamma
 
@@ -124,8 +130,10 @@ FUNCTION Activity_Error( b ) RESULT( err )
 
     inv_dx = inv_dx_level( Blk(b)%Level )
     CALL Block_Ln_Gamma( Blk_C(:,:,b), Blk_C2(:,:,b), lg1, lg2 )
+
     err = 0
     DO j = 1, ny
+!$OMP SIMD PRIVATE( ax, ay, bx, by ) REDUCTION( MAX: err )
     DO i = 1, nx
         CALL Gradient( inv_dx, lg1, i, j, ax, ay )
         CALL Gradient( inv_dx, lg2, i, j, bx, by )
@@ -310,6 +318,7 @@ END SUBROUTINE Moments_and_Collide_Block
             ${f}$(i,j,9) = ${f}$(i,j,9) + ( ev - od )
         END BLOCK collide_${f}$
 #:enddef COLLIDE_SPECIES
+
 #:for NAME, MOMENTS in [ ( 'Collision', False ), ( 'Moments_Collision', True ) ]
 SUBROUTINE ${NAME}$( inv_dx, C1, C2, P, Ux, Uy, h, g )
     REAL(wp), INTENT(IN)    :: inv_dx

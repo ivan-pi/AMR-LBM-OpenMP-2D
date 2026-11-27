@@ -14,8 +14,8 @@ wall time. *Before* is commit 654e836, *after* is this change.
   machine, 2 MiB L2 per core, no hardware counters. The timing noise was up
   to 10 % in these sessions; numbers are the best of the stated runs.
 * Compilers: gfortran 14.2, gfortran 15.2, ifx 2026.2, flang 23, with the
-  flags of the CMake build (flang: `-O3 -march=native` in the kernel
-  benchmark only).
+  flags of the CMake build. The build has no flags for flang, so it gets
+  CMake's default `-O3` without `-march=native` (SSE2 code).
 * Case: `cases/parker2009_spinodal.nml`, `-DAMR_L0=256 -DAMR_MIN_LEVEL=2`,
   8x8 blocks, 1000 steps, about 75 000 leaf cells (1200 leaf blocks) on
   levels 2 to 5, output off.
@@ -121,6 +121,34 @@ best of 3 or 4 runs:
 * A procedure call per cell and species, module or internal, costs a factor
   of 2.1 to 3.2 with every compiler: the loop over the cells is then not
   vectorized. Hence the macro.
+
+## The refinement criterion
+
+`Activity_Error` (the largest gradient of `ln gamma` in a block) runs for
+every leaf block at each mesh adaptation. Its two loops were checked in the
+generated code:
+
+* `Block_Ln_Gamma`, written as an array expression with an elemental call,
+  was vectorized by gfortran and ifx but not by flang, which called
+  `Ln_Gamma` per element. It is now an explicit loop and vectorized by all
+  four compilers.
+* The loop with the maximum was vectorized by gfortran. ifx unrolled it
+  completely into scalar code. With `!$OMP SIMD REDUCTION( MAX: err )` on
+  the inner loop ifx vectorizes it.
+
+Time of the mesh-adaptation stage in the spinodal run, 1 thread, seconds,
+best of 4:
+
+| form | gfortran 14.2 | gfortran 15.2 | ifx 2026.2 | flang 23 |
+|------|--------------:|--------------:|-----------:|---------:|
+| before | 0.116 | 0.125 | 0.220 | 0.250 |
+| explicit loop in `Block_Ln_Gamma` | 0.118 | 0.128 | 0.225 | 0.241 |
+| and the SIMD directive (adopted) | 0.122 | 0.125 | 0.139 | 0.252 |
+| maximum per cell of a row, reduced at the end, no directive | 0.117 | 0.218 | 0.247 | 0.187 |
+
+The directive is worth 37 % of the stage with ifx (about 2.5 % of the run)
+and changes nothing for the others. The row-maximum form helps flang but
+makes gfortran 15.2 slower.
 
 ## Not done
 
