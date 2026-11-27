@@ -95,20 +95,32 @@ What changed:
   step gets the velocity from sums it needs anyway. `Moments_Collision` and
   `Collision` are generated from one template.
 
-## Variants measured and not adopted
+## Variants measured
 
 Kernel benchmark, *moments + collision*, change against the adopted form,
-best of 3 runs (gfortran 15.2 and the full back-transform: best of 6):
+best of 3 or 4 runs:
 
 | variant | gfortran 14.2 | gfortran 15.2 | ifx 2026.2 | flang 23 |
 |---------|--------------:|--------------:|-----------:|---------:|
+| species locals declared in a `BLOCK` inside the macro (adopted) | -2 % | +1 % | -2 % | -3 % |
 | full back-transform: the relaxed moments are transformed and the populations assigned | +3 % | +2 % | -6 % | -5 % |
 | one loop per species | -2 % | within noise | -13 % | -13 % |
+| activity terms in the loop: no pass before it, `ln gamma` of the eight neighbours evaluated per cell | -18 % | -19 % | -21 % | -24 % |
+| species body as a module procedure, called per cell | -62 % | -61 % | -69 % | -52 % |
+| species body as an internal procedure of the kernel | -64 % | -64 % | -67 % | -52 % |
 
+* The `BLOCK` only moves the declarations of the per-species temporaries
+  next to their use; the timings are within the noise of the form without.
 * The full back-transform is within the noise of the adopted form. A
   second session of 6 runs gave -1 % (gfortran 14.2), +2 % (gfortran 15.2)
   and -5 % (ifx).
 * Splitting the species into two loops is not faster with any compiler.
+* The pass before the loop evaluates each activity term and each division
+  once per cell (100 for a block of 64 cells with its ghost layer). In the
+  loop, every cell evaluates its eight neighbours: 9 divisions per cell.
+* A procedure call per cell and species, module or internal, costs a factor
+  of 2.1 to 3.2 with every compiler: the loop over the cells is then not
+  vectorized. Hence the macro.
 
 ## Not done
 

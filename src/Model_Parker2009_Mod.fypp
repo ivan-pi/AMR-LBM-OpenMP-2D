@@ -224,6 +224,12 @@ END SUBROUTINE Moments_and_Collide_Block
 !   The first moments of the two species, summed, are the mixture momentum:
 !   the second form gets the velocity from them at no extra cost.
 #:def COLLIDE_SPECIES(f, c, px, py, cpx, cpy)
+        BLOCK
+        REAL(wp) :: s24, s35, s68, s79, d24, d35, d68, d79
+        REAL(wp) :: m10, m01, m20, m02, m11, m21, m12, m22
+        REAL(wp) :: k10, k01, k20, k02, k11, k21, k12, k22, t11, t21, t12, t22
+        REAL(wp) :: d10, d01, d20, d02, d11, d21, d12, d22, qxx, qyy, dtr, ddv, ev, od
+
         !== raw moments: sums and differences of opposite directions
         s24 = ${f}$(i,j,2) + ${f}$(i,j,4)
         s35 = ${f}$(i,j,3) + ${f}$(i,j,5)
@@ -302,6 +308,7 @@ END SUBROUTINE Moments_and_Collide_Block
         od = 0.25_wp*( d21 - d12 )
         ${f}$(i,j,7) = ${f}$(i,j,7) + ( ev + od )
         ${f}$(i,j,9) = ${f}$(i,j,9) + ( ev - od )
+        END BLOCK
 #:enddef COLLIDE_SPECIES
 #:for NAME, MOMENTS in [ ( 'Collision', False ), ( 'Moments_Collision', True ) ]
 SUBROUTINE ${NAME}$( inv_dx, C1, C2, P, Ux, Uy, h, g )
@@ -320,11 +327,6 @@ SUBROUTINE ${NAME}$( inv_dx, C1, C2, P, Ux, Uy, h, g )
     REAL(wp), DIMENSION(0:nx+1,0:ny+1) :: rc, dlg     ! 1/(c1+c2), ln gamma_1 - ln gamma_2
     !== per cell
     REAL(wp) :: xa, xb, c1c, c2c, x1, x2, cc, gx, gy, vx, vy, p1x, p1y, p2x, p2y, c1px, c1py, c2px, c2py
-    !== per species
-    REAL(wp) :: s24, s35, s68, s79, d24, d35, d68, d79
-    REAL(wp) :: m10, m01, m20, m02, m11, m21, m12, m22
-    REAL(wp) :: k10, k01, k20, k02, k11, k21, k12, k22, t11, t21, t12, t22
-    REAL(wp) :: d10, d01, d20, d02, d11, d21, d12, d22, qxx, qyy, dtr, ddv, ev, od
 
     wD  = 1._wp / ( Diff/cs2 + 0.5_wp )
     wV  = 1._wp / ( nu/cs2 + 0.5_wp )
