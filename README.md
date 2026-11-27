@@ -65,7 +65,7 @@ The build uses CMake (3.20 or later) and needs a Fortran compiler with OpenMP
 ```
 cmake -B build                                  # Release, double precision
 cmake --build build -j
-OMP_NUM_THREADS=8 ./build/amr_lbm [number_of_time_steps [output_interval_in_steps]]
+OMP_NUM_THREADS=8 ./build/amr_lbm [--view[=N]] [steps [output_interval]]
 OMP_NUM_THREADS=8 ./build/amr_lbm_pre2017 [...]    # same case, PRE 2017 model
 AMR_CASE=drop.nml ./build/amr_lbm_parker [...]     # two species (see Two-species model)
 ```
@@ -102,13 +102,15 @@ Configuration options (`cmake -B build -D<option>=<value>`):
 | `AMR_PERIODIC_Y` | `OFF` | periodic in y as well (default: walls at the bottom and top) |
 | `AMR_WITH_FVTKHDF` | `OFF` | VTKHDF output; set `CMAKE_PREFIX_PATH` to the fVTKHDF install |
 | `AMR_BUILD_OFFLOAD` | `OFF` | build the GPU offload prototype in `offload/` (ifx only) |
-| `AMR_NATIVE` | `ON` | optimize for the build machine (`-march=native` / `-xHost`) |
+| `AMR_NATIVE` | `ON` | optimize for the build machine (gfortran: `-mcpu=native` on Arm, e.g. Apple Silicon, `-march=native` elsewhere; ifx: `-xHost`) |
 
 The number of threads is taken from `OMP_NUM_THREADS`. The optional arguments
 override the number of time steps (default: 8 bubble-rise time units) and the
 output interval in time steps (default: one twentieth of the run; use a smaller
 interval for smooth animations). The initial and the final state are always
-written.
+written. `--view[=N]` opens the real-time view (see *Real-time view*), `-h`
+prints a help with the arguments, the environment variables and the view
+controls.
 
 All floating-point data use the kind parameter `wp` from `Kinds_Mod`
 (`real64` by default, `real32` with `-DAMR_PRECISION=4`). The total-mass diagnostic is
@@ -184,6 +186,7 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Refine_Mod.f90`, `Prolong_Restrict_Mod.f90` | flagging, refinement/derefinement (optionally refining coarse islands enclosed by finer blocks); data transfer to children and parents |
 | `Ghost_C_Mod.fypp`, `Ghost_hg_Mod.fypp`, `BC_Mod.f90`, `Interpolations_Mod.f90` | ghost cells of C (1 or 2 layers; and of C2 for two-scalar models) and of h/g, wall conditions, coarse/fine interpolation |
 | `Output_Mod.fypp`, `VTK_Output_Mod.fypp`, `TecPlot_Mod.f90` | writer selection (`AMR_OUTPUT`), VTK/VTKHDF and TecPlot writers |
+| `Viewer_Mod.fypp` | optional real-time view (`--view`), hands the leaf blocks and fields to the amrviz library in `viewer/` |
 
 `code_structure.mmd` is a Mermaid diagram of the module dependencies.
 
@@ -207,7 +210,7 @@ that unit to the output and to the case's diagnostics. The domain shape
 `AMR_DOMAIN_HEIGHT`) is set in `Config_Mod`.
 The modules with a `.fypp` extension go through [Fypp](https://fypp.readthedocs.io)
 (run by CMake, output in `<build>/fypp/`): it carries the configuration (case
-size, precision, optional fVTKHDF support, set with the CMake options above)
+size, precision, optional fVTKHDF and viewer support, set with the CMake options above)
 and generates the routines that exist in several forms. No source uses the C
 preprocessor.
 
@@ -321,6 +324,93 @@ python3 tools/animate_vtk.py Rising_Bubble_2D.vtkhdf --frame -1 -o last.png
 ```
 
 Run `python3 tools/animate_vtk.py -h` for all options.
+
+### Real-time view
+
+With `-DAMR_WITH_VIEWER=ON` (needs SDL2 and OpenGL 3.3) the solver can show the
+leaf blocks and a field in a window while it runs. The option `--view[=N]`
+turns it on and sets the update interval in time steps (default 20); it can
+come before or after the numbers:
+
+```
+cmake -B build-view -DAMR_WITH_VIEWER=ON && cmake --build build-view -j
+AMR_OUTPUT=none ./build-view/amr_lbm --view=20
+```
+
+The controls are inspired by [FluidX3D](https://github.com/ProjectPhysX/FluidX3D);
+`H` shows them in the window:
+
+| key | action |
+|---|---|
+| `P`, Space | pause / resume the solver; `N` one more update while paused |
+| `Z` / Shift+`Z`, Tab | field: C, P, Ux, Uy, \|U\|, level |
+| `C` / Shift+`C` | colour map: viridis, magma, coolwarm (range symmetric about zero), gray |
+| `1` `2` `3` `4` `5` | field colouring, block outlines, cell outlines, status panel, colour bar on/off |
+| `6` | Z-order (Morton) curve through the leaf blocks on/off: the order of the quadtree walk, in which the solver keeps the blocks of each level (green: start, red: end) |
+| `F` | fit the colour range to the current data (each field keeps its range, taken when first shown, rounded) |
+| `A` | auto colour range: follow every update |
+| `+` `-`, wheel | zoom |
+| `I` `J` `K` `L`, arrows, drag | pan |
+| `R` | reset the view |
+| `G` | print the view settings |
+| Esc | close the viewer |
+
+The status panel shows a colour bar, time, step, blocks, cells, levels, the
+solver speed and the value under the cursor. Closing the window lets the run
+continue without it; at the end of the run the window stays open until it is
+closed. `tools/make_colormap_header.py` and `tools/make_font_header.py`
+generate the colour map and font tables in `viewer/`.
+
+**Fields in GPU memory.** A GPU solver can hand over a whole snapshot at
+once: `amrviz_blocks_buffer(n)` returns the block table to fill (x0, y0, dx,
+level per block) and every field is one packed float array of `n*nx*ny`
+cells, which the solver packs on the device (interior cells only, in
+single precision). The array reaches the viewer either by a device-to-host
+copy straight into `amrviz_field_buffer(field)` (`omp_target_memcpy`,
+`sycl::queue::memcpy`), or through `amrviz_field_packed(field, device_ptr)`
+with a copy function registered with `amrviz_set_copy`. The library never
+touches device memory and links no GPU runtime; the one copy per update is
+small (4 bytes per leaf cell and field). `viewer/examples` has a SYCL and a
+Fortran OpenMP-offload demo (Intel oneAPI, tested on an Arc A770):
+
+```
+source /opt/intel/oneapi/setvars.sh
+cmake -S viewer/examples -B build-viewer-examples -DCMAKE_CXX_COMPILER=icpx -DCMAKE_Fortran_COMPILER=ifx
+cmake --build build-viewer-examples -j
+./build-viewer-examples/sycl_demo        # or ./build-viewer-examples/offload_demo
+```
+
+The Fortran interface of the library is the module `amrviz` (`viewer/amrviz.f90`).
+
+The viewer is a small C library (`viewer/amrviz.h`) that C, C++ and Fortran
+(`Viewer_Mod`, through `ISO_C_BINDING`) can call. It draws on its own thread:
+each update copies the leaf-block fields as float into a buffer that the
+render thread picks up, so the solver waits only while paused. On the GPU
+every block is one instanced quad and the cell values are one texture buffer.
+The render thread needs a CPU core: leave one free, e.g.
+`OMP_NUM_THREADS=3 taskset -c 4-7`. Without a display (e.g. over ssh without
+X forwarding) the viewer reports that it has no window and the run continues
+without it.
+
+**macOS** (Apple Silicon or Intel; with Homebrew `gcc` for gfortran, `sdl2` and
+`cmake`). macOS's OpenGL stops at 4.1, which is enough for the GL 3.3 core
+shaders. Cocoa allows windows and their events only on a program's main
+thread, which here is the solver's, so on macOS the viewer has no render
+thread: each update handles the window's input and draws (at most about 60
+frames a second), and while the run is paused or finished the solver thread
+runs the window's event loop. The window therefore reacts to input only at
+updates: choose `--view=N` so that there are several per second. The
+help and status text keep their size on Retina displays and use a font
+atlas rendered at twice the size there.
+
+```
+brew install gcc sdl2 cmake
+cmake -B build-view -DAMR_WITH_VIEWER=ON -DCMAKE_Fortran_COMPILER=gfortran && cmake --build build-view -j
+AMR_OUTPUT=none ./build-view/amr_lbm --view=20
+```
+
+`AMRVIZ_THREAD=0` selects the same single-thread mode on Linux, which is how
+it was tested (Xvfb and Mesa); it has not yet been run on a Mac.
 
 ## Conservation across levels
 

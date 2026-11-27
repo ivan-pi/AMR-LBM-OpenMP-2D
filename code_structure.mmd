@@ -39,6 +39,7 @@ flowchart TD
 
     subgraph OUT["Output"]
         OM["Output_Mod<br/>writer chosen by AMR_OUTPUT"]
+        VW["Viewer_Mod<br/>real-time view (--view)<br/>C library viewer/amrviz"]
         VTK["VTK_Output_Mod<br/>.vtu/.pvd, VTKHDF"]
         TEC["TecPlot_Mod"]
         FV[("fVTKHDF<br/>(optional)")]
@@ -73,6 +74,7 @@ flowchart TD
     SOL --> GC
     SOL --> GHG
     SOL --> OM
+    SOL --> VW
 
     RB --> CM
     RT --> CM
