@@ -155,6 +155,44 @@ Between -3 % and +3 % on the path the solver takes at every step, +5 % to
 -2 % on the collision-only path: within the noise. The algebra is not what
 limits this kernel.
 
+## What limits `Collision_h_g`
+
+The kernel alone in a standalone benchmark (gfortran 14.2, 1 thread, 8x8
+blocks, MLUPS, range of two runs), with the pool of blocks sized to fit in
+each cache level. "No div" replaces the four divisions and the square root
+by multiplications: wrong results, timing only.
+
+| pool of blocks  | 256-bit | 256-bit, no div | 512-bit | 512-bit, no div |
+|-----------------|--------:|--------:|--------:|--------:|
+| 18 KiB (L1)     | 142     | 146-149 | 171-187 | 240-245 |
+| 1.2 MiB (L2)    | 127-131 | 125-130 | 157-161 | 174-178 |
+| 37 MiB (L3)     | 87-91   | 82-85   | 88-90   | 90-92   |
+
+* In the solver the pool is in L3, and there the kernel is bound by memory
+  traffic: every variant gives about 90 MLUPS, which is also what the
+  solver's collision-only path reaches (about 83 with the gradient and the
+  chemical potential). A block of 8x8 cells occupies 18 KiB, 284 bytes per
+  cell with the ghost layers, half of it written back.
+* In cache it is bound by the throughput of the floating-point ports, not
+  by a stall. The inner loop has 222 instructions per 4 cells, 157 of them
+  vector arithmetic (69 FMA), 45 memory operands and 20 stores, and runs at
+  about 3 instructions per cycle.
+* The divisions do not limit it at 256 bits (3 % in L1, nothing beyond).
+  They do at 512 bits in L1 only.
+* This is why the rearrangements above change nothing: they shorten
+  arithmetic the solver is not waiting for.
+
+Block size, 256 bits, pool in L3:
+
+| block | bytes per cell | MLUPS   |
+|-------|---------------:|--------:|
+| 8x8   | 284            | 87-91   |
+| 16x16 | 237            | 105     |
+
+Larger blocks load fewer ghost cells per interior cell and give the
+prefetcher longer runs. This is the kernel only; a run with larger blocks
+also refines more cells around the interface.
+
 ## Setup
 
 Machine and compilers as in `2026-11-26-kernel-performance.md` (4 cores of a
