@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="428" viewBox="0 0 1180 428" font-family="Inter, Helvetica, Arial, sans-serif">
+<rect width="1180" height="428" fill="#ffffff"/>
+<text x="24" y="36" font-size="20" font-weight="600" fill="#191919">PRE 2017 collision kernel: arrangements tried</text>
+<text x="24" y="58" font-size="13" fill="#666666">Kernel only, on the solver mesh (492 leaf blocks, in L3), 1 thread, best of 6 interleaved runs. Million cell updates per second (longer is faster); change against master at the bar ends.</text>
+<rect x="24" y="76" width="12" height="12" rx="2" fill="#8a8a8a"/><text x="42" y="87" font-size="13" fill="#191919">master: four passes</text>
+<rect x="192.9" y="76" width="12" height="12" rx="2" fill="#257de0"/><text x="210.9" y="87" font-size="13" fill="#191919">one fused loop</text>
+<rect x="326.29999999999995" y="76" width="12" height="12" rx="2" fill="#f47230"/><text x="344.29999999999995" y="87" font-size="13" fill="#191919">moments loop + collision loop</text>
+<text x="150" y="128" font-size="14" font-weight="600" fill="#191919">Moments + collision (every normal step)</text>
+<line x1="150.0" y1="142" x2="150.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="150.0" y="380" font-size="12" fill="#666666" text-anchor="middle">0</text>
+<line x1="245.0" y1="142" x2="245.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="245.0" y="380" font-size="12" fill="#666666" text-anchor="middle">25</text>
+<line x1="340.0" y1="142" x2="340.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="340.0" y="380" font-size="12" fill="#666666" text-anchor="middle">50</text>
+<line x1="435.0" y1="142" x2="435.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="435.0" y="380" font-size="12" fill="#666666" text-anchor="middle">75</text>
+<line x1="530.0" y1="142" x2="530.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="530.0" y="380" font-size="12" fill="#666666" text-anchor="middle">100</text>
+<text x="340.0" y="402" font-size="12" fill="#666666" text-anchor="middle">MLUPS</text>
+<text x="24" y="180" font-size="13" fill="#191919">gfortran 14.2</text>
+<path d="M150,150 h240.7 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-240.7 z" fill="#8a8a8a"/>
+<text x="400.7" y="161" font-size="12" fill="#666666">64.4</text>
+<path d="M150,168 h237.3 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-237.3 z" fill="#257de0"/>
+<text x="397.3" y="179" font-size="12" fill="#191919"><tspan font-weight="600">63.5</tspan><tspan fill="#666666">  -1 %</tspan></text>
+<path d="M150,186 h242.2 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-242.2 z" fill="#f47230"/>
+<text x="402.2" y="197" font-size="12" fill="#191919"><tspan font-weight="600">64.8</tspan><tspan fill="#666666">  +1 %</tspan></text>
+<text x="24" y="256" font-size="13" fill="#191919">gfortran 15.2</text>
+<path d="M150,226 h234.3 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-234.3 z" fill="#8a8a8a"/>
+<text x="394.3" y="237" font-size="12" fill="#666666">62.7</text>
+<path d="M150,244 h220.6 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-220.6 z" fill="#257de0"/>
+<text x="380.6" y="255" font-size="12" fill="#191919"><tspan font-weight="600">59.1</tspan><tspan fill="#666666">  -6 %</tspan></text>
+<path d="M150,262 h234.3 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-234.3 z" fill="#f47230"/>
+<text x="394.3" y="273" font-size="12" fill="#191919"><tspan font-weight="600">62.7</tspan><tspan fill="#666666">  +0 %</tspan></text>
+<text x="24" y="332" font-size="13" fill="#191919">ifx 2026.2</text>
+<path d="M150,302 h240.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-240.0 z" fill="#8a8a8a"/>
+<text x="400.0" y="313" font-size="12" fill="#666666">64.2</text>
+<path d="M150,320 h283.7 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-283.7 z" fill="#257de0"/>
+<text x="443.7" y="331" font-size="12" fill="#191919"><tspan font-weight="600">75.7</tspan><tspan fill="#666666">  +18 %</tspan></text>
+<path d="M150,338 h263.5 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-263.5 z" fill="#f47230"/>
+<text x="423.5" y="349" font-size="12" fill="#191919"><tspan font-weight="600">70.4</tspan><tspan fill="#666666">  +10 %</tspan></text>
+<text x="700" y="128" font-size="14" font-weight="600" fill="#191919">Collision only (steps with diagnostics)</text>
+<line x1="700.0" y1="142" x2="700.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="700.0" y="380" font-size="12" fill="#666666" text-anchor="middle">0</text>
+<line x1="795.0" y1="142" x2="795.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="795.0" y="380" font-size="12" fill="#666666" text-anchor="middle">25</text>
+<line x1="890.0" y1="142" x2="890.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="890.0" y="380" font-size="12" fill="#666666" text-anchor="middle">50</text>
+<line x1="985.0" y1="142" x2="985.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="985.0" y="380" font-size="12" fill="#666666" text-anchor="middle">75</text>
+<line x1="1080.0" y1="142" x2="1080.0" y2="362" stroke="#e6e6e6" stroke-width="1"/>
+<text x="1080.0" y="380" font-size="12" fill="#666666" text-anchor="middle">100</text>
+<text x="890.0" y="402" font-size="12" fill="#666666" text-anchor="middle">MLUPS</text>
+<path d="M700,150 h299.2 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-299.2 z" fill="#8a8a8a"/>
+<text x="1009.2" y="161" font-size="12" fill="#666666">79.8</text>
+<path d="M700,168 h333.1 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-333.1 z" fill="#257de0"/>
+<text x="1043.1" y="179" font-size="12" fill="#191919"><tspan font-weight="600">88.7</tspan><tspan fill="#666666">  +11 %</tspan></text>
+<path d="M700,186 h326.6 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-326.6 z" fill="#f47230"/>
+<text x="1036.6" y="197" font-size="12" fill="#191919"><tspan font-weight="600">87.0</tspan><tspan fill="#666666">  +9 %</tspan></text>
+<path d="M700,226 h284.0 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-284.0 z" fill="#8a8a8a"/>
+<text x="994.0" y="237" font-size="12" fill="#666666">75.8</text>
+<path d="M700,244 h307.6 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-307.6 z" fill="#257de0"/>
+<text x="1017.6" y="255" font-size="12" fill="#191919"><tspan font-weight="600">82.0</tspan><tspan fill="#666666">  +8 %</tspan></text>
+<path d="M700,262 h319.8 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-319.8 z" fill="#f47230"/>
+<text x="1029.8" y="273" font-size="12" fill="#191919"><tspan font-weight="600">85.2</tspan><tspan fill="#666666">  +12 %</tspan></text>
+<path d="M700,302 h292.4 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-292.4 z" fill="#8a8a8a"/>
+<text x="1002.4" y="313" font-size="12" fill="#666666">78.0</text>
+<path d="M700,320 h355.1 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-355.1 z" fill="#257de0"/>
+<text x="1065.1" y="331" font-size="12" fill="#191919"><tspan font-weight="600">94.5</tspan><tspan fill="#666666">  +21 %</tspan></text>
+<path d="M700,338 h352.4 a4,4 0 0 1 4,4 v6 a4,4 0 0 1 -4,4 h-352.4 z" fill="#f47230"/>
+<text x="1062.4" y="349" font-size="12" fill="#191919"><tspan font-weight="600">93.8</tspan><tspan fill="#666666">  +20 %</tspan></text>
+</svg>
