@@ -28,7 +28,7 @@ MODULE Model_PRE2017_Mod
     USE Kinds_Mod, ONLY: wp
     USE Config_Mod, ONLY: nx, ny, inv_dx_level     ! the fixed block size, 1/dx per level
     USE D2Q9_Mod, ONLY: Wa, exr, eyr, w0, ws, wd
-    USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh
+    USE Physics_Mod, ONLY: W, wc, Gy, taul, tauh, Rhol, Rhoh, Beta, kappa
     USE Model_Mod, ONLY: LBM_Model
     USE Phase_Field_Mod, ONLY: Chemical_Potential_AMR, Gradient_AMR, Max_Gradient, Interface_Error, grad2_min
     IMPLICIT NONE
@@ -105,11 +105,7 @@ SUBROUTINE Collide_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
-
-    CALL Chemical_Potential_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), mu )
-    CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
-    CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
+    CALL Collision_h_g( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), Blk_P(:,:,n), &
                         Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Collide_Block
@@ -130,19 +126,13 @@ END SUBROUTINE Moments_g_Block
 
 !**********************************************************************
 
-!== moments of g and collision of one block with one chemical potential
-!   and gradient of C
+!== moments of g and collision of one block in one pass over its cells
 SUBROUTINE Moments_and_Collide_Block( n )
     USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy
     INTEGER, INTENT(IN) :: n
 
-    REAL(wp), DIMENSION(nx,ny) :: mu, DcDx, DcDy
-
-    CALL Chemical_Potential_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), mu )
-    CALL Gradient_AMR( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), DcDx, DcDy )
-    CALL Moments_g( Blk_g(:,:,:,n), Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), Blk_Ux(:,:,n), Blk_Uy(:,:,n) )
-    CALL Collision_h_g( Blk_C(:,:,n), mu, DcDx, DcDy, Blk_P(:,:,n), &
-                        Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
+    CALL Moments_Collision_h_g( inv_dx_level(Blk(n)%Level), Blk_C(:,:,n), Blk_P(:,:,n), &
+                                Blk_Ux(:,:,n), Blk_Uy(:,:,n), Blk_h(:,:,:,n), Blk_g(:,:,:,n) )
 
 END SUBROUTINE Moments_and_Collide_Block
 
@@ -197,30 +187,63 @@ END SUBROUTINE Initialize_Block
 
 !**********************************************************************
 
-!== collision of h and g for one block, cell by cell in a single pass. The
-!   directions come in opposite pairs (2,4), (3,5), (6,8), (7,9), e_k' = -e_k,
-!   sharing e.u, e.n and e.F (the odd parts change sign). Per cell:
-!   1) equilibria, h relaxation with the sharpening source, g - geq
-!   2) the stress of g - geq and the total force (as in Moments_g)
-!   3) reduced MRT of g with the forcing term gS = 3 w e.F/rho: the stress
-!      moments m8 = Pxx-Pyy, m9 = Pxy relax with s = 1/tau, all others with 1.
-!      gS is odd within a pair and m8, m9 are even, so the shift of geq by
-!      -gS/2 cancels in m8, m9 and they come from g - geq directly.
-SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
+!== Collision of h and g for one block, cell by cell in a single pass,
+!   generated in two forms:
+!
+!     Collision_h_g            P, Ux, Uy are input
+!     Moments_Collision_h_g    pressure and velocity are first computed from
+!                              g (as Moments_g, with the velocity of the
+!                              previous step in Ux, Uy) and stored
+!
+!   Everything a cell needs is computed in the loop body (as in
+!   Model_JCP2016_Mod; measurements in docs/benchmarks):
+!     - the gradient and the chemical potential of C, from its nine values
+!     - the moments of g (second form), the density and the relaxation time
+!     - the collision; no work array is passed between loops
+!
+!   h relaxes to C Gamma with rate wc and gets the sharpening source.
+!   g is collided with the MRT operator of the paper: the two stress moments
+!   m8 (xx - yy) and m9 (xy) relax with s = 1/tau, every other moment is set
+!   to its equilibrium; the forcing gS = 3 w (e.F)/rho enters as
+!   geq - gS/2 + gS.
+!
+!   Symmetries used:
+!     - Opposite directions (2,4), (3,5), (6,8), (7,9) are treated as pairs.
+!       The equilibrium weight Gamma of a pair is a common part Gs plus or
+!       minus a part Ga that is odd in the velocity; the source of h and
+!       the forcing of g are odd as well.
+!     - The stress of g - geq and the moments m8, m9 contain each pair only
+!       as the sum of its two members, where the odd parts cancel. They are
+!       taken from the pair sums of g (s24, s35, s68, s79) minus twice the
+!       common part of the equilibrium, so the equilibrium of a single
+!       direction is never formed and every g is stored as soon as it is
+!       computed.
+#:for NAME, MOMENTS in [ ( 'Collision_h_g', False ), ( 'Moments_Collision_h_g', True ) ]
+SUBROUTINE ${NAME}$( inv_dx, C, P, Ux, Uy, h, g )
+    REAL(wp), INTENT(IN)    :: inv_dx      ! 1/dx in finest-level lattice units
     REAL(wp), INTENT(IN)    :: C(-1:nx+2,-1:ny+2)
-    REAL(wp), INTENT(IN), DIMENSION(nx,ny) :: mu, DcDx, DcDy    ! chemical potential, grad C
-    REAL(wp), INTENT(IN)    :: P (nx,ny), Ux(nx,ny), Uy(nx,ny)
+#:if MOMENTS
+    REAL(wp), INTENT(OUT)   :: P(nx,ny)
+    REAL(wp), INTENT(INOUT) :: Ux(nx,ny), Uy(nx,ny)
+#:else
+    REAL(wp), INTENT(IN)    :: P(nx,ny), Ux(nx,ny), Uy(nx,ny)
+#:endif
     REAL(wp), INTENT(INOUT) :: h(0:nx+1,0:ny+1,9), g(0:nx+1,0:ny+1,9)
 
     INTEGER :: i, j
     !== per block
-    REAL(wp) :: c4W, dRho, dRho3, RT0, dRT, omwc, cHs
+    REAL(wp) :: c1, c2, c4B, cK, c4W, dRho, dRho3, RT0, dRT, omwc, cHs, ws2, wd2, ws3, wd3
     !== per cell
-    REAL(wp) :: C0, mu0, dcx, dcy, g2, rn, ni, nj, vx, vy, base0, Rho, r3, pw, wcC, aCc
-    REAL(wp) :: Cc, tau, s, sm, sxx, syy, sxy, txx, tyy, txy, vis, prs, Fx, Fy, m8, m9
-    REAL(wp) :: v, q, base, Gp, Gm, hS, gS2, gS3, gS6, gS7
-    REAL(wp) :: ge2, ge3, ge4, ge5, ge6, ge7, ge8, ge9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9
+    REAL(wp) :: C0, dpp, dpm, dcx, dcy, mu0, Rho, rRho, Cc, tau, s, vis
+    REAL(wp) :: s24, s35, s68, s79, S0, Sx, Sy, vx, vy, vxx, vyy, base0, pb, pw
+    REAL(wp) :: d24, d35, d68, d79, sxx, syy, sxy, txx, tyy, txy, prs, Fx, Fy
+    REAL(wp) :: g2, rn, ni, nj, wcC, aH, sm, m8, m9, hF, gS2, gS3, gS6, gS7
+    REAL(wp) :: v, Gs, Ga, Gp, Gm, hS, gw
 
+    c1    = inv_dx/3._wp                ! gradient: straight and diagonal neighbours
+    c2    = inv_dx/12._wp
+    c4B   = 4._wp*Beta                  ! chemical potential: bulk part and
+    cK    = kappa*inv_dx*inv_dx/6._wp   ! kappa/dx**2 with the 1/6 of the Laplacian
     c4W   = 4._wp/W                     ! sharpening: 4 C (1-C)/W
     dRho  = Rhoh - Rhol
     dRho3 = dRho*c13
@@ -228,17 +251,108 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
     dRT   = Rhoh*tauh - Rhol*taul
     omwc  = 1._wp - wc
     cHs   = 1._wp - 0.5_wp*wc           ! the source enters h with (1 - wc/2)
+    ws2   = 2._wp*ws
+    wd2   = 2._wp*wd
+    ws3   = 3._wp*ws
+    wd3   = 3._wp*wd
 
     DO j = 1, ny
-!$OMP SIMD PRIVATE( C0, mu0, dcx, dcy, g2, rn, ni, nj, vx, vy, base0, Rho, r3, pw, wcC, aCc, &
-!$OMP   Cc, tau, s, sm, sxx, syy, sxy, txx, tyy, txy, vis, prs, Fx, Fy, m8, m9, &
-!$OMP   v, q, base, Gp, Gm, hS, gS2, gS3, gS6, gS7, &
-!$OMP   ge2, ge3, ge4, ge5, ge6, ge7, ge8, ge9, dg2, dg3, dg4, dg5, dg6, dg7, dg8, dg9 )
     DO i = 1, nx
-        C0  = C(i,j)
-        mu0 = mu(i,j)
-        dcx = DcDx(i,j)
-        dcy = DcDy(i,j)
+        C0 = C(i,j)
+
+        !== isotropic gradient of C (as Gradient_AMR) and chemical potential
+        !   mu = 4 beta C (C-1) (C-1/2) - kappa Laplacian(C) (as Chemical_Potential_AMR)
+        dpp = C(i+1,j+1) - C(i-1,j-1)
+        dpm = C(i+1,j-1) - C(i-1,j+1)
+        dcx = c1*( C(i+1,j) - C(i-1,j) ) + c2*( dpp + dpm )
+        dcy = c1*( C(i,j+1) - C(i,j-1) ) + c2*( dpp - dpm )
+        mu0 = c4B*C0*(C0-1._wp)*(C0-0.5_wp) - cK*( ( C(i-1,j-1) + C(i+1,j-1) + C(i-1,j+1) + C(i+1,j+1) ) &
+            + 4._wp*( C(i,j-1) + C(i-1,j) + C(i+1,j) + C(i,j+1) ) - 20._wp*C0 )
+
+        !== density; relaxation time (with the 1/2) from the dynamic viscosity
+        !   interpolated linearly in C (clamped to [0,1]), Eqs. (24)-(25)
+        Rho  = Rhol + C0*dRho
+        Cc   = MIN( MAX( C0, 0._wp ), 1._wp )
+        rRho = 1._wp/Rho
+        tau  = ( RT0 + Cc*dRT ) / ( Rhol + Cc*dRho ) + 0.5_wp
+        s    = 1._wp/tau
+        vis  = (tau - 0.5_wp)*dRho
+
+        !== sums of g over the pairs of opposite directions
+        s24 = g(i,j,2) + g(i,j,4)
+        s35 = g(i,j,3) + g(i,j,5)
+        s68 = g(i,j,6) + g(i,j,8)
+        s79 = g(i,j,7) + g(i,j,9)
+
+#:if MOMENTS
+        !== normalised pressure sum(g) and sum(g e); the force from the stress
+        !   of g - geq with the velocity of the previous step (as Moments_g)
+        S0 = g(i,j,1) + ( (s24 + s35) + (s68 + s79) )
+        Sx = ( g(i,j,2) - g(i,j,4) ) + ( (g(i,j,6) - g(i,j,7)) + (g(i,j,9) - g(i,j,8)) )
+        Sy = ( g(i,j,3) - g(i,j,5) ) + ( (g(i,j,6) + g(i,j,7)) - (g(i,j,8) + g(i,j,9)) )
+        vx  = Ux(i,j)
+        vy  = Uy(i,j)
+        pb  = S0 - 1.5_wp*( vx*vx + vy*vy )                 ! pw + base0
+        d24 = s24 - ws2*( pb + 4.5_wp*vx*vx )
+        d35 = s35 - ws2*( pb + 4.5_wp*vy*vy )
+        d68 = s68 - wd2*( pb + 4.5_wp*(vx + vy)**2 )
+        d79 = s79 - wd2*( pb + 4.5_wp*(vy - vx)**2 )
+        sxx = d24 + ( d68 + d79 )
+        syy = d35 + ( d68 + d79 )
+        sxy = d68 - d79
+        txx = 0.5_wp*( sxx + syy + s*(sxx - syy) )
+        tyy = 0.5_wp*( sxx + syy - s*(sxx - syy) )
+        txy = s*sxy
+        prs = mu0 - S0*dRho3
+        Fx  = prs*dcx - vis*( txx*dcx + txy*dcy )
+        Fy  = prs*dcy - vis*( txy*dcx + tyy*dcy ) + (Rhoh - Rho)*Gy
+
+        !== velocity u = sum g e + F/(2 rho), pressure p = Pn rho/3
+        vx = Sx + 0.5_wp*Fx*rRho
+        vy = Sy + 0.5_wp*Fy*rRho
+        Ux(i,j) = vx
+        Uy(i,j) = vy
+        P (i,j) = S0*Rho*c13
+        pw = S0 - 1._wp                     ! geq_k = w_k (Pn - 1) + Gamma_k
+#:else
+        !== pressure and velocity from the existing fields
+        vx = Ux(i,j)
+        vy = Uy(i,j)
+        pw = 3._wp*P(i,j)*rRho - 1._wp      ! geq_k = w_k (Pn - 1) + Gamma_k
+#:endif
+
+        !== stress of g - geq from the pair sums; viscous force with the
+        !   MRT-relaxed stress (deviatoric part with s, trace with 1), pressure,
+        !   surface tension, buoyancy
+        vxx   = vx*vx
+        vyy   = vy*vy
+        base0 = 1._wp - 1.5_wp*( vxx + vyy )
+        pb    = pw + base0
+        d24 = s24 - ws2*( pb + 4.5_wp*vxx )
+        d35 = s35 - ws2*( pb + 4.5_wp*vyy )
+        d68 = s68 - wd2*( pb + 4.5_wp*(vx + vy)**2 )
+        d79 = s79 - wd2*( pb + 4.5_wp*(vy - vx)**2 )
+        sxx = d24 + ( d68 + d79 )
+        syy = d35 + ( d68 + d79 )
+        sxy = d68 - d79
+        txx = 0.5_wp*( sxx + syy + s*(sxx - syy) )
+        tyy = 0.5_wp*( sxx + syy - s*(sxx - syy) )
+        txy = s*sxy
+        prs = mu0 - (pw + 1._wp)*dRho3
+        Fx  = prs*dcx - vis*( txx*dcx + txy*dcy )
+        Fy  = prs*dcy - vis*( txy*dcx + tyy*dcy ) + (Rhoh - Rho)*Gy
+
+        !== forcing term gS = 3 w (e.F)/rho, entering as geq - gS/2 + gS
+        hF  = 1.5_wp*rRho
+        gS2 = ws*hF*Fx
+        gS3 = ws*hF*Fy
+        gS6 = wd*hF*( Fx + Fy )
+        gS7 = wd*hF*( Fy - Fx )
+
+        !== the stress moments relax with s, all others with 1
+        sm = 0.25_wp*( 1._wp - s )
+        m8 = ( d24 - d35 )*sm
+        m9 = ( d68 - d79 )*sm
 
         !== unit normal; zero away from the interface (|grad C|**2 <= grad2_min),
         !   branch-free (a mask over a clamped root) so that the loop vectorizes
@@ -246,20 +360,8 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
         rn = MERGE( 1._wp, 0._wp, g2 > grad2_min ) / SQRT( MAX( g2, grad2_min ) )
         ni = dcx*rn
         nj = dcy*rn
-
-        !== per-cell quantities; relaxation time (with the 1/2) from the dynamic
-        !   viscosity interpolated linearly in C (see Moments_g)
-        vx    = Ux(i,j)
-        vy    = Uy(i,j)
-        base0 = 1._wp - 1.5_wp*( vx*vx + vy*vy )
-        Rho   = Rhol + C0*dRho
-        r3    = 3._wp/Rho
-        pw    = P(i,j)*r3 - 1._wp           ! geq_k = w_k (Pn - 1) + Gamma_k
-        wcC   = wc*C0
-        aCc   = c4W*C0*(1._wp - C0)
-        Cc    = MIN( MAX( C0, 0._wp ), 1._wp )
-        tau   = ( RT0 + Cc*dRT ) / ( Rhol + Cc*dRho ) + 0.5_wp
-        s     = 1._wp/tau
+        wcC = wc*C0
+        aH  = c4W*C0*(1._wp - C0)*cHs       ! sharpening source of h, per unit w e.n
 
         !== rest direction: no source, no stress, no forcing
         Gp = w0*base0
@@ -267,95 +369,62 @@ SUBROUTINE Collision_h_g( C, mu, DcDx, DcDy, P, Ux, Uy, h, g )
         g(i,j,1) = w0*pw + Gp
 
         !== pair (2,4): e = (+-1, 0)
-        v = vx;  q = ni
-        base = base0 + 4.5_wp*v*v
-        Gp = ws*( base + 3._wp*v )
-        Gm = ws*( base - 3._wp*v )
-        hS = ws*aCc*q*cHs
+        Gs = ws*( base0 + 4.5_wp*vxx )
+        Ga = ws3*vx
+        Gp = Gs + Ga
+        Gm = Gs - Ga
+        hS = ws*aH*ni
         h(i,j,2) = omwc*h(i,j,2) + wcC*Gp + hS
         h(i,j,4) = omwc*h(i,j,4) + wcC*Gm - hS
-        ge2 = ws*pw + Gp
-        ge4 = ws*pw + Gm
-        dg2 = g(i,j,2) - ge2
-        dg4 = g(i,j,4) - ge4
+        gw = ws*pw + m8
+        g(i,j,2) = gw + Gp + gS2
+        g(i,j,4) = gw + Gm - gS2
 
         !== pair (3,5): e = (0, +-1)
-        v = vy;  q = nj
-        base = base0 + 4.5_wp*v*v
-        Gp = ws*( base + 3._wp*v )
-        Gm = ws*( base - 3._wp*v )
-        hS = ws*aCc*q*cHs
+        Gs = ws*( base0 + 4.5_wp*vyy )
+        Ga = ws3*vy
+        Gp = Gs + Ga
+        Gm = Gs - Ga
+        hS = ws*aH*nj
         h(i,j,3) = omwc*h(i,j,3) + wcC*Gp + hS
         h(i,j,5) = omwc*h(i,j,5) + wcC*Gm - hS
-        ge3 = ws*pw + Gp
-        ge5 = ws*pw + Gm
-        dg3 = g(i,j,3) - ge3
-        dg5 = g(i,j,5) - ge5
+        gw = ws*pw - m8
+        g(i,j,3) = gw + Gp + gS3
+        g(i,j,5) = gw + Gm - gS3
 
         !== pair (6,8): e = +-(1, 1)
-        v = vx + vy;  q = ni + nj
-        base = base0 + 4.5_wp*v*v
-        Gp = wd*( base + 3._wp*v )
-        Gm = wd*( base - 3._wp*v )
-        hS = wd*aCc*q*cHs
+        v  = vx + vy
+        Gs = wd*( base0 + 4.5_wp*v*v )
+        Ga = wd3*v
+        Gp = Gs + Ga
+        Gm = Gs - Ga
+        hS = wd*aH*( ni + nj )
         h(i,j,6) = omwc*h(i,j,6) + wcC*Gp + hS
         h(i,j,8) = omwc*h(i,j,8) + wcC*Gm - hS
-        ge6 = wd*pw + Gp
-        ge8 = wd*pw + Gm
-        dg6 = g(i,j,6) - ge6
-        dg8 = g(i,j,8) - ge8
+        gw = wd*pw + m9
+        g(i,j,6) = gw + Gp + gS6
+        g(i,j,8) = gw + Gm - gS6
 
         !== pair (7,9): e = +-(-1, 1)
-        v = vy - vx;  q = nj - ni
-        base = base0 + 4.5_wp*v*v
-        Gp = wd*( base + 3._wp*v )
-        Gm = wd*( base - 3._wp*v )
-        hS = wd*aCc*q*cHs
+        v  = vy - vx
+        Gs = wd*( base0 + 4.5_wp*v*v )
+        Ga = wd3*v
+        Gp = Gs + Ga
+        Gm = Gs - Ga
+        hS = wd*aH*( nj - ni )
         h(i,j,7) = omwc*h(i,j,7) + wcC*Gp + hS
         h(i,j,9) = omwc*h(i,j,9) + wcC*Gm - hS
-        ge7 = wd*pw + Gp
-        ge9 = wd*pw + Gm
-        dg7 = g(i,j,7) - ge7
-        dg9 = g(i,j,9) - ge9
-
-        !== stress of g - geq; viscous force with the MRT-relaxed stress
-        !   (deviatoric part with s, trace with 1), pressure, surface tension, buoyancy
-        sxx = ( dg2 + dg4 ) + ( (dg6 + dg8) + (dg7 + dg9) )
-        syy = ( dg3 + dg5 ) + ( (dg6 + dg8) + (dg7 + dg9) )
-        sxy = ( dg6 + dg8 ) - ( dg7 + dg9 )
-        txx = 0.5_wp*( sxx + syy + s*(sxx - syy) )
-        tyy = 0.5_wp*( sxx + syy - s*(sxx - syy) )
-        txy = s*sxy
-        vis = (tau - 0.5_wp)*dRho
-        prs = mu0 - (pw + 1._wp)*dRho3
-        Fx  = prs*dcx - vis*( txx*dcx + txy*dcy )
-        Fy  = prs*dcy - vis*( txy*dcx + tyy*dcy ) + (Rhoh - Rho)*Gy
-
-        !== forcing term gS = 3 w (e.F)/rho, entering as geq - gS/2 + gS
-        gS2 = 0.5_wp*ws*r3*Fx
-        gS3 = 0.5_wp*ws*r3*Fy
-        gS6 = 0.5_wp*wd*r3*( Fx + Fy )
-        gS7 = 0.5_wp*wd*r3*( Fy - Fx )
-
-        !== reduced MRT: the stress moments relax with s, all others with 1
-        sm = 0.25_wp*( 1._wp - s )
-        m8 = ( (dg2 + dg4) - (dg3 + dg5) )*sm
-        m9 = ( (dg6 + dg8) - (dg7 + dg9) )*sm
-        g(i,j,2) = ge2 + gS2 + m8
-        g(i,j,4) = ge4 - gS2 + m8
-        g(i,j,3) = ge3 + gS3 - m8
-        g(i,j,5) = ge5 - gS3 - m8
-        g(i,j,6) = ge6 + gS6 + m9
-        g(i,j,8) = ge8 - gS6 + m9
-        g(i,j,7) = ge7 + gS7 - m9
-        g(i,j,9) = ge9 - gS7 - m9
+        gw = wd*pw - m9
+        g(i,j,7) = gw + Gp + gS7
+        g(i,j,9) = gw + Gm - gS7
     END DO
     END DO
 
-END SUBROUTINE Collision_h_g
+END SUBROUTINE ${NAME}$
 
 !**********************************************************************
 
+#:endfor
 !== normalised pressure and velocity from g, cell by cell in one pass. The
 !   force (as in Collision_h_g) needs the stress of g - geq, with geq from the
 !   new pressure and the velocity of the previous step (in Ux, Uy). Only the
@@ -388,8 +457,6 @@ SUBROUTINE Moments_g( g, C, mu, DcDx, DcDy, P, Ux, Uy )
     dRT   = Rhoh*tauh - Rhol*taul
 
     DO j = 1, ny
-!$OMP SIMD PRIVATE( S0, Sx, Sy, vx, vy, base0, pb, dx2, dy2, dd6, dd7, sxx, syy, sxy, &
-!$OMP   C0, Rho, Cc, tau, s, txx, tyy, txy, vis, prs, Fx, Fy, hR )
     DO i = 1, nx
         !== zeroth and first moments: Pn = sum g, sum g e
         S0 = g(i,j,1) + ( (g(i,j,2) + g(i,j,3)) + (g(i,j,4) + g(i,j,5)) ) &

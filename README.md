@@ -177,7 +177,7 @@ PRE 2017 row of the table above is from the light-phase criterion. Set it to
 | `Solver_Mod.f90` | the solver: initialization and time loop for any model and case, progress and timers |
 | `Case_Mod.f90`, `Rising_Bubble_Mod.f90`, `Rayleigh_Taylor_Mod.f90`, `Parker_Cases_Mod.f90` | a test case as a set of procedures (setup, initial state, diagnostics, finish); the rising bubble, the Rayleigh–Taylor instability, droplets and spinodal decomposition of the two-species model |
 | `Model_Mod.f90` | an LBM model as a set of block kernels (initialize, collide, moments of g) and its refinement criterion |
-| `Model_JCP2016_Mod.fypp`, `Model_PRE2017_Mod.f90`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
+| `Model_JCP2016_Mod.fypp`, `Model_PRE2017_Mod.fypp`, `Model_Parker2009_Mod.f90` | the models' kernels and criteria |
 | `LBM_Common_Mod.f90`, `Phase_Field_Mod.f90` | kernels shared by the models: streaming and C = sum(h); finite differences of C (chemical potential, gradient, largest gradient) |
 | `Kinds_Mod.fypp`, `Config_Mod.fypp`, `D2Q9_Mod.f90`, `Physics_Mod.f90` | kinds, compile-time block size and domain, lattice, physical parameters (set by the case) |
 | `Blocks_Mod.f90`, `Mesh_Mod.f90` | block storage: integer metadata `Blk(:)` and one pool array per field (`Blk_h(:,:,:,n)`, `Blk_C(:,:,n)`, ...), leaf lists, free-slot queue; the domain and child blocks, the neighbour table (rebuilt from the block positions after every mesh change) |

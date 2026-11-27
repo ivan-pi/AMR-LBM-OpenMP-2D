@@ -34,10 +34,21 @@ thread and 1.22-1.32 times on four; results are equal to round-off.
 | ifx 2026.2, 16x16 | 1 | 22.1 | 30.5 | 1.38 |
 | | 4 | 68.3 | 83.7 | 1.23 |
 
+![Time per cell update before and after, by stage](2026-11-26-whole-run.svg)
+
+The figure shows the runs of the table as wall time per leaf-cell update,
+split by stage.
+
 A full run to t* = 8 (36000 steps, gfortran 14.2, 1 thread) took 88.6 s before
 and 64.6 s after. Over that run the leaves on the finest level grow from 192
 to 328 and the speed in MLUPS falls by about 5 %; the speed-up is 1.37 early
 and 1.29 late.
+
+![Leaf blocks per level, share of coarse/fine neighbours and MLUPS over a full run](2026-11-26-mesh-and-speed-drift.svg)
+
+The figure shows that full run over time: leaf blocks per level, the share
+of neighbour directions that need an interpolation, and MLUPS before and
+after the change.
 
 ## By stage
 
