@@ -137,7 +137,7 @@ function(amr_fypp out_var)
 endfunction()
 
 amr_fypp(AMR_FYPP_SOURCES
-  Kinds_Mod Config_Mod Model_JCP2016_Mod Ghost_C_Mod Ghost_hg_Mod VTK_Output_Mod Output_Mod)
+  Kinds_Mod Config_Mod Model_JCP2016_Mod Model_PRE2017_Mod Ghost_C_Mod Ghost_hg_Mod VTK_Output_Mod Output_Mod)
 
 # ---------------------------------------------------------------------------
 # Solver: one module per file in src/, file name = module name (.f90, or
@@ -156,7 +156,6 @@ add_library(amr_core OBJECT
   src/BC_Mod.f90
   src/LBM_Common_Mod.f90
   src/Phase_Field_Mod.f90
-  src/Model_PRE2017_Mod.f90
   src/Model_Parker2009_Mod.f90
   src/Mesh_Mod.f90
   src/Prolong_Restrict_Mod.f90
