@@ -46,9 +46,9 @@ and 1.29 late.
 
 ![Leaf blocks per level, share of coarse/fine neighbours and MLUPS over a full run](2026-11-26-mesh-and-speed-drift.svg)
 
-The figure shows the full run after the change: leaf blocks per level, the
-share of neighbour directions that need an interpolation, and MLUPS, each
-over time.
+The figure shows that full run over time: leaf blocks per level, the share
+of neighbour directions that need an interpolation, and MLUPS before and
+after the change.
 
 ## By stage
 
