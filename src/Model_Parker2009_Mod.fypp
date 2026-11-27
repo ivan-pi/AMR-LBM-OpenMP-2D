@@ -100,21 +100,6 @@ END SUBROUTINE Block_Ln_Gamma
 
 !**********************************************************************
 
-!== isotropic gradient of a field with one ghost layer, finest-level units
-PURE SUBROUTINE Gradient( inv_dx, q, i, j, qx, qy )
-    REAL(wp), INTENT(IN)  :: inv_dx, q(0:nx+1,0:ny+1)
-    INTEGER,  INTENT(IN)  :: i, j
-    REAL(wp), INTENT(OUT) :: qx, qy
-
-    qx = inv_dx*( g1*( q(i+1,j) - q(i-1,j) ) &
-                + g2*( q(i+1,j+1) + q(i+1,j-1) - q(i-1,j+1) - q(i-1,j-1) ) )
-    qy = inv_dx*( g1*( q(i,j+1) - q(i,j-1) ) &
-                + g2*( q(i+1,j+1) + q(i-1,j+1) - q(i+1,j-1) - q(i-1,j-1) ) )
-
-END SUBROUTINE Gradient
-
-!**********************************************************************
-
 !== refinement criterion: the largest |grad ln gamma_i| of block b (finest-level
 !   units). It is zero in the bulk phases and largest in the interfaces (at
 !   equilibrium it equals |grad ln x_i|); grad mu_i = grad ln a_i is not used,
@@ -135,12 +120,29 @@ FUNCTION Activity_Error( b ) RESULT( err )
     DO j = 1, ny
 !$OMP SIMD PRIVATE( ax, ay, bx, by ) REDUCTION( MAX: err )
     DO i = 1, nx
-        CALL Gradient( inv_dx, lg1, i, j, ax, ay )
-        CALL Gradient( inv_dx, lg2, i, j, bx, by )
+        CALL Gradient( lg1, i, j, ax, ay )
+        CALL Gradient( lg2, i, j, bx, by )
         err = MAX( err, ax*ax + ay*ay, bx*bx + by*by )
     END DO
     END DO
     err = SQRT( err )
+
+CONTAINS
+
+    !== isotropic gradient of q at cell (i,j), finest-level units. The cell
+    !   is an argument: inside the SIMD loop the loop index is private, and
+    !   the host's i is not the index of the iteration.
+    PURE SUBROUTINE Gradient( q, i, j, qx, qy )
+        REAL(wp), INTENT(IN)  :: q(0:nx+1,0:ny+1)
+        INTEGER,  INTENT(IN)  :: i, j
+        REAL(wp), INTENT(OUT) :: qx, qy
+
+        qx = inv_dx*( g1*( q(i+1,j) - q(i-1,j) ) &
+                    + g2*( q(i+1,j+1) + q(i+1,j-1) - q(i-1,j+1) - q(i-1,j-1) ) )
+        qy = inv_dx*( g1*( q(i,j+1) - q(i,j-1) ) &
+                    + g2*( q(i+1,j+1) + q(i-1,j+1) - q(i+1,j-1) - q(i-1,j-1) ) )
+
+    END SUBROUTINE Gradient
 
 END FUNCTION Activity_Error
 
