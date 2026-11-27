@@ -110,6 +110,14 @@ plus terms of third and fourth order.
   3-point run. The late flow differs: at t* = 8 the rise velocity is 0.0177
   against 0.0141 and the largest velocity 0.060 against 0.029. Which of the
   two is closer to the uniform-grid solution was not examined.
+* Order and stability (`tools/check_lax_wendroff.py`, SymPy and NumPy): both
+  schemes reproduce `f - dt (e.grad f) + dt^2/2 (e.grad)^2 f` exactly through
+  second order, cross term included. They differ in the error at third order:
+  the 3-point scheme has the full third derivative along the diagonal, the
+  tensor product only `f_xxx + f_yyy`. Both have an amplification factor of 1
+  at most for every CFL number up to 1. The textbook 2-D Lax-Wendroff stencil
+  (4-point cross derivative) differs from the tensor product at third order
+  and is unstable at the CFL number 0.5 of the level below the finest.
 * Known approximation: at a wall, the corner ghost cell of a block takes the
   bounce-back value from the end column instead of the neighbour's column
   (the clamp of `Bounce_Back_3/4`). The 3-point scheme never reads that

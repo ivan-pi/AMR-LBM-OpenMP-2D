@@ -100,6 +100,8 @@ END SUBROUTINE Streaming_LaxWendroff_AMR
 !   fourth order. The axis directions (2:5) are those of the 3-point scheme.
 !   It reads all four diagonal directions in the ghost corners (Ghost_hg_Mod)
 !   and costs about the same as the 3-point scheme.
+!   tools/check_lax_wendroff.py checks the order and the stability of both
+!   schemes (Taylor and von Neumann analysis).
 SUBROUTINE Streaming_LaxWendroff9Pt_AMR( cfl, f )
     IMPLICIT NONE
     REAL(wp), INTENT(IN)    :: cfl
