@@ -7,9 +7,10 @@ PROGRAM Rising_Bubble_AMR_2D_PRE2017
     USE Solver_Mod, ONLY: Run_AMR_LBM, Read_Command_Line
     USE Rising_Bubble_Mod, ONLY: Rising_Bubble_Case
     USE Model_PRE2017_Mod, ONLY: PRE2017_Model
+    USE Kinds_Mod, ONLY: i64
     IMPLICIT NONE
 
-    INTEGER(8) :: t1, t2, Rate
+    INTEGER(i64) :: t1, t2, Rate
 
     CALL Read_Command_Line( 'rising bubble, model of Fakhari et al. (PRE 2017)' )
 

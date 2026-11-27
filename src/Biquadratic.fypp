@@ -1,16 +1,24 @@
-!================================================
-!   Template: biquadratic interpolation of a strip of nk components (stored
-!   last) from a fine to a coarse level and from a coarse to a fine level.
-!   The including module sets the two routine names and the sizes, either
-!   as dummy arguments (any strip) or as PARAMETERs (one fixed strip shape,
-!   which lets the compiler unroll the short loops); see Interpolations_Mod
-!   and Ghost_hg_Mod. Input i2 x j2 values per component, output x2 x y2.
-!   The macros are undefined at the end, ready for the next instantiation.
-!================================================
-
-SUBROUTINE FINE_NAME( SIZE_ARGS fin_F, fout_C )
+#!================================================
+#!   Fypp macros: biquadratic interpolation of a strip of nk components (stored
+#!   last) from a fine to a coarse level (BIQUADRATIC_FROM_FINE) and from a
+#!   coarse to a fine level (BIQUADRATIC_FROM_COARSE).
+#!
+#!     name      name of the generated subroutine
+#!     i2, j2    size of the input strip, per component
+#!     x2, y2    size of the output strip
+#!     nk        number of components
+#!
+#!   The sizes become named constants of the routine, so the strip shape is
+#!   fixed at compile time and the compiler unrolls the short loops. Used by
+#!   Ghost_hg_Mod and Ghost_C_Mod:
+#!
+#!     #:include "Biquadratic.fypp"
+#!     @:BIQUADRATIC_FROM_FINE( From_Fine_LR, i2 = 3, j2 = 2*ny, x2 = 1, y2 = ny, nk = 8 )
+#!================================================
+#:def BIQUADRATIC_FROM_FINE( name, i2, j2, x2, y2, nk )
+SUBROUTINE ${name}$( fin_F, fout_C )
     IMPLICIT NONE
-    FINE_SIZES
+    INTEGER, PARAMETER :: i2 = ${i2}$, j2 = ${j2}$, x2 = ${x2}$, y2 = ${y2}$, nk = ${nk}$
     REAL(wp), INTENT(IN ) :: fin_F (i2,j2,nk)
     REAL(wp), INTENT(OUT) :: fout_C(x2,y2,nk)
 
@@ -42,13 +50,13 @@ SUBROUTINE FINE_NAME( SIZE_ARGS fin_F, fout_C )
 
     END DO
 
-END SUBROUTINE FINE_NAME
+END SUBROUTINE ${name}$
+#:enddef BIQUADRATIC_FROM_FINE
 
-!******************************************************************************
-
-SUBROUTINE COARSE_NAME( SIZE_ARGS fin_C, fout_F )
+#:def BIQUADRATIC_FROM_COARSE( name, i2, j2, x2, y2, nk )
+SUBROUTINE ${name}$( fin_C, fout_F )
     IMPLICIT NONE
-    COARSE_SIZES
+    INTEGER, PARAMETER :: i2 = ${i2}$, j2 = ${j2}$, x2 = ${x2}$, y2 = ${y2}$, nk = ${nk}$
     REAL(wp), INTENT(IN ) :: fin_C (i2,j2,nk)
     REAL(wp), INTENT(OUT) :: fout_F(x2,y2,nk)
 
@@ -78,10 +86,5 @@ SUBROUTINE COARSE_NAME( SIZE_ARGS fin_C, fout_F )
 
     END DO
 
-END SUBROUTINE COARSE_NAME
-
-#undef FINE_NAME
-#undef COARSE_NAME
-#undef SIZE_ARGS
-#undef FINE_SIZES
-#undef COARSE_SIZES
+END SUBROUTINE ${name}$
+#:enddef BIQUADRATIC_FROM_COARSE

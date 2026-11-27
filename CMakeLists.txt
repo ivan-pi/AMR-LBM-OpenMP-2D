@@ -9,6 +9,7 @@ project(AMR_LBM_2D
 #
 #   cmake -B build                                   # defaults (Release, double)
 #   cmake -B build -DCMAKE_Fortran_COMPILER=ifx      # Intel ifx
+#   cmake -B build -DCMAKE_Fortran_COMPILER=nagfor   # NAG Fortran
 #   cmake -B build -DAMR_PRECISION=4                 # single precision
 #   cmake -B build -DAMR_L0=1024 -DAMR_MIN_LEVEL=5   # bigger case
 #   cmake -B build -DAMR_BLOCK_SIZE=16               # 16x16-cell blocks
@@ -24,6 +25,7 @@ set(AMR_L0 256 CACHE STRING "Domain width in finest-level lattice units (domain 
 set(AMR_DOMAIN_HEIGHT 3 CACHE STRING "Domain height in base blocks of L0 x L0 (rising bubble: 3, Rayleigh-Taylor: 4)")
 set(AMR_MIN_LEVEL 1 CACHE STRING "Minimum refinement level (uniform background refinement)")
 set(AMR_BLOCK_SIZE 8 CACHE STRING "Cells per block in each direction (power of two dividing AMR_L0)")
+option(AMR_PERIODIC_Y "Periodic in y as well (default: walls at the bottom and top)" OFF)
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
@@ -78,6 +80,10 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang")
   set(AMR_FLAGS_RELEASE -O3)
   set(AMR_FLAGS_DEBUG   -O0 -g)
   set(AMR_FLAG_NATIVE   -march=native)
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NAG")
+  set(AMR_FLAGS_RELEASE -O4)
+  set(AMR_FLAGS_DEBUG   -O0 -g -gline -C=all)
+  set(AMR_FLAG_NATIVE   -target=native)
 endif()
 
 # GCC and flang on Arm (Apple Silicon, Graviton, ...) take -mcpu=native, which sets
@@ -105,23 +111,74 @@ if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID MATCHES "^(GNU|LLVMFlang)$")
   endif()
 endif()
 
+# OpenMP. For NAG, FindOpenMP's imported target lists nagfor's thread-safe
+# runtime objects but omits -openmp at link time, so nagfor also links its
+# serial runtime and the link fails with duplicate symbols; let the nagfor
+# driver add the OpenMP runtime itself.
+add_library(amr_openmp INTERFACE)
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "NAG")
+  target_compile_options(amr_openmp INTERFACE ${OpenMP_Fortran_FLAGS})
+  target_link_options(amr_openmp INTERFACE ${OpenMP_Fortran_FLAGS})
+else()
+  target_link_libraries(amr_openmp INTERFACE OpenMP::OpenMP_Fortran)
+endif()
+
 add_library(amr_options INTERFACE)
-target_compile_definitions(amr_options INTERFACE
-  AMR_BLOCK_SIZE=${AMR_BLOCK_SIZE}
-  $<$<STREQUAL:${AMR_PRECISION},4>:WP_SINGLE>)
 target_compile_options(amr_options INTERFACE
   $<$<CONFIG:Release,RelWithDebInfo>:${AMR_FLAGS_RELEASE}>
   $<$<CONFIG:Debug>:${AMR_FLAGS_DEBUG}>
   $<$<AND:$<BOOL:${AMR_NATIVE}>,$<NOT:$<CONFIG:Debug>>>:${AMR_FLAG_NATIVE}>)
 
 # ---------------------------------------------------------------------------
-# Solver: one module per file in src/, file name = module name.
+# Fypp (https://fypp.readthedocs.io, "pip install fypp"): the sources src/*.fypp
+# are turned into plain Fortran in the build tree. Fypp carries the
+# configuration (block size, domain, precision, optional fVTKHDF and viewer) and
+# generates the kernels that exist in several forms (strip shapes, numbers of
+# ghost layers, direction lists). No source goes through the C preprocessor.
+
+find_program(FYPP_EXECUTABLE fypp REQUIRED
+  DOC "The Fypp preprocessor (pip install fypp)")
+
+# every configuration option is passed to Fypp under its CMake name
+# (the switches as 0 / 1)
+set(AMR_FYPP_FLAGS)
+foreach(_opt AMR_BLOCK_SIZE AMR_L0 AMR_MIN_LEVEL AMR_DOMAIN_HEIGHT AMR_PRECISION)
+  list(APPEND AMR_FYPP_FLAGS -D${_opt}=${${_opt}})
+endforeach()
+foreach(_opt AMR_PERIODIC_Y AMR_WITH_FVTKHDF AMR_WITH_VIEWER)
+  list(APPEND AMR_FYPP_FLAGS -D${_opt}=$<BOOL:${${_opt}}>)
+endforeach()
+
+# amr_fypp(<variable> <module>...): src/<module>.fypp -> fypp/<module>.f90 in the
+# current binary directory; <variable> receives the generated files
+function(amr_fypp out_var)
+  set(_generated)
+  foreach(_module ${ARGN})
+    set(_in  ${PROJECT_SOURCE_DIR}/src/${_module}.fypp)
+    set(_out ${CMAKE_CURRENT_BINARY_DIR}/fypp/${_module}.f90)
+    add_custom_command(
+      OUTPUT  ${_out}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/fypp
+      COMMAND ${FYPP_EXECUTABLE} ${AMR_FYPP_FLAGS} -I ${PROJECT_SOURCE_DIR}/src ${_in} ${_out}
+      DEPENDS ${_in} ${PROJECT_SOURCE_DIR}/src/Biquadratic.fypp
+      COMMENT "Fypp ${_module}.fypp"
+      VERBATIM)
+    list(APPEND _generated ${_out})
+  endforeach()
+  set(${out_var} ${_generated} PARENT_SCOPE)
+endfunction()
+
+amr_fypp(AMR_FYPP_SOURCES
+  Kinds_Mod Config_Mod Model_JCP2016_Mod Model_PRE2017_Mod Ghost_C_Mod Ghost_hg_Mod VTK_Output_Mod Output_Mod Viewer_Mod)
+
+# ---------------------------------------------------------------------------
+# Solver: one module per file in src/, file name = module name (.f90, or
+# .fypp for the modules that Fypp generates code for).
 # amr_core holds everything but the driver programs; each driver selects
 # an LBM model for the rising-bubble case.
 
 add_library(amr_core OBJECT
-  src/Kinds_Mod.f90
-  src/Config_Mod.f90
+  ${AMR_FYPP_SOURCES}
   src/Blocks_Mod.f90
   src/D2Q9_Mod.f90
   src/Physics_Mod.f90
@@ -131,26 +188,19 @@ add_library(amr_core OBJECT
   src/BC_Mod.f90
   src/LBM_Common_Mod.f90
   src/Phase_Field_Mod.f90
-  src/Model_JCP2016_Mod.f90
-  src/Model_PRE2017_Mod.f90
+  src/Model_Parker2009_Mod.f90
   src/Mesh_Mod.f90
-  src/Ghost_C_Mod.f90
-  src/Ghost_hg_Mod.f90
   src/Prolong_Restrict_Mod.f90
   src/Refine_Mod.f90
   src/TecPlot_Mod.f90
-  src/VTK_Output_Mod.f90
-  src/Output_Mod.f90
-  src/Viewer_Mod.f90
   src/Solver_Mod.f90
   src/Rising_Bubble_Mod.f90
   src/Rayleigh_Taylor_Mod.f90
+  src/Parker_Cases_Mod.f90
 )
-target_compile_definitions(amr_core PRIVATE AMR_L0=${AMR_L0} AMR_MIN_LEVEL=${AMR_MIN_LEVEL}
-                                            AMR_DOMAIN_HEIGHT=${AMR_DOMAIN_HEIGHT})
-target_link_libraries(amr_core PUBLIC amr_options OpenMP::OpenMP_Fortran)
+target_link_libraries(amr_core PUBLIC amr_options amr_openmp)
 set_target_properties(amr_core PROPERTIES
-  Fortran_PREPROCESS ON
+  Fortran_PREPROCESS OFF
   Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
 target_include_directories(amr_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
@@ -158,7 +208,6 @@ if(AMR_WITH_FVTKHDF)
   enable_language(C)   # fVTKHDF's package config looks up HDF5, which tests with C
   find_package(fVTKHDF REQUIRED)
   target_link_libraries(amr_core PUBLIC fVTKHDF::fvtkhdf)
-  target_compile_definitions(amr_core PRIVATE USE_FVTKHDF)
 endif()
 
 # real-time viewer: C library with an SDL2 window and an OpenGL 3.3 context
@@ -174,22 +223,23 @@ if(AMR_WITH_VIEWER)
   target_include_directories(amrviz PUBLIC viewer)
   target_link_libraries(amrviz PRIVATE SDL2::SDL2 Threads::Threads m)
   target_link_libraries(amr_core PUBLIC amrviz)
-  target_compile_definitions(amr_core PRIVATE USE_AMRVIZ)
 endif()
 
 # drivers, one per case and model:
 #   amr_lbm,    amr_lbm_pre2017     rising bubble
 #   amr_lbm_rt, amr_lbm_rt_pre2017  Rayleigh-Taylor instability
+#   amr_lbm_parker                  two species (Parker & Jovanovic 2009): droplets, spinodal decomposition
 # with the models of Fakhari, Geier & Lee (JCP 2016) and Fakhari et al.
 # (PRE 2017, improved locality)
 add_executable(amr_lbm            src/main_jcp2016.f90)
 add_executable(amr_lbm_pre2017    src/main_pre2017.f90)
 add_executable(amr_lbm_rt         src/main_rt_jcp2016.f90)
 add_executable(amr_lbm_rt_pre2017 src/main_rt_pre2017.f90)
-set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017)
+add_executable(amr_lbm_parker     src/main_parker2009.f90)
+set(_amr_drivers amr_lbm amr_lbm_pre2017 amr_lbm_rt amr_lbm_rt_pre2017 amr_lbm_parker)
 foreach(_exe ${_amr_drivers})
   target_link_libraries(${_exe} PRIVATE amr_core)
-  set_target_properties(${_exe} PROPERTIES Fortran_PREPROCESS ON)
+  set_target_properties(${_exe} PROPERTIES Fortran_PREPROCESS OFF)
 endforeach()
 
 install(TARGETS ${_amr_drivers})
@@ -235,6 +285,7 @@ message(STATUS "  OpenMP            ${_amr_omp}")
 message(STATUS "  native            ${_amr_native}")
 message(STATUS "  precision         ${AMR_PRECISION} bytes (${_amr_real})")
 message(STATUS "  domain            ${AMR_L0} x ${_amr_height} (L0 = ${AMR_L0}, height ${AMR_DOMAIN_HEIGHT}*L0)")
+message(STATUS "  periodic in y     ${AMR_PERIODIC_Y}")
 message(STATUS "  levels            ${AMR_MIN_LEVEL} (minimum) to ${_amr_max_level} (finest)")
 message(STATUS "  block size        ${AMR_BLOCK_SIZE} x ${AMR_BLOCK_SIZE} cells")
 message(STATUS "  VTKHDF output     ${AMR_WITH_FVTKHDF}")

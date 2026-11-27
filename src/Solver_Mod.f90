@@ -5,16 +5,17 @@
 !   and top.
 !================================================
 MODULE Solver_Mod
-    USE Kinds_Mod, ONLY: wp, dp
+    USE Kinds_Mod, ONLY: wp, dp, i64
     USE Mesh_Mod, ONLY: Create_Domain
     USE Refine_Mod, ONLY: Refine_Derefine_Mesh
-    USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_LaxWendroff_AMR, Macroscopic_Values_h_AMR
+    USE LBM_Common_Mod, ONLY: Perfect_Shift_AMR, Streaming_Coarse_AMR, Select_Coarse_Streaming, &
+                              Macroscopic_Values_h_AMR
     USE Model_Mod, ONLY: LBM_Model
     USE Case_Mod, ONLY: AMR_Case
     USE Ghost_C_Mod, ONLY: Fill_Ghost_Cells_C
-    USE Ghost_hg_Mod, ONLY: Fill_Ghost_Cells_hg
+    USE Ghost_hg_Mod, ONLY: Fill_Ghost_Cells_hg, Push_Same_Level
     USE Output_Mod, ONLY: Select_Writer, Write_Output, Close_Output
-    USE Viewer_Mod, ONLY: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close
+    USE Viewer_Mod, ONLY: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close, viewer_built
     IMPLICIT NONE
     PRIVATE
     PUBLIC :: Run_AMR_LBM, Read_Command_Line
@@ -27,17 +28,21 @@ MODULE Solver_Mod
 
 CONTAINS
 
-!== run a test case with an LBM model
-SUBROUTINE Run_AMR_LBM( model, problem )
+!== run a test case with an LBM model; the case may adjust the model's mesh
+!   policy (tolerances, island refinement) after its setup
+SUBROUTINE Run_AMR_LBM( model_in, problem )
     USE Config_Mod, ONLY: minLevels, maxLevels
+    USE Blocks_Mod, ONLY: nScalars
     IMPLICIT NONE
-    TYPE(LBM_Model), INTENT(IN) :: model
+    TYPE(LBM_Model), INTENT(IN) :: model_in
     TYPE(AMR_Case),  INTENT(IN) :: problem
 
+    TYPE(LBM_Model) :: model
     INTEGER    :: L
-    INTEGER(8) :: t1, t2, Rate
+    INTEGER(i64) :: t1, t2, Rate
     REAL(wp)   :: t_end, time_per_step
 
+    model = model_in
     IF( .NOT. ( ASSOCIATED(model%Initialize) .AND. ASSOCIATED(model%Collide) .AND. &
                 ASSOCIATED(model%Moments_g)  .AND. ASSOCIATED(model%Moments_and_Collide) .AND. &
                 ASSOCIATED(model%Refinement_Error) ) ) ERROR STOP 'Run_AMR_LBM: incomplete model'
@@ -50,7 +55,9 @@ SUBROUTINE Run_AMR_LBM( model, problem )
 
     PRINT '(/2A)', 'Case: ', TRIM(problem%name)
     CALL problem%Setup( t_end, time_per_step )
+    IF( ASSOCIATED(problem%Adjust_Model) ) CALL problem%Adjust_Model( model )
 
+    nScalars = model%n_scalars      ! before the block pool is allocated
     CALL Create_Domain
 
     CALL Initialize_State( model, problem )
@@ -94,7 +101,7 @@ END SUBROUTINE Initialize_State
 
 SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     USE Config_Mod, ONLY: nx, ny, maxLevels, inv_dx_level
-    USE Blocks_Mod, ONLY: nLeaf, Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax
+    USE Blocks_Mod, ONLY: nLeaf, Blk_h, Blk_g, Blk_C, Blk_C2, LeafByLevel, LevelStart, LevelMin, LevelMax
     USE Physics_Mod, ONLY: W, M0, taul, tauh, wc, Sigma
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS
     USE ISO_FORTRAN_ENV, ONLY: OUTPUT_UNIT
@@ -109,10 +116,10 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     REAL(wp)    :: cfl
     LOGICAL    :: changed, moments_done, is_output, is_diagnostic
     INTEGER    :: nDiagStep
-    INTEGER(8) :: t1, Rate
-    INTEGER(8) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
+    INTEGER(i64) :: t1, Rate
+    INTEGER(i64) :: t_collision, t_advection, t_Output, t_Ghost_C, t_Ghost_hg, t_refine
     INTEGER    :: nProgStep
-    INTEGER(8) :: tp0, tpLast, cellUpdates
+    INTEGER(i64) :: tp0, tpLast, cellUpdates
 
     !==================================
     !== command line: number of time steps (default: the case's end time),
@@ -124,6 +131,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     IF( cmd_out > 0 ) nOutStep = cmd_out
     nViewStep = cmd_view
     CALL Select_Writer
+    CALL Select_Coarse_Streaming
     CALL Viewer_Open( nViewStep )
     !== the case's diagnostics are recorded 120 times per run and at every output
     nDiagStep = MAX( Tf/120, 1 )
@@ -143,7 +151,7 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
     PRINT '(/A/)', '    Tf     Sigma    W      M0    tauc   taul   tauh     Ref_Tols'
     PRINT '(I8,F8.4,F6.2,4F7.3,2F8.4)', Tf, Sigma, W, M0, 1/wc, taul, tauh, &
         model%refine_tol, model%deref_tol
-    PRINT '(/A/)','     T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels'
+    PRINT '(/A/)','        T   Nblks  nLeaf  Unused  Rho_min    Rho_max   U_max      Mass     Levels'
     !==========================================================
 
     CALL SYSTEM_CLOCK( t1, Rate )
@@ -214,11 +222,12 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
             END IF
         END IF
 
-!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk_h, Blk_g, Blk_C, LeafByLevel, LevelStart, LevelMin, LevelMax, &
-!$OMP   model, moments_done, &
+!$OMP PARALLEL DEFAULT(PRIVATE) SHARED( Blk_h, Blk_g, Blk_C, Blk_C2, LeafByLevel, LevelStart, LevelMin, LevelMax, &
+!$OMP   model, moments_done, Streaming_Coarse_AMR, &
 !$OMP   t_collision, t_Ghost_hg, t_advection )
 
-        !== pressure and velocity from g, then the collision, block by block.
+        !== pressure and velocity from g, then the collision, block by block,
+        !   and the same-level part of the ghost cells of h and g.
         !   This loop and the streaming loop run level by level over LeafByLevel
         !   with the same static schedule as Fill_Ghost_Cells_hg, so each block
         !   is collided, ghost-filled and streamed by the same thread (OpenMP
@@ -233,6 +242,9 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
             ELSE
                 CALL model%Moments_and_Collide( n )
             END IF
+            !== the edges of the block into the ghost cells of h and g of its
+            !   same-level neighbours, while it is in the cache
+            CALL Push_Same_Level( n )
         END DO
 !$OMP END DO NOWAIT
         END DO
@@ -248,7 +260,8 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 
         !== streaming, and the phase field C = sum(h) while h of the block is in cache:
         !   exact shift on the finest level, Lax-Wendroff with CFL number
-        !   1/dx (a time step of 1) on the coarser ones
+        !   1/dx (a time step of 1) on the coarser ones (3 or 9 points,
+        !   Select_Coarse_Streaming)
         DO L = LevelMin, LevelMax
         cfl = inv_dx_level( L )
 !$OMP DO SCHEDULE(STATIC)
@@ -258,10 +271,11 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
                 CALL Perfect_Shift_AMR( Blk_h(:,:,:,n) )
                 CALL Perfect_Shift_AMR( Blk_g(:,:,:,n) )
             ELSE
-                CALL Streaming_LaxWendroff_AMR( cfl, Blk_h(:,:,:,n) )
-                CALL Streaming_LaxWendroff_AMR( cfl, Blk_g(:,:,:,n) )
+                CALL Streaming_Coarse_AMR( cfl, Blk_h(:,:,:,n) )
+                CALL Streaming_Coarse_AMR( cfl, Blk_g(:,:,:,n) )
             END IF
             CALL Macroscopic_Values_h_AMR( Blk_h(:,:,:,n), Blk_C(:,:,n) )
+            IF( model%n_scalars == 2 ) CALL Macroscopic_Values_h_AMR( Blk_g(:,:,:,n), Blk_C2(:,:,n) )
         END DO
 !$OMP END DO NOWAIT
         END DO
@@ -272,17 +286,17 @@ SUBROUTINE Main_Loop( model, problem, t_end, time_per_step )
 
 !$OMP END PARALLEL
 
-        cellUpdates = cellUpdates + INT(nLeaf,8)*nx*ny
+        cellUpdates = cellUpdates + INT(nLeaf,i64)*nx*ny
         IF( MOD(T+1,nProgStep) == 0 .AND. T+1 < Tf ) CALL Progress( T+1 )
 
     END DO
 
     PRINT '(/A)', '------------------------------'
     PRINT '(A,F12.3)',   ' t_Output:        ', DBLE(t_Output   )/Rate
-    PRINT '(A,F12.3,A)', ' t_collision:     ', DBLE(t_collision)/Rate, '   (moments of g and collision)'
+    PRINT '(A,F12.3,A)', ' t_collision:     ', DBLE(t_collision)/Rate, '   (moments of g, collision, same-level ghost cells of h, g)'
     PRINT '(A,F12.3,A)', ' t_advection:     ', DBLE(t_advection)/Rate, '   (streaming and C)'
     PRINT '(A,F12.3)',   ' t_Ghost_C :      ', DBLE(t_Ghost_C  )/Rate
-    PRINT '(A,F12.3)',   ' t_Ghost_hg:      ', DBLE(t_Ghost_hg )/Rate
+    PRINT '(A,F12.3,A)', ' t_Ghost_hg:      ', DBLE(t_Ghost_hg )/Rate, '   (coarse/fine ghost cells of h, g, walls)'
     PRINT '(A,F12.3)',   ' t_refine:        ', DBLE(t_refine   )/Rate
     PRINT '(A,F12.3,A,I0,A,F0.2,A)', ' t_nbr_table:     ', DBLE(t_nbr_table)/Rate, &
         '   (in t_refine; ', n_nbr_rebuilds, ' rebuilds, ', &
@@ -298,7 +312,7 @@ CONTAINS
     !   time per step so far (it changes with the number of refined blocks)
     SUBROUTINE Progress( Tdone )
         INTEGER, INTENT(IN) :: Tdone
-        INTEGER(8) :: tnow
+        INTEGER(i64) :: tnow
         REAL(dp)   :: elapsed, mlups
 
         CALL SYSTEM_CLOCK( tnow )
@@ -324,8 +338,8 @@ CONTAINS
 
     !== add the time elapsed since the last call to the accumulator tacc
     SUBROUTINE Lap( tacc )
-        INTEGER(8), INTENT(INOUT) :: tacc
-        INTEGER(8) :: tnow
+        INTEGER(i64), INTENT(INOUT) :: tacc
+        INTEGER(i64) :: tnow
         CALL SYSTEM_CLOCK( tnow )
         tacc = tacc + (tnow - t1)
         t1 = tnow
@@ -370,7 +384,7 @@ SUBROUTINE Print_Diagnostics( Time )
     END DO
 !$OMP END PARALLEL DO
     WRITE(*,10) Time, Nblks, nLeaf, nUnused(), Rho_min, Rho_max, U_max, Mass, LevelMin, LevelMax
-10  FORMAT(F7.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
+10  FORMAT(F10.2,2I7,I6,2F11.5,F9.5,F12.1,2I4)
 
 END SUBROUTINE Print_Diagnostics
 
@@ -447,10 +461,8 @@ CONTAINS
             '                   and the final state are always written', &
             '  --view[=N]       show the mesh and a field in a window during the run,', &
             '                   updated every N steps (default 20)'
-#ifndef USE_AMRVIZ
-        PRINT '(A)', &
+        IF( .NOT. viewer_built ) PRINT '(A)', &
             '                   (not in this build: configure with -DAMR_WITH_VIEWER=ON)'
-#endif
         PRINT '(A)', &
             '  -h, --help       this help', &
             '', &

@@ -34,7 +34,7 @@ MODULE Blocks_Mod
     USE Config_Mod, ONLY: nx, ny, maxLevels, MaxBlks, nBaseX, nBaseY
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Block_t, Blk, Blk_h, Blk_g, Blk_C, Blk_P, Blk_Ux, Blk_Uy, &
+    PUBLIC :: Block_t, Blk, Blk_h, Blk_g, Blk_C, Blk_C2, Blk_P, Blk_Ux, Blk_Uy, nScalars, &
               Nblks, nLeaf, LeafByLevel, LevelStart, LevelMin, LevelMax, &
               di, dj, facing, &
               Init_Block_Pool, Reserve_Blocks, Clear_Slot, Release_Siblings, Take_Free_Siblings, &
@@ -69,6 +69,10 @@ MODULE Blocks_Mod
     !== block fields, last index = block
     REAL(wp), ALLOCATABLE :: Blk_h(:,:,:,:), Blk_g(:,:,:,:)     ! (0:nx+1,0:ny+1,9,:)
     REAL(wp), ALLOCATABLE :: Blk_C(:,:,:)                       ! (-1:nx+2,-1:ny+2,:)
+    !== a second scalar with ghost layers, e.g. sum(g) of a two-species model;
+    !   allocated only when the model asks for it (nScalars = 2, set before Init_Block_Pool)
+    REAL(wp), ALLOCATABLE :: Blk_C2(:,:,:)                      ! (-1:nx+2,-1:ny+2,:)
+    INTEGER :: nScalars = 1
     REAL(wp), ALLOCATABLE :: Blk_P(:,:,:), Blk_Ux(:,:,:), Blk_Uy(:,:,:)   ! (nx,ny,:)
 
     INTEGER :: Nblks = 0, nLeaf = 0
@@ -163,6 +167,12 @@ SUBROUTINE Allocate_Pool( capacity )
     IF( ALLOCATED(Blk_C) ) f3(:,:,1:Nblks) = Blk_C(:,:,1:Nblks)
     CALL MOVE_ALLOC( f3, Blk_C )
 
+    IF( nScalars == 2 ) THEN
+        ALLOCATE( f3(-1:nx+2,-1:ny+2,capacity) )
+        IF( ALLOCATED(Blk_C2) ) f3(:,:,1:Nblks) = Blk_C2(:,:,1:Nblks)
+        CALL MOVE_ALLOC( f3, Blk_C2 )
+    END IF
+
     ALLOCATE( f3(nx,ny,capacity) )
     IF( ALLOCATED(Blk_P) ) f3(:,:,1:Nblks) = Blk_P(:,:,1:Nblks)
     CALL MOVE_ALLOC( f3, Blk_P )
@@ -185,7 +195,7 @@ PURE FUNCTION Slot_Bytes() RESULT( bytes )
     REAL(wp) :: bytes
 
     bytes = REAL( STORAGE_SIZE(1._wp)/8, wp ) * &
-            ( 2*9*(nx+2)*(ny+2) + (nx+4)*(ny+4) + 3*nx*ny )
+            ( 2*9*(nx+2)*(ny+2) + nScalars*(nx+4)*(ny+4) + 3*nx*ny )
 
 END FUNCTION Slot_Bytes
 
@@ -199,6 +209,7 @@ SUBROUTINE Clear_Slot( n )
     Blk_h(:,:,:,n) = 0
     Blk_g(:,:,:,n) = 0
     Blk_C(:,:,n)   = 0
+    IF( nScalars == 2 ) Blk_C2(:,:,n) = 0
     Blk_P(:,:,n)   = 0
     Blk_Ux(:,:,n)  = 0
     Blk_Uy(:,:,n)  = 0

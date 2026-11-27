@@ -1,0 +1,491 @@
+!================================================
+!   Ghost cells of the distribution functions h and g
+!
+!   Only the moving directions 2:9 get ghost values: the rest population
+!   (k=1) never streams. A block's own streaming reads fewer: the exact
+!   shift on the finest level the 3 directions entering across a side (1
+!   at a corner), Lax-Wendroff the 6 crossing a side (2 at a corner). All 8
+!   are needed only where finer blocks interpolate from the ghost cells
+!   (rows and corners included), i.e. next to a refined neighbour
+!   (Blk%Finer); elsewhere the same-level copies and the interpolations from
+!   a coarser neighbour fill only the read ones.
+!   The wall conditions stay consistent: the values they compute from
+!   unfilled directions are never read.
+!
+!   The ghost cells of a block in direction k come from the neighbour there:
+!   a copy from a same-level leaf, the restriction of the facing children of
+!   a refined one, or the interpolation of a coarser one. The copies are
+!   pushed: Push_Same_Level( n ) writes the edges of block n into the ghost
+!   cells of its same-level leaf neighbours and is called right after the
+!   collision of n, while the block is in the cache (the collision of a
+!   neighbour does not touch its ghost cells). Fill_Ghost_Cells_hg then does
+!   the rest. (Collision + ghost cells 15-40 % faster than with
+!   all copies pulled in the fill.) For the other two
+!   the strips across an edge are gathered into small contiguous buffers ordered from the edge
+!   outwards: along an axis with direction component s = -1 or +1 they start
+!     ghost cells         at 0 (s = -1) or n+1 (s = +1)
+!     neighbour, child    at n            or 1
+!     coarser neighbour   at n+1-(n/2)p   or (n/2)(1-p)
+!   and run with stride s (p = 0, 1: the block's position in its parent).
+!   Along an edge the strip spans the block (1..n, or n/2+2 coarse cells
+!   from (n/2)p). One routine per strip shape: left/right sides, bottom/top
+!   sides, corners; the interpolations have that shape fixed at compile time.
+!================================================
+#:include "Biquadratic.fypp"
+#!  numbers of directions a strip is interpolated for from a coarser block: all 8, or
+#!  those a streaming reads (Lax-Wendroff with 3 points; at a corner 4 with 9 points; exact shift)
+#:set SIDE_NK = [ 8, 6, 3 ]
+#:set CORNER_NK = [ 8, 4, 2, 1 ]
+#!  suffix of the routine for nk directions: none for all 8
+#:set SUFFIX = lambda nk: '' if nk == 8 else str( nk )
+MODULE Ghost_hg_Mod
+    USE Kinds_Mod, ONLY: wp
+    USE Config_Mod, ONLY: nx, ny, maxLevels     ! the fixed block size (strip shapes)
+    USE Blocks_Mod, ONLY: Blk, Blk_h, Blk_g, di, dj, facing
+    USE BC_Mod, ONLY: Bounce_Back_3, Bounce_Back_4
+    USE LBM_Common_Mod, ONLY: coarseStencil     ! 3 or 9 points on the coarser levels
+    IMPLICIT NONE
+    PRIVATE
+    PUBLIC :: Fill_Ghost_Cells_hg, Push_Same_Level
+
+    !== directions read from the ghost cells in direction k by the streaming:
+    !   all moving ones, those of the exact shift, those of Lax-Wendroff on
+    !   the coarser levels with 3 points and with 9 (coarseStencil)
+    INTEGER, PARAMETER :: all_dirs(8) = [ 2, 3, 4, 5, 6, 7, 8, 9 ]
+    INTEGER, PARAMETER :: kopp(8) = [ 2, 1, 4, 3, 8, 7, 6, 5 ]      ! the opposite neighbour direction
+    INTEGER, PARAMETER :: nShift(8) = [ 3, 3, 3, 3, 1, 1, 1, 1 ]
+    INTEGER, PARAMETER :: shift_dirs(3,8) = RESHAPE( [ 2,6,9, 4,7,8, 3,6,7, 5,8,9, &
+                                                       6,0,0, 9,0,0, 7,0,0, 8,0,0 ], [3,8] )
+    INTEGER, PARAMETER :: nLW(8) = [ 6, 6, 6, 6, 2, 2, 2, 2 ]
+    INTEGER, PARAMETER :: lw_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
+                                                    6,8,0,0,0,0, 7,9,0,0,0,0, 7,9,0,0,0,0, 6,8,0,0,0,0 ], [6,8] )
+    !== the 9-point stencil reads all four diagonal directions at a corner
+    INTEGER, PARAMETER :: nLW9(8) = [ 6, 6, 6, 6, 4, 4, 4, 4 ]
+    INTEGER, PARAMETER :: lw9_dirs(6,8) = RESHAPE( [ 2,4,6,7,8,9, 2,4,6,7,8,9, 3,5,6,7,8,9, 3,5,6,7,8,9, &
+                                                     6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0, 6,7,8,9,0,0 ], [6,8] )
+
+CONTAINS
+
+
+!== One ghost layer of h and g on all leaf blocks, apart from the same-level
+!   copies (Push_Same_Level, called with the collision). Two passes over the
+!   levels:
+!
+!   1. Restriction of refined neighbours, then the wall conditions. Reads
+!      interior cells only.
+!   2. Interpolation from coarser neighbours. Also reads ghost cells of the
+!      coarser block; by the 2:1 balance these were filled by pass 1 or by
+!      the copies.
+!
+!   - Barriers: none between the levels of a pass (NOWAIT), one between the
+!     passes.
+!   - Walls run in pass 1. Wall values that depend on a side still to be
+!     interpolated (end columns) are read only by the 9-point stencil of the
+!     coarse-level streaming; for it they are redone after pass 2.
+!   - The static schedule per level is that of the collision and streaming
+!     loops, so each block stays with one thread.
+SUBROUTINE Fill_Ghost_Cells_hg
+    USE Blocks_Mod, ONLY: LevelMin, LevelMax, LeafByLevel, LevelStart
+    IMPLICIT NONE
+
+    INTEGER :: L, k, m, n, nb
+
+    DO L = LevelMin, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+
+            DO k = 1, 8
+                nb = Blk(n)%nbr(k)
+                IF( nb <= 0 ) CYCLE
+                IF( Blk(nb)%Level < L ) CYCLE                 ! second pass
+                IF( Blk(nb)%IsLeaf ) CYCLE                    ! pushed by the neighbour
+                IF( k <= 2 ) THEN
+                    CALL Fill_Side_X( n, nb, di(k) )
+                ELSEIF( k <= 4 ) THEN
+                    CALL Fill_Side_Y( n, nb, dj(k) )
+                ELSE
+                    CALL Fill_Corner( n, k )
+                END IF
+            END DO
+
+            CALL Walls( n, 0, nx+1 )
+
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+    DO L = LevelMin+1, LevelMax
+!$OMP DO schedule(static)
+        DO m = LevelStart(L), LevelStart(L+1)-1
+            n = LeafByLevel(m)
+            IF( .NOT. Blk(n)%Coarser ) CYCLE
+
+            DO k = 1, 8
+                nb = Blk(n)%nbr(k)
+                IF( nb <= 0 ) CYCLE
+                IF( Blk(nb)%Level == L ) CYCLE                ! first pass
+                !== only the directions the block's streaming reads, unless finer
+                !   blocks interpolate from its ghost cells
+                IF( Blk(n)%Finer ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, 8, all_dirs )
+                ELSEIF( L == maxLevels ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, nShift(k), shift_dirs(1:nShift(k),k) )
+                ELSEIF( coarseStencil == 9 ) THEN
+                    CALL Fill_From_Coarse( n, nb, k, nLW9(k), lw9_dirs(1:nLW9(k),k) )
+                ELSE
+                    CALL Fill_From_Coarse( n, nb, k, nLW(k), lw_dirs(1:nLW(k),k) )
+                END IF
+            END DO
+
+            !== the 9-point stencil also reads the wall values of the end columns,
+            !   which copy the ghost cells of a side interpolated just now
+            IF( coarseStencil == 9 .AND. L < maxLevels ) THEN
+                DO k = 1, 2
+                    nb = Blk(n)%nbr(k)
+                    IF( nb <= 0 ) CYCLE
+                    IF( Blk(nb)%Level < L ) CALL Walls( n, MERGE( 0, nx+1, k == 1 ), MERGE( 0, nx+1, k == 1 ) )
+                END DO
+            END IF
+
+        END DO
+!$OMP END DO NOWAIT
+    END DO
+!$OMP BARRIER
+
+CONTAINS
+
+    !== bounce-back on the bottom and top walls, columns X1:X2
+    SUBROUTINE Walls( n, X1, X2 )
+        INTEGER, INTENT(IN) :: n, X1, X2
+        IF( Blk(n)%nbr(3) < 0 ) THEN
+            CALL Bounce_Back_3( Blk_h(:,:,:,n), X1, X2 )
+            CALL Bounce_Back_3( Blk_g(:,:,:,n), X1, X2 )
+        END IF
+        IF( Blk(n)%nbr(4) < 0 ) THEN
+            CALL Bounce_Back_4( Blk_h(:,:,:,n), X1, X2 )
+            CALL Bounce_Back_4( Blk_g(:,:,:,n), X1, X2 )
+        END IF
+    END SUBROUTINE Walls
+
+END SUBROUTINE Fill_Ghost_Cells_hg
+
+!******************************************************************************
+
+!== the edges of leaf block n into the ghost cells of its same-level leaf
+!   neighbours, for the directions each neighbour reads
+SUBROUTINE Push_Same_Level( n )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n
+
+    INTEGER :: k, nb
+
+    DO k = 1, 8
+        nb = Blk(n)%nbr(k)
+        IF( nb <= 0 ) CYCLE
+        IF( .NOT. Blk(nb)%IsLeaf .OR. Blk(nb)%Level /= Blk(n)%Level ) CYCLE
+        IF( Blk(nb)%Finer ) THEN
+            CALL Copy_All  ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSEIF( Blk(nb)%Level == maxLevels ) THEN
+            CALL Copy_Shift( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSEIF( coarseStencil == 9 ) THEN
+            CALL Copy_LW9  ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        ELSE
+            CALL Copy_LW   ( kopp(k), Blk_h(:,:,:,nb), Blk_h(:,:,:,n), Blk_g(:,:,:,nb), Blk_g(:,:,:,n) )
+        END IF
+    END DO
+
+END SUBROUTINE Push_Same_Level
+
+!******************************************************************************
+
+!== Copy of the edge of a same-level block hb, gb into the ghost cells hn, gn
+!   of its neighbour in direction k (seen from hn), generated (Fypp) for the
+!   lists of directions: all moving ones, those read by the exact shift,
+!   those read by Lax-Wendroff with 3 and with 9 points. k is selected outside the loops and the blocks
+!   are explicit-shape dummy arguments, so in every branch the directions and
+!   all sections are constants (5-30 % faster than one routine with the list
+!   as an argument and SELECT CASE inside the loop).
+#!  per list: routine, number of directions and q-th direction for the ghost cells in direction k
+#:set COPY_LISTS = [ ( 'Copy_All', '8', 'all_dirs(q)' ), ( 'Copy_Shift', 'nShift({k})', 'shift_dirs(q,{k})' ), &
+                   & ( 'Copy_LW', 'nLW({k})', 'lw_dirs(q,{k})' ), ( 'Copy_LW9', 'nLW9({k})', 'lw9_dirs(q,{k})' ) ]
+#!  per direction k: ghost index and source index in x and in y (None: the whole edge)
+#:set EDGES = [ ( 1, '0', None, 'nx', None ), ( 2, 'nx+1', None, '1', None ), ( 3, None, '0', None, 'ny' ), &
+              & ( 4, None, 'ny+1', None, '1' ), ( 5, '0', '0', 'nx', 'ny' ), ( 6, '0', 'ny+1', 'nx', '1' ), &
+              & ( 7, 'nx+1', '0', '1', 'ny' ), ( 8, 'nx+1', 'ny+1', '1', '1' ) ]
+#:for NAME, ND, DIR in COPY_LISTS
+SUBROUTINE ${NAME}$( k, hn, hb, gn, gb )
+    IMPLICIT NONE
+    INTEGER,  INTENT(IN)    :: k
+    REAL(wp), INTENT(INOUT) :: hn(0:nx+1,0:ny+1,9), gn(0:nx+1,0:ny+1,9)
+    REAL(wp), INTENT(IN)    :: hb(0:nx+1,0:ny+1,9), gb(0:nx+1,0:ny+1,9)
+
+    INTEGER :: q, d, i, j
+
+    SELECT CASE( k )
+  #:for K, IG, JG, I0, J0 in EDGES
+    CASE( ${K}$ )
+        DO q = 1, ${ND.format( k=K )}$
+            d = ${DIR.format( k=K )}$
+    #:if JG is None
+            DO j = 1, ny
+                hn(${IG}$,j,d) = hb(${I0}$,j,d)
+            END DO
+            DO j = 1, ny
+                gn(${IG}$,j,d) = gb(${I0}$,j,d)
+            END DO
+    #:elif IG is None
+            DO i = 1, nx
+                hn(i,${JG}$,d) = hb(i,${J0}$,d)
+            END DO
+            DO i = 1, nx
+                gn(i,${JG}$,d) = gb(i,${J0}$,d)
+            END DO
+    #:else
+            hn(${IG}$,${JG}$,d) = hb(${I0}$,${J0}$,d)
+            gn(${IG}$,${JG}$,d) = gb(${I0}$,${J0}$,d)
+    #:endif
+        END DO
+  #:endfor
+    END SELECT
+
+END SUBROUTINE ${NAME}$
+
+#:endfor
+
+!******************************************************************************
+
+!== the ghost column of block n from its refined left (s = -1) or right
+!   (s = +1) neighbour nb: restriction of the facing children, all directions
+SUBROUTINE Fill_Side_X( n, nb, s )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, s
+
+    INTEGER  :: ig, i0, c, l, j, q
+    REAL(wp) :: hf(3,2*ny,2:9), gf(3,2*ny,2:9), hb(1,ny,2:9), gb(1,ny,2:9)
+
+    ig = MERGE( 0, nx+1, s < 0 )
+    i0 = MERGE( nx, 1, s < 0 )
+    c = Blk(nb)%child + MERGE( 1, 0, s < 0 )      ! the facing children c, c+2
+    DO q = 2, 9
+    DO j = 1, ny
+    DO l = 0, 2
+        hf(l+1,   j,q) = Blk_h(i0+s*l,j,q, c  )
+        hf(l+1,ny+j,q) = Blk_h(i0+s*l,j,q, c+2)
+        gf(l+1,   j,q) = Blk_g(i0+s*l,j,q, c  )
+        gf(l+1,ny+j,q) = Blk_g(i0+s*l,j,q, c+2)
+    END DO
+    END DO
+    END DO
+    CALL From_Fine_LR( hf, hb )
+    CALL From_Fine_LR( gf, gb )
+
+    DO q = 2, 9
+    DO j = 1, ny
+        Blk_h(ig,j,q, n) = hb(1,j,q)
+        Blk_g(ig,j,q, n) = gb(1,j,q)
+    END DO
+    END DO
+
+END SUBROUTINE Fill_Side_X
+
+!******************************************************************************
+
+!== the ghost row of block n from its refined bottom (s = -1) or top
+!   (s = +1) neighbour nb
+SUBROUTINE Fill_Side_Y( n, nb, s )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, s
+
+    INTEGER  :: jg, j0, c, l, i, q
+    REAL(wp) :: hf(2*nx,3,2:9), gf(2*nx,3,2:9), hb(nx,1,2:9), gb(nx,1,2:9)
+
+    jg = MERGE( 0, ny+1, s < 0 )
+    j0 = MERGE( ny, 1, s < 0 )
+    c = Blk(nb)%child + MERGE( 2, 0, s < 0 )      ! the facing children c, c+1
+    DO l = 0, 2
+        hf(   1:  nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c  )
+        hf(nx+1:2*nx,l+1,:) = Blk_h(1:nx,j0+s*l,2:9, c+1)
+        gf(   1:  nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c  )
+        gf(nx+1:2*nx,l+1,:) = Blk_g(1:nx,j0+s*l,2:9, c+1)
+    END DO
+    CALL From_Fine_BT( hf, hb )
+    CALL From_Fine_BT( gf, gb )
+
+    DO q = 2, 9
+    DO i = 1, nx
+        Blk_h(i,jg,q, n) = hb(i,1,q)
+        Blk_g(i,jg,q, n) = gb(i,1,q)
+    END DO
+    END DO
+
+END SUBROUTINE Fill_Side_Y
+
+!******************************************************************************
+
+!== the ghost corner of block n from its refined neighbour in direction k = 5..8
+SUBROUTINE Fill_Corner( n, k )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, k
+
+    INTEGER  :: sx, sy, ig, jg, i0, j0, c, l, m, q
+    REAL(wp) :: hf(3,3,2:9), gf(3,3,2:9), hb(1,1,2:9), gb(1,1,2:9)
+
+    sx = di(k)
+    sy = dj(k)
+    ig = MERGE( 0, nx+1, sx < 0 )
+    jg = MERGE( 0, ny+1, sy < 0 )
+    i0 = MERGE( nx, 1, sx < 0 )
+    j0 = MERGE( ny, 1, sy < 0 )
+    c  = Blk(Blk(n)%nbr(k))%child + facing(1,k)      ! the facing child
+    DO q = 2, 9
+    DO m = 0, 2
+    DO l = 0, 2
+        hf(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,q, c)
+        gf(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,q, c)
+    END DO
+    END DO
+    END DO
+    CALL From_Fine_Corner( hf, hb )
+    CALL From_Fine_Corner( gf, gb )
+
+    Blk_h(ig,jg,2:9, n) = hb(1,1,:)
+    Blk_g(ig,jg,2:9, n) = gb(1,1,:)
+
+END SUBROUTINE Fill_Corner
+
+!******************************************************************************
+
+!== the ghost cells of block n in direction k from its coarser neighbour nb,
+!   for the nd directions dirs: 8, 6 or 3 on a side, 8, 2 or 1 at a corner.
+!   The strip is gathered direction by direction and interpolated by the
+!   routine for that number of directions.
+SUBROUTINE Fill_From_Coarse( n, nb, k, nd, dirs )
+    IMPLICIT NONE
+    INTEGER, INTENT(IN) :: n, nb, k, nd, dirs(nd)
+
+    INTEGER  :: sx, sy, ig, jg, i0, j0, px, py, X, Y, l, m, i, j, q, d
+    REAL(wp) :: hx(3,ny/2+2,8), gx(3,ny/2+2,8), hbx(1,ny,8), gbx(1,ny,8)
+    REAL(wp) :: hy(nx/2+2,3,8), gy(nx/2+2,3,8), hby(nx,1,8), gby(nx,1,8)
+    REAL(wp) :: hc(3,3,8), gc(3,3,8), hbc(1,1,8), gbc(1,1,8)
+
+    sx = di(k)
+    sy = dj(k)
+    px = MOD(Blk(n)%I,2)
+    py = MOD(Blk(n)%J,2)
+
+    IF( k <= 2 ) THEN                           ! left / right side
+        ig = MERGE( 0, nx+1, sx < 0 )
+        i0 = MERGE( nx+1, 0, sx < 0 )
+        Y  = (ny/2)*py
+        DO q = 1, nd
+            d = dirs(q)
+            DO j = 1, ny/2+2
+            DO l = 0, 2
+                hx(l+1,j,q) = Blk_h(i0+sx*l,Y+j-1,d, nb)
+                gx(l+1,j,q) = Blk_g(i0+sx*l,Y+j-1,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+      #:for NK in SIDE_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_LR${SUFFIX( NK )}$( hx, hbx )
+            CALL From_Coarse_LR${SUFFIX( NK )}$( gx, gbx )
+      #:endfor
+        END SELECT
+        DO q = 1, nd
+            d = dirs(q)
+            DO j = 1, ny
+                Blk_h(ig,j,d, n) = hbx(1,j,q)
+                Blk_g(ig,j,d, n) = gbx(1,j,q)
+            END DO
+        END DO
+
+    ELSEIF( k <= 4 ) THEN                       ! bottom / top side
+        jg = MERGE( 0, ny+1, sy < 0 )
+        j0 = MERGE( ny+1, 0, sy < 0 )
+        X  = (nx/2)*px
+        DO q = 1, nd
+            d = dirs(q)
+            DO l = 0, 2
+            DO i = 1, nx/2+2
+                hy(i,l+1,q) = Blk_h(X+i-1,j0+sy*l,d, nb)
+                gy(i,l+1,q) = Blk_g(X+i-1,j0+sy*l,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+      #:for NK in SIDE_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_BT${SUFFIX( NK )}$( hy, hby )
+            CALL From_Coarse_BT${SUFFIX( NK )}$( gy, gby )
+      #:endfor
+        END SELECT
+        DO q = 1, nd
+            d = dirs(q)
+            DO i = 1, nx
+                Blk_h(i,jg,d, n) = hby(i,1,q)
+                Blk_g(i,jg,d, n) = gby(i,1,q)
+            END DO
+        END DO
+
+    ELSE                                        ! corner
+        ig = MERGE( 0, nx+1, sx < 0 )
+        jg = MERGE( 0, ny+1, sy < 0 )
+        i0 = MERGE( nx+1-(nx/2)*px, (nx/2)*(1-px), sx < 0 )
+        j0 = MERGE( ny+1-(ny/2)*py, (ny/2)*(1-py), sy < 0 )
+        DO q = 1, nd
+            d = dirs(q)
+            DO m = 0, 2
+            DO l = 0, 2
+                hc(l+1,m+1,q) = Blk_h(i0+sx*l,j0+sy*m,d, nb)
+                gc(l+1,m+1,q) = Blk_g(i0+sx*l,j0+sy*m,d, nb)
+            END DO
+            END DO
+        END DO
+        SELECT CASE( nd )
+      #:for NK in CORNER_NK
+        CASE( ${NK}$ )
+            CALL From_Coarse_Corner${SUFFIX( NK )}$( hc, hbc )
+            CALL From_Coarse_Corner${SUFFIX( NK )}$( gc, gbc )
+      #:endfor
+        END SELECT
+        DO q = 1, nd
+            Blk_h(ig,jg,dirs(q), n) = hbc(1,1,q)
+            Blk_g(ig,jg,dirs(q), n) = gbc(1,1,q)
+        END DO
+    END IF
+
+END SUBROUTINE Fill_From_Coarse
+
+!******************************************************************************
+
+!== The strip interpolations (macros of Biquadratic.fypp), one routine per
+!   strip shape: left/right edges (LR), bottom/top edges (BT), corners. With
+!   the shape fixed at compile time the compiler unrolls the short loops:
+!   ~27% less time in the ghost cells of h and g than with the sizes as
+!   arguments.
+
+!== restriction of the facing fine cells (3 deep), all 8 directions
+@:BIQUADRATIC_FROM_FINE( From_Fine_LR,     i2 = 3,    j2 = 2*ny, x2 = 1,  y2 = ny, nk = 8 )
+
+@:BIQUADRATIC_FROM_FINE( From_Fine_BT,     i2 = 2*nx, j2 = 3,    x2 = nx, y2 = 1,  nk = 8 )
+
+@:BIQUADRATIC_FROM_FINE( From_Fine_Corner, i2 = 3,    j2 = 3,    x2 = 1,  y2 = 1,  nk = 8 )
+
+!== interpolation from the coarse cells (3 deep), for 8 directions or for those
+!   a streaming reads: From_Coarse_LR, _LR6, _LR3, and the same for BT
+#:for NK in SIDE_NK
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_LR${SUFFIX( NK )}$, i2 = 3,      j2 = ny/2+2, x2 = 1,  y2 = ny, nk = ${NK}$ )
+
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_BT${SUFFIX( NK )}$, i2 = nx/2+2, j2 = 3,      x2 = nx, y2 = 1,  nk = ${NK}$ )
+
+#:endfor
+!== ... and for a corner: From_Coarse_Corner, and one per reduced number of directions
+#:for NK in CORNER_NK
+@:BIQUADRATIC_FROM_COARSE( From_Coarse_Corner${SUFFIX( NK )}$, i2 = 3, j2 = 3, x2 = 1, y2 = 1, nk = ${NK}$ )
+
+#:endfor
+END MODULE Ghost_hg_Mod
