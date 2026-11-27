@@ -4,13 +4,15 @@
 !================================================
 PROGRAM Rising_Bubble_AMR_2D_JCP2016
     USE OMP_LIB, ONLY: OMP_GET_MAX_THREADS, OMP_GET_NUM_PROCS
-    USE Solver_Mod, ONLY: Run_AMR_LBM
+    USE Solver_Mod, ONLY: Run_AMR_LBM, Read_Command_Line
     USE Rising_Bubble_Mod, ONLY: Rising_Bubble_Case
     USE Model_JCP2016_Mod, ONLY: JCP2016_Model
     USE Kinds_Mod, ONLY: i64
     IMPLICIT NONE
 
     INTEGER(i64) :: t1, t2, Rate
+
+    CALL Read_Command_Line( 'rising bubble, model of Fakhari, Geier & Lee (JCP 2016)' )
 
     ! The number of threads is controlled with the OMP_NUM_THREADS
     ! environment variable (default: all available hardware threads).

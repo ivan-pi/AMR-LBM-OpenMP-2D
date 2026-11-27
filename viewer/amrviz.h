@@ -10,6 +10,16 @@
  * buffering), so the solver never blocks on drawing or vsync -- only while
  * the user has paused the run (amrviz_wait_if_paused).
  *
+ * On macOS, where windows and their events belong to the main thread, there
+ * is no render thread: the window lives on the thread that calls
+ * amrviz_open, which must be the main thread, and all other calls must come
+ * from it too. amrviz_end_snapshot then handles the window's events and
+ * draws (at most about 60 frames a second), amrviz_wait_if_paused and
+ * amrviz_close(1) run the event loop while they wait. The window reacts to
+ * input only during these calls, so snapshots should come several times a
+ * second. AMRVIZ_THREAD=0 in the environment selects this mode on other
+ * systems too (for testing).
+ *
  * On the GPU every block is one instanced quad; the cell values of the
  * shown field are one flat float buffer read through a texture buffer
  * (cell k of block b at b*nx*ny + k), so the upload is proportional to the
@@ -25,9 +35,12 @@
  *   Z / Shift+Z, Tab        next / previous field
  *   C / Shift+C             next / previous colour map (viridis, magma,
  *                           coolwarm with a range symmetric about zero, gray)
- *   1 2 3 4                 field colouring, block outlines, cell outlines,
- *                           status panel on/off
- *   F                       freeze / unfreeze the colour range
+ *   1 2 3 4 5               field colouring, block outlines, cell outlines,
+ *                           status panel, colour bar on/off
+ *   6                       Z-order (Morton) curve through the blocks on/off
+ *                           (block level l = 1/2^l of a base block)
+ *   F                       fit the colour range to the current data
+ *   A                       auto colour range on/off (follows every snapshot)
  *   +, -, mouse wheel       zoom (the wheel about the cursor)
  *   I J K L, arrows, drag   pan
  *   R                       reset the view

@@ -29,7 +29,7 @@ option(AMR_PERIODIC_Y "Periodic in y as well (default: walls at the bottom and t
 option(AMR_WITH_FVTKHDF "VTKHDF output through the fVTKHDF library" OFF)
 option(AMR_WITH_VIEWER "Real-time OpenGL view of the mesh and fields (viewer/, needs SDL2)" OFF)
 option(AMR_BUILD_OFFLOAD "Build the OpenMP target-offload prototype in offload/ (Intel ifx)" OFF)
-option(AMR_NATIVE "Optimize for the build machine (-march=native / -xHost)" ON)
+option(AMR_NATIVE "Optimize for the build machine (gfortran, flang: -mcpu=native on Arm, -march=native elsewhere; ifx: -xHost)" ON)
 
 if(NOT AMR_PRECISION MATCHES "^(4|8)$")
   message(FATAL_ERROR "AMR_PRECISION must be 4 or 8")
@@ -75,10 +75,40 @@ elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   set(AMR_FLAGS_RELEASE -O3)
   set(AMR_FLAGS_DEBUG   -O0 -g -check all -traceback -warn all)
   set(AMR_FLAG_NATIVE   -xHost)
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang")
+  # LLVM flang (its OpenMP runtime is LLVM's libomp)
+  set(AMR_FLAGS_RELEASE -O3)
+  set(AMR_FLAGS_DEBUG   -O0 -g)
+  set(AMR_FLAG_NATIVE   -march=native)
 elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NAG")
   set(AMR_FLAGS_RELEASE -O4)
   set(AMR_FLAGS_DEBUG   -O0 -g -gline -C=all)
   set(AMR_FLAG_NATIVE   -target=native)
+endif()
+
+# GCC and flang on Arm (Apple Silicon, Graviton, ...) take -mcpu=native, which sets
+# the architecture and the tuning; there -march=native can turn into a CPU
+# name (-march=apple-m2) that GCC then rejects. Elsewhere -march=native.
+# The first of the two that the compiler accepts is used, or none.
+if(AMR_NATIVE AND CMAKE_Fortran_COMPILER_ID MATCHES "^(GNU|LLVMFlang)$")
+  include(CheckFortranCompilerFlag)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64|aarch64|AARCH64|arm.*)$")
+    set(_amr_native_flags -mcpu=native -march=native)
+  else()
+    set(_amr_native_flags -march=native -mcpu=native)
+  endif()
+  unset(AMR_FLAG_NATIVE)
+  foreach(_flag IN LISTS _amr_native_flags)
+    string(MAKE_C_IDENTIFIER "AMR_HAVE${_flag}" _var)   # AMR_HAVE_mcpu_native, ...
+    check_fortran_compiler_flag(${_flag} ${_var})
+    if(${_var})
+      set(AMR_FLAG_NATIVE ${_flag})
+      break()
+    endif()
+  endforeach()
+  if(NOT DEFINED AMR_FLAG_NATIVE)
+    message(STATUS "AMR-LBM: ${CMAKE_Fortran_COMPILER} takes neither -march=native nor -mcpu=native; AMR_NATIVE has no effect")
+  endif()
 endif()
 
 # OpenMP. For NAG, FindOpenMP's imported target lists nagfor's thread-safe
@@ -182,7 +212,7 @@ endif()
 
 # real-time viewer: C library with an SDL2 window and an OpenGL 3.3 context
 # (the GL functions are loaded through SDL, no libGL link); enabled at run
-# time with AMR_VIEW=<update interval in steps>
+# time with the option --view[=<update interval in steps>]
 if(AMR_WITH_VIEWER)
   enable_language(C)
   find_package(SDL2 REQUIRED)
@@ -224,6 +254,40 @@ if(AMR_BUILD_OFFLOAD)
   add_subdirectory(offload)
 endif()
 
-message(STATUS "AMR-LBM: precision=${AMR_PRECISION} bytes, L0=${AMR_L0}, height=${AMR_DOMAIN_HEIGHT}*L0, periodic y=${AMR_PERIODIC_Y}, "
-               "min level=${AMR_MIN_LEVEL}, block=${AMR_BLOCK_SIZE}, fVTKHDF=${AMR_WITH_FVTKHDF}, "
-               "viewer=${AMR_WITH_VIEWER}, offload=${AMR_BUILD_OFFLOAD}, build type=${CMAKE_BUILD_TYPE}")
+# ---------------------------------------------------------------------------
+# Configuration summary
+
+if(AMR_PRECISION EQUAL 8)
+  set(_amr_real real64)
+else()
+  set(_amr_real real32)
+endif()
+math(EXPR _amr_height "${AMR_DOMAIN_HEIGHT} * ${AMR_L0}")
+if(OpenMP_Fortran_FOUND)
+  set(_amr_omp "ON (OpenMP ${OpenMP_Fortran_VERSION}, ${OpenMP_Fortran_FLAGS})")
+else()
+  set(_amr_omp "OFF")
+endif()
+if(NOT AMR_NATIVE)
+  set(_amr_native "OFF")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(_amr_native "OFF in Debug builds")
+elseif(DEFINED AMR_FLAG_NATIVE)
+  set(_amr_native "ON (${AMR_FLAG_NATIVE})")
+else()
+  set(_amr_native "ON, but no flag for this compiler")
+endif()
+
+message(STATUS "AMR-LBM configuration:")
+message(STATUS "  build type        ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Fortran compiler  ${CMAKE_Fortran_COMPILER_ID} ${CMAKE_Fortran_COMPILER_VERSION} (${CMAKE_Fortran_COMPILER})")
+message(STATUS "  OpenMP            ${_amr_omp}")
+message(STATUS "  native            ${_amr_native}")
+message(STATUS "  precision         ${AMR_PRECISION} bytes (${_amr_real})")
+message(STATUS "  domain            ${AMR_L0} x ${_amr_height} (L0 = ${AMR_L0}, height ${AMR_DOMAIN_HEIGHT}*L0)")
+message(STATUS "  periodic in y     ${AMR_PERIODIC_Y}")
+message(STATUS "  levels            ${AMR_MIN_LEVEL} (minimum) to ${_amr_max_level} (finest)")
+message(STATUS "  block size        ${AMR_BLOCK_SIZE} x ${AMR_BLOCK_SIZE} cells")
+message(STATUS "  VTKHDF output     ${AMR_WITH_FVTKHDF}")
+message(STATUS "  real-time viewer  ${AMR_WITH_VIEWER}")
+message(STATUS "  GPU offload       ${AMR_BUILD_OFFLOAD}")

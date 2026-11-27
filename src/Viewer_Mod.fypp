@@ -3,16 +3,21 @@
 !
 !   Built with -DAMR_WITH_VIEWER=ON, the solver can show the leaf blocks
 !   and one field in an OpenGL window while it runs (C library amrviz in
-!   viewer/, SDL2). The environment variable AMR_VIEW turns it on and sets
-!   the update interval in time steps, e.g. AMR_VIEW=20 ./build/amr_lbm.
+!   viewer/, SDL2). The command-line option --view[=N] turns it on and sets
+!   the update interval in time steps, e.g. ./build/amr_lbm --view=20.
 !   Without it, or in a build without the viewer, Viewer_Due is always
-!   .FALSE. and nothing else is called.
+!   .FALSE. and nothing else is called. How the window is shown is the
+!   viewer library's business, configured by its environment variables
+!   (AMRVIZ_THREAD, see viewer/amrviz.h).
 !
 !   Each update copies C, P, Ux, Uy and the speed |U| of every leaf block
 !   (as float) into the viewer's buffer; drawing runs on the viewer's own
 !   thread and never holds up the solver, except while the user has paused
-!   the run with the space bar. Pressure and velocity are those of the last
-!   moments of g (one step old, except on output and diagnostic steps).
+!   the run with the space bar. On macOS the window has to live on the main
+!   thread, the solver's: each update then also handles the window's input
+!   and draws, so the window reacts only at updates (keep N small).
+!   Pressure and velocity are those of the last moments of g (one step
+!   old, except on output and diagnostic steps).
 !   Closing the window lets the run continue without the viewer; at the end
 !   of the run the window stays open until it is closed.
 !================================================
@@ -26,7 +31,14 @@ MODULE Viewer_Mod
 #:endif
     IMPLICIT NONE
     PRIVATE
-    PUBLIC :: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close
+    PUBLIC :: Viewer_Open, Viewer_Due, Viewer_Update, Viewer_Close, viewer_built
+
+    !== .TRUE. in a build with the viewer (-DAMR_WITH_VIEWER=ON)
+#:if AMR_WITH_VIEWER
+    LOGICAL, PARAMETER :: viewer_built = .TRUE.
+#:else
+    LOGICAL, PARAMETER :: viewer_built = .FALSE.
+#:endif
 
     !== update interval in time steps; 0: viewer off
     INTEGER :: nViewStep = 0
@@ -40,24 +52,18 @@ CONTAINS
 
 !******************************************************************************
 
-!== open the window if AMR_VIEW is set to a positive update interval
-SUBROUTINE Viewer_Open
+!== open the window if the update interval nStep (time steps) is positive
+SUBROUTINE Viewer_Open( nStep )
 #:if AMR_WITH_VIEWER
     USE Config_Mod, ONLY: nx, ny, L0, nBaseX, nBaseY
 #:endif
     IMPLICIT NONE
-
-    CHARACTER(len=32) :: str
-    INTEGER :: length, stat
+    INTEGER, INTENT(IN) :: nStep
 #:if AMR_WITH_VIEWER
     INTEGER :: f, win_h, win_w
 #:endif
 
-    nViewStep = 0
-    CALL GET_ENVIRONMENT_VARIABLE( 'AMR_VIEW', str, length, stat )
-    IF( stat /= 0 .OR. length == 0 ) RETURN
-    READ( str, *, IOSTAT=stat ) nViewStep
-    IF( stat /= 0 .OR. nViewStep < 0 ) ERROR STOP 'AMR_VIEW: update interval in time steps expected'
+    nViewStep = MAX( nStep, 0 )
     IF( nViewStep == 0 ) RETURN
 
 #:if AMR_WITH_VIEWER
@@ -75,7 +81,7 @@ SUBROUTINE Viewer_Open
     END DO
     PRINT '(/A,I0,A)', 'Viewer: update every ', nViewStep, ' steps (H in the window: controls)'
 #:else
-    PRINT '(/A)', 'Viewer: AMR_VIEW ignored, built without the viewer (configure with -DAMR_WITH_VIEWER=ON)'
+    PRINT '(/A)', 'Viewer: --view ignored, built without the viewer (configure with -DAMR_WITH_VIEWER=ON)'
     nViewStep = 0
 #:endif
 
