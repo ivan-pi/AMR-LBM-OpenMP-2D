@@ -87,6 +87,74 @@ with all three compilers on the path that matters. One fused loop would be
 worth about 6 % of a run with ifx; keeping it next to the four passes for
 gfortran would mean two implementations of the collision.
 
+## `DO CONCURRENT` and the pair-sum collision
+
+Two further ideas, measured with the kernel benchmark and not adopted.
+MLUPS of moments + collision, 1 thread, best of 5-6 interleaved runs; the
+numbers of one compiler were taken together, those of different tables on
+different occasions.
+
+### `DO CONCURRENT` in place of `DO j` / `DO i`
+
+Applied to the collision loops of both models, without the `!$OMP SIMD`
+directive and without a locality clause.
+
+| compiler      | model    | `DO j` / `DO i` (master) | `DO j` / `DO CONCURRENT (i)` | `DO CONCURRENT (j, i)` |
+|---------------|----------|-----:|-----:|-----:|
+| gfortran 14.2 | PRE 2017 | 66.9 | 66.7 | 67.6 |
+| gfortran 14.2 | JCP 2016 | 67.8 | 68.6 | 68.5 |
+| gfortran 15.2 | PRE 2017 | 64.8 | 63.8 | 64.7 |
+| gfortran 15.2 | JCP 2016 | 57.0 | 56.1 | 53.7 |
+| ifx 2026.2    | PRE 2017 | 64.3 | 14.4 | 26.5 |
+| ifx 2026.2    | JCP 2016 | 68.8 | 20.9 | 31.2 |
+
+* gfortran: no difference beyond the timing noise, except the two-index
+  form of JCP 2016 with 15.2 (-6 %). The plain loops already vectorize, so
+  `DO CONCURRENT` has nothing to add.
+* ifx with `-qopenmp`: 2 to 4.5 times slower. Under that flag ifx turns
+  every `DO CONCURRENT` into an OpenMP work-sharing loop; its optimization
+  report lists the loops as `OMP LOOP` and the enclosing loop as not
+  vectorized because of a function call. Here that loop sits inside the
+  parallel loop over blocks.
+* A `LOCAL( ... )` clause with all scalars of the loop body does not change
+  this (ifx: PRE 2017 17.4 against 63.2, JCP 2016 24.8 against 67.3;
+  gfortran 15.2 unchanged). gfortran 14 rejects the clause.
+* ifx has no flag that maps `DO CONCURRENT` on the host to SIMD only; its
+  options for the construct concern offload
+  (`-fopenmp-target-do-concurrent`). What works is to compile the two model
+  files with `-qopenmp-simd` instead of `-qopenmp`, which is possible
+  because they hold no OpenMP construct other than `SIMD`:
+
+| ifx, model files with `-qopenmp-simd` | master | `DO CONCURRENT (i)` | `DO CONCURRENT (j, i)` |
+|----------|-----:|-----:|-----:|
+| PRE 2017 | 63.6 | 65.1 | 66.0 |
+| JCP 2016 | 68.0 | 68.4 | 69.0 |
+
+  With that, `DO CONCURRENT` is as fast as the plain loops (+1 to +4 %,
+  inside the noise), at the price of per-file compiler flags.
+
+The plain loops stay: `DO CONCURRENT` gains nothing with any compiler and
+is a trap with ifx under the flags of this build.
+
+### Pair sums in the PRE 2017 collision alone
+
+The collision of master already treats opposite directions in pairs. The
+further step of the JCP 2016 kernel is to take the stress and the two
+relaxed moments from sums over pairs, without forming the equilibrium of
+each direction. Above it was measured only together with fusing the
+gradient and the chemical potential into the loop; here it is applied
+alone, keeping the four passes of master.
+
+| compiler      | moments + collision: master | pair sums | collision only: master | pair sums |
+|---------------|-----:|-----:|-----:|-----:|
+| gfortran 14.2 | 66.9 | 68.7 | 82.9 | 87.0 |
+| gfortran 15.2 | 64.8 | 62.5 | 79.4 | 78.7 |
+| ifx 2026.2    | 64.3 | 65.0 | 78.2 | 77.0 |
+
+Between -3 % and +3 % on the path the solver takes at every step, +5 % to
+-2 % on the collision-only path: within the noise. The algebra is not what
+limits this kernel.
+
 ## Setup
 
 Machine and compilers as in `2026-11-26-kernel-performance.md` (4 cores of a
