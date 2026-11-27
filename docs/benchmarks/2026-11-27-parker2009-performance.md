@@ -105,8 +105,9 @@ best of 3 runs (gfortran 15.2 and the full back-transform: best of 6):
 | full back-transform: the relaxed moments are transformed and the populations assigned | +3 % | +2 % | -6 % | -5 % |
 | one loop per species | -2 % | within noise | -13 % | -13 % |
 
-* The full back-transform is within the noise of the adopted form: 0 to
-  +3 % with gfortran, -5 to -6 % with ifx and flang in a second session.
+* The full back-transform is within the noise of the adopted form. A
+  second session of 6 runs gave -1 % (gfortran 14.2), +2 % (gfortran 15.2)
+  and -5 % (ifx).
 * Splitting the species into two loops is not faster with any compiler.
 
 ## Not done
